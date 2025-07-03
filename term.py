@@ -17,102 +17,181 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Generator, Optional, Type
 
-import torch
+from semantics import DummySemanticIndex, SemanticIndex
 
 @dataclass(eq=False, unsafe_hash=False)
 class Term:
-    def get_args(self) -> list['Term']:
-        return []
-    def get_bindings(self) -> dict[int, int]:
-        return {}
-
-@dataclass(eq=False, unsafe_hash=False)
-class Leaf(Term):
-    name: str
+    operator: str
+    args: list['Term'] = field(default_factory=list)
     bindings: dict[int, int] = field(default_factory=dict)
     ''' Binding defines index in semantics, the vector which specifies evaluation of the term 
         Map: evaluation id to semantics id 
     '''
-    def get_bindings(self):
-        return self.bindings
     
-@dataclass(eq=False, unsafe_hash=False)
-class Branch(Term):
-    operator: str
-    args: list[Term] = field(default_factory=list)
-    def get_args(self):
-        return self.args
+def postorder_traversal(term: Term, enter_args: Callable, exit_term: Callable):
+    q = deque([(0, term, None)])
+    while len(q) > 0:
+        cur_i, cur_term, cur_parent = q.popleft()
+        if cur_i == 0:
+            enter_args(cur_term)
+        if cur_i >= len(cur_term.args):
+            exit_term(cur_term, cur_parent)
+        else:
+            cur_arg = cur_term.args[cur_i]
+            q.appendleft((cur_i + 1, cur_term, cur_parent))
+            q.appendleft((0, cur_arg, cur_term))
 
+def postorder_map(term: Term, fn: Callable) -> Any:    
+    term_args = {None: []}    
+    def _enter_args(t: Term):
+        term_args[t] = []
+    def _exit_term(t: Term, p: Term):
+        processed_t = fn(t, term_args[t])
+        term_args[p].append(processed_t)
+        del term_args[t]
+    postorder_traversal(term, _enter_args, _exit_term)
+    return term_args[None][0]
 
-@dataclass(eq=False, unsafe_hash=False)
-class BoundBranch(Branch):
-    bindings: dict[int, int] = field(default_factory=dict)
-    ''' Binding defines index in semantics, the vector which specifies evaluation of the term '''
-    def get_bindings(self):
-        return self.bindings
-    
-def postorder_traversal(term: Term, depth: int = 0) -> Generator[Term, Any, None]:
-    processed_args = []
-    for arg in term.get_args():
-        processed_arg = yield from postorder_traversal(arg, depth + 1)
-        if processed_arg is not None:
-            processed_args.append(processed_arg)
-    yield (term, processed_args, depth)
-
-# def postorder_map_lst(term: Term, procs: list[tuple[Type[Term], Callable]]) -> Any:
-    # fs = [prc for tp, prc in procs if isinstance(term, tp)]
-    # if len(fs) == 0:
-    #     return term 
-    # args = [postorder_map_lst(arg, procs) for arg in term.get_args()]
-    # new_term = fs[0](term, args)
-    # return new_term
-
-def postorder_map(term: Term, procs: dict[Type[Term], Callable]) -> Any:    
-    scored_procs = [(tp, prc, sum(1 for tp1 in procs.keys() if issubclass(tp, tp1))) for tp, prc in procs.items()]
-    scored_procs.sort(key=lambda x: x[-1], reverse=True)
-    procs_lst = [(tp, prc) for tp, prc, _ in scored_procs]   
-    prev_term = None     
-    terms = postorder_traversal(term)
-    while True: 
-        try:
-            term, args, depth = terms.send(prev_term)
-            fs = [prc for tp, prc in procs_lst if isinstance(term, tp)]
-            if len(fs) == 0:
-                prev_term = term
-            else:
-                prev_term = fs[0](term, args, depth)
-        except StopIteration as e:
-            return prev_term        
-
-# def val_to_str(v: Any) -> str:
-#     if isinstance(v, Term):
-#         term_to_str(v)
-#     if type(v) is str:
-#         return ("'" + v + "'") 
-#     return str(v)
-
-def leaf_to_str(term: Leaf, _):
-    binds = [f"{eid}:{sid}" for eid, sid in term.get_bindings().items()]
-    if len(binds) == 0:
-        return term.name
-    binds = [term.name, *binds]
-    return "[" + " ".join(binds) + "]"
-
-def branch_to_str(term: Branch, args: list[str]):
-    return "(" + " ".join([term.operator, *args]) + ")"
-
-def bound_branch_to_str(term: BoundBranch, args: list[str]):
-    binds = [f"{eid}:{sid}" for eid, sid in term.get_bindings().items()]
-    binds = [term.operator, *binds]
-    operator = "[" + " ".join(binds) + "]"
-    return "(" + " ".join([operator, *args]) + ")"
-
-# NOTE: idea in this str method was to be concise also - for debugging usage, not fully human readable though
-#       yet we can restore (not all possible terms) many terms from this string form with parse
 def term_to_str(term: Term) -> str: 
     ''' LISP style string '''
-    res = postorder_map(term, {Branch: branch_to_str, Leaf: leaf_to_str, BoundBranch: bound_branch_to_str})
+    def t_to_s(term: Term, args: list[str]):
+        binds = [f":{eid}:{sid}" for eid, sid in term.bindings.items()]
+        if len(args) == 0 and len(binds) == 0:
+            return term.operator
+        return "(" + " ".join([term.operator, *args, *binds]) + ")"    
+    res = postorder_map(term, t_to_s)
     return res 
+
+def get_leaves(root: Term, operator: Optional[str] = None, leaves_cache = {}) -> list[Term]:
+    ''' Find all leaves in root that are equal to term by name (ignoring bindings) '''
+    if root not in leaves_cache:
+        leaves = []
+        def _exit_term(term: Term, parent: Term):
+            if len(term.args) == 0:
+                leaves.append(term)
+        postorder_traversal(root, lambda term: (), _exit_term)
+        leaves_cache[root] = leaves
+    leaves = leaves_cache[root]
+    if operator is None:
+        return leaves
+    filtered_leaves = [child_term for child_term in leaves if child_term.operator == operator]
+    return filtered_leaves
+
+@dataclass(eq=False, unsafe_hash=False)
+class UnifyBindings:
+    bindings: dict[str, Term] = field(default_factory=dict)
+    renames: dict[str, str] = field(default_factory=dict)
+
+    def get(self, *keys) -> tuple[Term, ...]:
+        res = tuple(self.bindings.get(self.renames.get(k, k), None) for k in keys)
+        return res
+    
+    def set(self, key: str, value: Term):
+        self.bindings[key] = value
+
+    def set_same(self, keys: list[str], to_key: str):
+        to_key = self.renames.get(to_key, to_key)
+        for k in keys:
+            if k != to_key and k not in self.renames:
+                self.renames[k] = to_key
+    
+def points_are_equiv(*ts: Term) -> bool:
+    if len(ts) == 0:
+        return True
+    return all(t.operator == ts[0].operator and len(t.args) == len(ts[0].args) for t in ts)
+
+def copy_term(term: Term) -> Term:
+    ''' Deep copy of term without bindings '''
+    def fn(t: Term, args: list[Term]) -> Term:
+        return Term(t.operator, args, {})
+    return postorder_map(term, fn)
+
+#NOTE: on same unifications - unification cache? - we do not implement it here, it is done on term tries - see syntax py
+
+def replace_star_wildcard(term: Term, count: int, wildcard: str = "*", to_wildcard: str = "?") -> Term:
+    if len(term.args) == 0 or term.args[-1].operator != wildcard:
+        return term
+    term_copy = copy_term(term)
+    while len(term_copy.args) > 0 and term_copy.args[-1].operator == wildcard:
+        term_copy.args.pop()
+    num_create = count - len(term_copy.args)
+    for _ in range(num_create):
+        term_copy.args.append(Term(to_wildcard))
+    return term_copy    
+
+def unify(b: UnifyBindings, is_equiv: Callable, *terms: Term) -> bool:
+    ''' Unification of terms. Uppercase leaves are meta-variables, 
+        ? is wildcard leaf - should not be used as operation
+        * is wildcard args - 0 or more
+
+        Note: we do not check here that bound meta-variables recursivelly resolve to concrete terms.
+        This should be done by the caller.
+    '''
+    filtered_terms = [t for t in terms if t.operator != "?"]
+    if len(filtered_terms) < 2:
+        return True
+    t_is_meta = [t.operator.isupper() for t in filtered_terms]
+    meta_operators = set([t.operator for t, is_meta in zip(filtered_terms, t_is_meta) if is_meta])
+    meta_terms = b.get(*meta_operators)
+    bound_meta_terms = [bx for bx in meta_terms if bx is not None]
+    concrete_terms = [t for t, is_meta in zip(filtered_terms, t_is_meta) if not is_meta]
+    all_concrete_terms = bound_meta_terms + concrete_terms
+    if len(all_concrete_terms) > 1:
+        max_args_count = max(len([a for a in t.args if a.operator != "*"]) for t in all_concrete_terms)
+        all_concrete_terms = [replace_star_wildcard(t, max_args_count) for t in all_concrete_terms]
+        if not is_equiv(*all_concrete_terms):
+            return False
+    unbound_meta_operators = [op for op, bx in zip(meta_operators, meta_terms) if bx is None]
+    bound_meta_operators = [op for op, bx in zip(meta_operators, meta_terms) if bx is not None]
+    if len(unbound_meta_operators) > 0:
+        if len(bound_meta_operators) > 0:
+            to_key = bound_meta_operators[0]
+            b.set_same(unbound_meta_operators, to_key)
+        else:
+            to_key = unbound_meta_operators[0]
+            if len(all_concrete_terms) > 0:
+                term = all_concrete_terms[0]
+                b.set(to_key, term)
+            b.set_same(unbound_meta_operators, to_key)
+    if len(all_concrete_terms) >= 2:
+        for arg_tuple in zip(*(t.args for t in all_concrete_terms)):
+            if not unify(b, is_equiv, *arg_tuple):
+                return False
+    return True
+
+def match_term(term: Term, pattern: Term, is_equiv: Callable = points_are_equiv):
+    ''' Search for all occurances of pattern in term. 
+        * is wildcard leaf. X, Y, Z are meta-variables for non-linear matrching
+    '''
+    eq_terms = []
+    def _exit_term(t: Term, p: Term):
+        bindings = UnifyBindings()
+        if unify(bindings, is_equiv, t, pattern):
+            eq_terms.append((t, bindings))
+        pass
+    postorder_traversal(term, lambda t: (), _exit_term)
+    return eq_terms
+
+def bind_leaves(root: Term, operator: str, bindings: tuple[int, int] | list[tuple[int, int]], leaves_cache = {}):
+    ''' Manually asign semantic vector to a specific term in specific evaluation '''
+    leaves = get_leaves(root, operator, leaves_cache)
+    if len(leaves) == 0:
+        return 
+    if type(bindings) is tuple:
+        bindings = [bindings] * len(leaves)
+    for leaf, binding in zip(leaves, bindings):
+        if binding is None:
+            continue
+        eval_id, semantics_id = binding 
+        if semantics_id is None:
+            leaf.bindings.pop(eval_id, None)
+        else:
+            leaf.bindings[eval_id] = semantics_id
+
+# t1 = Term("+", [Term("x"), Term("*", [Term("x"), Term("x")])])
+# bind_leaves(t1, "x", [None, None, (0, 0)])
+# res = term_to_str(t1)
+pass
 
 def skip_spaces(term_str: str, i: int) -> int:
     while i < len(term_str) and term_str[i].isspace():
@@ -124,21 +203,21 @@ def skip_till_break(term_str: str, j: int, breaks) -> int:
         j += 1    
     return j
 
-def parse_binding_or_literal(term_str: str, i: int = 0): 
+def parse_literal(term_str: str, i: int = 0): 
     i = skip_spaces(term_str, i)
-    assert i < len(term_str), f"Expected binding or literal at position {i} in term string: {term_str}"
-    if term_str[i] == '[':
-        j = skip_till_break(term_str, i + 1, "]")
-        assert j < len(term_str) and term_str[j] == ']', f"Expected ']' at position {j} in term string: {term_str}"
-        binding_str = term_str[i + 1:j].strip().split(" ")
-        name = binding_str[0]
-        values = {int(vs[0]):int(vs[1]) for s in binding_str[1:] if s for vs in [s.strip().split(":")]}        
-        return (name, values), j + 1
-    else: #literal
-        j = skip_till_break(term_str, i + 1, " )")
-        literal = term_str[i:j]
-        assert literal, f"Literal cannot be empty at position {i}:{j} in term string: {term_str}"
-        return (literal, {}), j
+    # assert i < len(term_str), f"Expected binding or literal at position {i} in term string: {term_str}"
+    # if term_str[i] == '[':
+    #     j = skip_till_break(term_str, i + 1, "]")
+    #     assert j < len(term_str) and term_str[j] == ']', f"Expected ']' at position {j} in term string: {term_str}"
+    #     binding_str = term_str[i + 1:j].strip().split(" ")
+    #     name = binding_str[0]
+    #     values = {int(vs[0]):int(vs[1]) for s in binding_str[1:] if s for vs in [s.strip().split(":")]}        
+    #     return (name, values), j + 1
+    # else: #literal
+    j = skip_till_break(term_str, i + 1, " )")
+    literal = term_str[i:j]
+    assert literal, f"Literal cannot be empty at position {i}:{j} in term string: {term_str}"
+    return literal, j
 
 def parse_term(term_str: str, i: int = 0) -> tuple[Term, int]:
     ''' Read term from string, return term and end of term after i '''
@@ -149,92 +228,76 @@ def parse_term(term_str: str, i: int = 0) -> tuple[Term, int]:
             break
         if term_str[i] == ')': # end of branch - stop reading args 
             cur_term = branches.popleft() # should contain bindings and args 
-            name, bindings = cur_term[0]
-            args = cur_term[1:]
-            if len(bindings) > 0:
-                term = BoundBranch(name, args, bindings)
-            else:
-                term = Branch(name, args)
+            name = cur_term[0]
+            args = []
+            bindings = {}
+            for arg_i in range(1, len(cur_term)):
+                arg = cur_term[arg_i]
+                if type(arg) is Term:
+                    args.append(arg)
+                elif type(arg) is tuple: 
+                    bindings[arg[0]] = arg[1]
+            term = Term(name, args, bindings)
             branches[0].append(term)
             i += 1            
         elif term_str[i] == '(': # branch
-            binding, i = parse_binding_or_literal(term_str, i + 1)
-            branches.appendleft([binding])
+            literal, i = parse_literal(term_str, i + 1)
+            branches.appendleft([literal])
+        elif term_str[i] == ':': #binding
+            j = skip_till_break(term_str, i+1, " )")
+            binding_parts = term_str[i+1:j].split(":")
+            branches[0].append((int(binding_parts[0]), int(binding_parts[1])))
+            i = j
         else: #leaf
-            (name, values), i = parse_binding_or_literal(term_str, i)
+            literal, i = parse_literal(term_str, i)
             # terms.appendleft([binding])
-            leaf = Leaf(name, values)
+            leaf = Term(literal)
             branches[0].append(leaf)
     return branches[0][0], i
 
-# res, _ = parse_term("  \n(   f   (g    x)  (h \nx))  \n", 0)
-# pass 
-
-def get_leaves(root: Term, name: Optional[str] = None, leaves_cache = {}) -> list[Leaf]:
-    ''' Find all leafs in root that are equal to term by name (ignoring bindings) '''
-    if root not in leaves_cache:
-        leaves = []
-        for child_term, _, _ in postorder_traversal(root):
-            if isinstance(child_term, Leaf):
-                leaves.append(child_term)
-        leaves_cache[root] = leaves
-    leaves = leaves_cache[root]
-    if name is None:
-        return leaves
-    filtered_leaves = [child_term for child_term in leaves if child_term.name == name]
-    return filtered_leaves
-
-def bind_leaves(root: Term, name: str, eval_id: int, semantics_id: int, leaves_cache = {}):
-    ''' Manually asign semantic vector to a specific term in specific evaluation '''
-    for leaf in get_leaves(root, name, leaves_cache):
-        leaf.bindings[eval_id] = semantics_id
-
-alg_torch = {
-    "+": lambda a, b: a + b,
-    "*": lambda a, b: a * b,
-    "**": lambda a, b: a ** b,
-    "0-": lambda a: -a,
-    "1/": lambda a: 1 / a,
-    "exp": lambda a: torch.exp(a),
-    "log": lambda a: torch.log(a),
-    "sin": lambda a: torch.sin(a),
-    "cos": lambda a: torch.cos(a),
-}
-
-def evaluate(term: Term, ops: dict[str, Callable], leaves: dict[str, Callable]) -> torch.Tensor:
-    ''' Ffully or partially evaluates term (concrete or abstract) '''
-    def eval_op(args, op, isOp):
-        if isOp:
-            if op in ops and all(type(a) is EvalTerm for a in args):
-                value = ops[op](*(a.value for a in args))
-                return EvalTerm( )
+def evaluate(eval_id, term: Term, ops: dict[str, Callable], semantic_index: SemanticIndex) -> Any:
+    ''' Fully or partially evaluates term (concrete or abstract) '''
+    def _eval(term: Term, args: list[Any]):
+        if eval_id not in term.bindings:
+            if term.operator in ops and all(arg is not None for arg in args):
+                semantics = ops[term.operator](*args)
+                semantics_id = semantic_index.add(semantics)
+                term.bindings[eval_id] = semantics_id
             else:
-                return 
-        else:
+                return None
+        return semantic_index.get(term.bindings[eval_id])
+    res_semantics = postorder_map(term, _eval)
+    return res_semantics
 
-        if op == "x":
-            return free_vars[args[0]]
-        elif op == "c":
-            return args[0]
-        elif op == "+":
-            return args[0] + args[1]
-        elif op == "*":
-            return args[0] * args[1]
-        elif op == "**":
-            return args[0] ** args[1]
-        elif op == "0-":
-            return -args[0]
-        elif op == "1/":
-            return 1 / args[0]
-        elif op == "exp":
-            return np.exp(args[0])
-        elif op == "log":
-            return np.log(args[0])
-        elif op == "sin":
-            return np.sin(args[0])
-        elif op == "cos":
-            return np.cos(args[0])
-        else:
-            return op
-    res = postorder_traversal(term_instance, eval_op)
-    return res
+if __name__ == "__main__":
+    # tests
+    t1, _ = parse_term("(f (f X (f x (f x)) (f x (f x))))")
+    t2, _ = parse_term("(f (f (f x x) Y Y))")
+    t3, _ = parse_term("(f Z)")
+    b = UnifyBindings()
+    res = unify(b, points_are_equiv, t1, t2, t3)
+    pass
+
+
+    t1, _ = parse_term("(f (f (f x x) (f x (f x)) (f x (f x))))")
+    # t1, _ = parse_term("(f x y z)")
+    # p1, _ = parse_term("(f (f X X) Y Y)")
+    p1, _ = parse_term("(f ? ? *)")
+    matches = match_term(t1, p1)
+    matches = [(term_to_str(m[0]), {k:term_to_str(v) for k, v in m[1].bindings.items()}) for m in matches]
+    pass
+
+
+    # res, _ = parse_term("  \n(   f   (g    x :0:1)  (h \nx) :0:12)  \n", 0)
+    res, _ = parse_term("  \n(   f   (g    x)  (h \nx))  \n", 0)
+    bind_leaves(res, "g", (0, None))
+    res2 = term_to_str(res)
+    pass 
+
+    sem_idx = DummySemanticIndex()
+    sem_id1 = sem_idx.add(1)
+    eval_id = 0
+    bind_leaves(res, "x", (eval_id, sem_id1), leaves_cache={})
+    print(term_to_str(res))
+    ev1 = evaluate(0, res, {"f": lambda x, y: x + y, "g": lambda x: x * 2, "h": lambda x: x ** 2}, sem_idx)
+    pass    
