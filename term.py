@@ -60,40 +60,14 @@ class Term:
 #     value: Optional[Any] = None
 #     value_builder: Optional[Callable] = None
 
-class TermBindings:
-    ''' One term invocation. Includes eager or lazy binding of term or term at position
-    '''
-
-    def __init__(self,
-                       term_bindings: dict[tuple[Term, int] | Term, Any | Callable] = {},
-                       op_bindings: dict[tuple[TermSignature, int] | TermSignature, Any | Callable] = {},
-                       frozen = False):
-        self.result: Any = None # root binding
-        self.term_bindings = term_bindings
-        self.op_bindings = op_bindings
-        self.only_term_binds = all(k for k in term_bindings if type(k) is Term)
-        self.frozen = frozen
-        self.hits = 0
-        self.misses = 0
-
-    def get(self, term: Term, term_pos: int):
-        res = self.term_bindings.get((term, term_pos), None) or self.term_bindings.get(term, None) or self.op_bindings.get((term.signature, term_pos), None) or self.op_bindings.get(term.signature, None)
-        if res is None:
-            self.misses += 1
-        elif not self.frozen:
-            self.hits += 1
-        return res
-    
-    def set(self, term: Term, term_pos: int, value: Any):
-        if self.frozen:
-            return 
-        binding_key = (term, term_pos) if self.only_term_binds else term
-        self.term_bindings[binding_key] = value        
+def term_sign(signature: str | TermSignature, args: Sequence[Term] = []):
+    if type(signature) is str:
+        signature = TermSignature(signature, TermType(arity = len(args), category=signature))
+    return signature
 
 def build_term(term_cache: dict[tuple, Term], signature: str | TermSignature, args: Sequence[Term] = [], 
                cache_cb: Callable = lambda t,hit:()) -> Term:
-    if type(signature) is str:
-        signature = TermSignature(signature, TermType(arity = len(args), category=signature))
+    signature = term_sign(signature, args)
     key = (signature, *args)
     if key not in term_cache:
         term = Term(signature, list(args))
@@ -324,7 +298,9 @@ def get_chain_to_root(term_pos: tuple[Term, int], term_parents: dict[tuple[Term,
         cur_pos = term_parents[cur_pos]
         yield cur_pos
 
-def evaluate(term: Term, ops: dict[str | TermSignature, Callable], ev: TermBindings) -> Any:
+def evaluate(term: Term, ops: dict[str | TermSignature, Callable],
+                get_binding: Callable[[Term, int], Any] = lambda ti: None,
+                set_binding: Callable[[Term, int], Any] = lambda ti,v:()) -> Any:
     ''' Fully or partially evaluates term (concrete or abstract) '''
     term_poss = {}
  
@@ -333,21 +309,16 @@ def evaluate(term: Term, ops: dict[str | TermSignature, Callable], ev: TermBindi
         term_poss[term] = term_pos
         if any(arg is None for arg in args):
             return None        
-        binding = ev.get(term, term_pos)
-        res = None 
-        if binding is not None:
-            if callable(binding):
-                res = binding(*args)
-            else: 
-                return binding
+        res = get_binding((term, term_pos))
+        if res is not None:
+            return res
         if res is None:
             op_fn = ops.get(term.signature, None) or ops.get(term.signature.name, None)
             if op_fn is not None:
                 res = op_fn(*args)
-        ev.set(term, term_pos, res)
+                set_binding((term, term_pos), res)
         return res
     res_semantics = postorder_map(term, _eval)
-    ev.result = res_semantics
     return res_semantics
 
 inf_count_constraints: dict[str, int] = defaultdict(lambda: math.inf)
@@ -473,7 +444,7 @@ if __name__ == "__main__":
     # res, _ = parse_term("  \n(   f   (g    x :0:1)  (h \nx) :0:12)  \n", 0)
     t1, _ = parse_term(term_cache, "  \n(   f   (g    x)  (h \nx))  \n", 0)
     leaves = get_leaves(t1, "x", leaves_cache = {})
-    evd1 = TermBindings(bind_terms(leaves, 1))
+    bindings = bind_terms(leaves, 1)
     print(term_to_str(t1))
-    ev1 = evaluate(t1, {"f": lambda x, y: x + y, "g": lambda x: x * 2, "h": lambda x: x ** 2}, evd1)
+    ev1 = evaluate(t1, {"f": lambda x, y: x + y, "g": lambda x: x * 2, "h": lambda x: x ** 2}, bindings.get, bindings.setdefault)
     pass    

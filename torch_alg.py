@@ -3,8 +3,7 @@ from functools import partial
 from typing import Callable, Optional
 import torch
 
-from term import Term, TermBindings, bind_terms, build_term, evaluate, get_leaves, parse_term
-from torch.nn.functional import mse_loss
+from term import Term, build_term, evaluate, get_leaves, parse_term
 
 alg_ops_torch = {
     "add": lambda a, b: a + b,
@@ -216,8 +215,8 @@ def lbfgs_optimize(term: Term, gold_outputs: torch.Tensor, semantics: torch.Tens
     def closure_builder(optimizer):
         nonlocal last_outputs, last_errors, last_bindings
         optimizer.zero_grad()        
-        last_bindings = TermBindings({**other_ops, **leaf_ops})
-        outputs = evaluate(term, alg_ops_torch, last_bindings)
+        last_bindings = {**other_ops, **leaf_ops}
+        outputs = evaluate(term, alg_ops_torch, last_bindings, last)
         assert outputs is not None, "Term evaluation should be full. Term is evaluated partially"
         last_outputs = outputs
         loss_els = (outputs - gold_outputs) ** 2
