@@ -25,6 +25,4 @@ class SemanticStorage:
         '''
         raise NotImplementedError("This method should be implemented by subclasses.")
 
-class GlobalSemanticStorage:
-    '''  '''
 

@@ -15,17 +15,16 @@ from typing import Any, Callable, Generator, Iterator, Optional, Sequence
 import numpy as np
 import torch
 
-@dataclass(frozen=True, eq=False, unsafe_hash=False)
-class IndexEntry:
-    shape: torch.Tensor 
-    ''' Point or Rectangle. Some indexes support only points '''
+# @dataclass(frozen=True, eq=False, unsafe_hash=False)
+# class IndexEntry:
+#     storage_id: int
 
-@dataclass(frozen=True, eq=False, unsafe_hash=False)
-class IndexEntryWithData(IndexEntry):
-    data: Any = field(default=None)
-    ''' Data associated with the point or rectangle. 
-        Useful if Index is applied as dict. 
-    '''    
+# @dataclass(frozen=True, eq=False, unsafe_hash=False)
+# class IndexEntryWithData(IndexEntry):
+#     data: Any = field(default=None)
+#     ''' Data associated with the point or rectangle. 
+#         Useful if Index is applied as dict. 
+#     '''
 
 # def get_entries_tensor(entries: Sequence[IndexEntry]) -> torch.Tensor:
 #     ''' Get tensor of shapes from entries. 
@@ -35,98 +34,156 @@ class IndexEntryWithData(IndexEntry):
 #         return entries[0].shape.unsqueeze(0) # [dims] -> [1, dims]
 #     return torch.stack([e.shape for e in entries], dim=0)
 
-def get_running(entries: Iterator[torch.Tensor], running_op, init_op) -> torch.Tensor:
-    first_entry = next(entries, None)
-    if first_entry is None:
-        return None
-    res = init_op(first_entry)
-    entry_id = 0 
-    res = running_op(res, first_entry, entry_id)
-    while entry := next(entries, None):
-        entry_id += 1
-        res = running_op(res, entry, entry_id)
-    return res
+# def get_running(entries: Iterator[torch.Tensor], running_op, init_op) -> torch.Tensor:
+#     first_entry = next(entries, None)
+#     if first_entry is None:
+#         return None
+#     res = init_op(first_entry)
+#     entry_id = 0 
+#     res = running_op(res, first_entry, entry_id)
+#     while entry := next(entries, None):
+#         entry_id += 1
+#         res = running_op(res, entry, entry_id)
+#     return res
 
-def get_running_min(entries: Iterator[torch.Tensor]) -> torch.Tensor:
-    return get_running(entries, lambda acc, x, xi: torch.minimum(acc, x, out = acc), lambda x: torch.clone(x))
+# def get_running_min(entries: Iterator[torch.Tensor]) -> torch.Tensor:
+#     return get_running(entries, lambda acc, x, xi: torch.minimum(acc, x, out = acc), lambda x: torch.clone(x))
 
-def get_running_max(entries: Iterator[torch.Tensor]) -> torch.Tensor:
-    return get_running(entries, lambda acc, x, xi: torch.maximum(acc, x, out = acc), lambda x: torch.clone(x))
+# def get_running_max(entries: Iterator[torch.Tensor]) -> torch.Tensor:
+#     return get_running(entries, lambda acc, x, xi: torch.maximum(acc, x, out = acc), lambda x: torch.clone(x))
 
-def get_runing_argmin(entries: Iterator[torch.Tensor]) -> torch.Tensor:
-    return get_running(entries, lambda acc, x, xi: torch.where(x < acc, xi, acc, out=acc), 
-                                lambda x: torch.zeros_like(x, dtype=torch.int))
+# def get_runing_argmin(entries: Iterator[torch.Tensor]) -> torch.Tensor:
+#     return get_running(entries, lambda acc, x, xi: torch.where(x < acc, xi, acc, out=acc), 
+#                                 lambda x: torch.zeros_like(x, dtype=torch.int))
 
-def get_ruuning_argmax(entries: Iterator[torch.Tensor]) -> torch.Tensor:
-    return get_running(entries, lambda acc, x, xi: torch.where(x > acc, xi, acc, out=acc), 
-                                lambda x: torch.zeros_like(x, dtype=torch.int))
+# def get_ruuning_argmax(entries: Iterator[torch.Tensor]) -> torch.Tensor:
+#     return get_running(entries, lambda acc, x, xi: torch.where(x > acc, xi, acc, out=acc), 
+#                                 lambda x: torch.zeros_like(x, dtype=torch.int))
 
+class VectorStorage:
+    ''' Interface for storage for indexing '''
 
-
-class SpatialIndex:
-    ''' Define the interface for spatial indices. '''
-
-    # def __init__(self, sem_getter: Callable[[int], torch.Tensor]):
-    #     ''' Initializes the spatial index with semantics storage 
-    #         sem_getter access vector by storage id. 
-    #         Indices organize storage ids instead of plain vectors.
-    #     '''
-    #     self.sem_getter = sem_getter
-
-    # def rebuild(self):
-    #     ''' Allows index to adjust its grouping based on current present data. 
-    #         Triggered by some condition defined internally or externally.
-    #         Some indices do not use this method and the perform balancing on the fly. 
-    #     '''
-    #     pass 
-
-    def insert(self, entry: IndexEntry):
-        ''' Inserts point into the index with associated data if any.'''
+    def get_vectors(self, *ids: int) -> torch.Tensor:
+        ''' If called without ids, should return all currently allocated vectors 
+            result shape (N, dims) - vectors of requested semantics
+        '''
         pass 
-
-    def query(self, q: torch.Tensor) -> Sequence[IndexEntry]:
-        ''' Point and Range (rectangular) query.
-            For point query, q has shape [dims], result has 0 or 1 element depending on whether point is found.            
-            For range query, q has shape [N, dims], 
-                if N = 2, q is range per dimension, result is all points that are in the range.
-                for N > 2, result depends on index, default behavior is to trean in row as point and find
-                           min max goting back to [2, dims] query.
+    
+    def alloc_vector(self, vector: torch.Tensor) -> int:
+        ''' Adds vector to storage and returns new id
         '''
         pass
 
-def find_entry(entries: Iterator[torch.Tensor], t: torch.Tensor) -> int:
-    ''' Find first index in entries. Returns the index or -1. '''
-    for entry_id, entry in enumerate(entries):
-        if torch.equal(entry, t):
-            return entry_id
-    return -1        
+def find_vectors(tensors: torch.Tensor, args: list[torch.Tensor], predicate: Callable[[torch.Tensor], torch.Tensor],
+                    dim_permutation: Optional[torch.Tensor] = None,
+                    vectorization_threshold = 0) -> torch.Tensor:
+    ''' Find indices where row matches predicate. Returns 0 1 mask.
+        Predicate accepts at one step a tensor of a dimension dim_id of shape (K <= N) 
+        and should output the new 0 1 mask of shape (K).
+        Supports early-exit. Assumes 2d tensors (shapes (N, dims))
+        Note that vectorized operation would execute many unnecessary comparisons in many cases.
 
-class EmptyIndex(SpatialIndex):
-    ''' Always returns miss on query '''
+        dim_permutation allows to iterate dimensions in different order
+        args should be of shape (dims)
+    '''
+    # tensors_v = tensors.view(-1, num_dims)  # Flatten tensors to 2D, but we do not want to be generic
+    num_dims = tensors.shape[-1]
+    if num_dims <= vectorization_threshold:
+        el_res = predicate(tensors, *args)
+        res = torch.all(el_res, dim=-1)
+        return res
+    # mask = torch.ones(tensors.shape[0], dtype=torch.bool, device=tensors.device)    
+    cur_ids = torch.arange(tensors.shape[0], device=tensors.device)
+    for dim_id in (dim_permutation or range(num_dims)):
+        if len(cur_ids) == 0:
+            break
+        cur_tensor = tensors[cur_ids, dim_id]
+        dim_args = [a[dim_id] for a in args]
+        mask[cur_ids] &= predicate(cur_tensor, *dim_args)
+    return mask
+
+def find_eq(tensors: torch.Tensor, t: torch.Tensor, rtol=1e-5, atol=1e-4) -> torch.Tensor:
+    ''' Find indices where rows matches t.
+        tensors shape (N, dims), t shape (K, dims).
+    '''
+    return find_vectors(tensors, [t], 
+                        lambda cur_tensors, cur_t: torch.isclose(cur_tensors, cur_t, rtol=rtol, atol=atol))
+
+def find_in(tensors: torch.Tensor, tmin: torch.Tensor, tmax: torch.Tensor) -> torch.Tensor:
+    ''' Find indices where rows  are in between of tmin and tmax, tmin <= row <= tmax.
+        tensors shape (N, dims), tmin and tmax shape (dims).
+    '''
+    return find_vectors(tensors, [tmin, tmax],
+                        lambda cur_tensors, cur_tmin, cur_tmax: (cur_tensors >= cur_tmin) & (cur_tensors <= cur_tmax))
+
+t1 = torch.tensor([ [1,3,3,4,7,6], [1,2,4,4,7,6], [1,2,3,4,5,6], [2,2,3,4,5,6], [1,3,3,4,5,6], [1,2,3,4,5,6]])
+t2 = torch.tensor([1,2,3,4,5,6])
+res = torch.where(find_eq(t1, t2))[0]
+pass
+
+class SpatialIndex:
+    ''' Defines the interface for spatial indices. 
+        This is default implementation which isi heavy inefficient O(N), N - number of semantics.
+    '''
+
+    def __init__(self, storage: VectorStorage):
+        ''' Initializes the spatial index with semantics storage 
+            Indices organize storage ids instead of plain vectors.
+        '''
+        self.storage = storage
     
-    def insert(self, entry: IndexEntry):
-        pass
-
-    def query(self, q: torch.Tensor) -> Sequence[IndexEntry]:
-        return []
+    def query_point(self, q: torch.Tensor) -> torch.Tensor:
+        ''' O(n). Return id of vector q in index if present. Empty tensor otherwise. '''
+        all_vectors = self.storage.get_vectors()
+        found_mask = find_eq(all_vectors, q)
+        found_idxs = torch.nonzero(found_mask, as_tuple=False).squeeze()
+        del found_mask
+        return found_idxs
     
-class SeqIndex(SpatialIndex):
-    ''' Stores entries in one big list. Very slow. '''
-    def __init__(self):
-        self.entries: list[IndexEntry] = []
-    def insert(self, entry: IndexEntry):
-        ''' Add point to the index. O(1) '''
-        self.entries.append(entry)
-    def query(self, q: torch.Tensor) -> Sequence[IndexEntry]:
-        ''' Point query, returns first match or empty list. O(n) '''
-        existing_idx = find_entry((e.shape for e in self.entries), q)
-        if existing_idx >= 0:
-            return [self.entries[existing_idx]]
-        return []
+    def query_range(self, qmin: torch.Tensor, qmax: torch.Tensor) -> torch.Tensor:
+        ''' O(n). Returns ids stored in the index, shape (N), N >= 0 is most cases.'''
+        all_vectors = self.storage.get_vectors()
+        found_mask = find_in(all_vectors, qmin, qmax)
+        found_idxs = torch.nonzero(found_mask, as_tuple=False).squeeze()
+        del found_mask
+        return found_idxs
 
-def replace_on_collision(old_entry: Any, new_entry: Any) -> Any:
-    return new_entry
+    def insert(self, t: torch.Tensor) -> torch.Tensor:
+        ''' Inserts one vector t (shape (dims)) into index.
+            If vector is already present - returns its vector id
+            Otherwise, allocates new id in the storage.
+            Default impl: O(n) as we search through all semantics
+            Returns id of vector, new or old, shape (1)
+        '''
+        first_idx = self.query_point(t)
+        if first_idx is None:
+            first_idx = self.storage.alloc_vector(t) 
+        return first_idx    
 
+    def query(self, q: torch.Tensor) -> Sequence[int]:
+        ''' Point and Range (rectangular) query.
+            For point query, q has shape [dims], result has 0 or 1 element id depending on whether point is found.            
+            For range query, q has shape [N, dims], 
+                if N = 2, q is range per dimension, result is all points that are in the range.
+                for N > 2, result depends on index, default behavior is to treat each ow as point and find
+                           min max goting back to [2, dims] query.
+        '''
+        assert 1 <= len(q.shape) <= 2, "Supporting only point and range queries with shapes (dims) or (N, dims)"
+        if len(q.shape) == 1: # query point
+            first_idx = self.query_point(q)
+            return [] if first_idx is None else [first_idx]
+        else:
+            if q.shape[0] == 1:
+                first_idx = self.query_point(q)
+                return [] if first_idx is None else [first_idx]
+            if q.shape[0] > 2:
+                qmin = q.min(dim=0).values
+                qmax = q.max(dim=0).values
+            else:
+                qmin = q[0]
+                qmax = q[1]
+            return self.query_range(qmin, qmax)
+                        
 class GridIndex(SpatialIndex):
     ''' Grid-based spatial index for approximate NN searc.
         Splits space onto bins of fixed size. Works only with points.
@@ -135,8 +192,7 @@ class GridIndex(SpatialIndex):
     
     def __init__(self, epsilon: float | torch.Tensor = 1e-3, 
                 #  epsilon_scaling: Optional[float | torch.Tensor | Callable[["GridIndex"], float | torch.Tensor]] = None
-                max_bin_size: int = math.inf,
-                collision: Optional[Callable[[IndexEntry, IndexEntry], IndexEntry]] = replace_on_collision):
+                max_bin_size: int = math.inf):
         ''' 
             epsilon: Size of the bin in each dimension (0 or 1 dim tensor)
             max_bin_size: Maximum number of elements in a bin, if set, 
@@ -147,9 +203,8 @@ class GridIndex(SpatialIndex):
             #                  If callable, gets grid index and returns new epsilon.
         self.epsilon = epsilon
         self.max_bin_size = max_bin_size
-        self.bins: dict[tuple, list[IndexEntry]] = {} # tuple is bin index
-        self.cur_biggest_bin: list[IndexEntry] = []
-        self.collision = collision
+        self.bins: dict[tuple, list[int]] = {} # tuple is bin index
+        self.cur_biggest_bin: list[int] = []
 
     def _get_bin_index(self, point: torch.Tensor) -> tuple:
         ''' Get bin index for a given vector '''
@@ -408,4 +463,33 @@ class RTreeIndex(SpatialIndex):
         mbr = MBR(IndexEntry(q))
         res = list(self._query(self.root, mbr))
         return res 
+    
+class InteractionIndex(SpatialIndex):
+    ''' Maps semantics to binary vector based on dynamically computed epsilons. 
+        One dim is one test and 0 means we far from passing the test, 1 - close.
+        leaf (one interaction vector bin) splits when it has many semantics
+    '''
+    def __init__(self, epsilon: float = 1e-3, max_bin_size: int = math.inf):
+        super().__init__()
+        self.grid_index = GridIndex(epsilon=epsilon, max_bin_size=max_bin_size)
+
+    def insert(self, entry: IndexEntry):
+        self.grid_index.insert(entry)
+
+    def query(self, q: torch.Tensor) -> Sequence[IndexEntry]:
+        return self.grid_index.query(q)
         
+if __name__ == "__main__":
+    # TODO: tests 
+    # grid_index = GridIndex(epsilon=1.0, max_bin_size=5)
+    # for i in range(10):
+    #     grid_index.insert(IndexEntry(torch.tensor([i, i])))
+    
+    # print("Grid Index Query Result:", grid_index.query(torch.tensor([2.5, 2.5])))
+    
+    # rtree_index = RTreeIndex(min_children=2, max_children=3)
+    # for i in range(10):
+    #     rtree_index.insert(IndexEntry(torch.tensor([i, i])))
+    
+    # print("R-Tree Index Query Result:", rtree_index.query(torch.tensor([2.5, 2.5])))
+    pass
