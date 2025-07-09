@@ -8,12 +8,12 @@ require O(n) comparisons of k vector values.
 
 
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from itertools import product
 import math
-from typing import Any, Callable, Generator, Iterator, Optional, Sequence
-import numpy as np
+from typing import Callable, Generator, Optional, Sequence
 import torch
+import early_exit
 
 # @dataclass(frozen=True, eq=False, unsafe_hash=False)
 # class IndexEntry:
@@ -60,65 +60,170 @@ import torch
 #     return get_running(entries, lambda acc, x, xi: torch.where(x > acc, xi, acc, out=acc), 
 #                                 lambda x: torch.zeros_like(x, dtype=torch.int))
 
+def find_eq_all(x: torch.Tensor, y: torch.Tensor, rtol=1e-5, atol=1e-4) -> dict[int, list[int]]:
+    '''
+        x y shapes (k1, n2, ... nN, dims) --> return (n1, k1) matrix of eq between 'rows'
+    '''
+    # assert len(x.shape) == len(y.shape): # 
+    R = torch.isclose(x.unsqueeze(1), y.unsqueeze(0), rtol=rtol, atol=atol).all(dim = tuple(range(2, x.ndim)))
+    rows_cols = torch.where(R)
+    rows = rows_cols[0].tolist() # rows in x
+    cols = rows_cols[1].tolist() # cols in y
+    res = {}
+    for r, c in zip(rows, cols):
+        res.setdefault(c, []).append(r)
+    return res
+
+def find_eq(x: torch.Tensor, y: torch.Tensor, 
+            id_mapping: Optional[list[int]] = None,
+            permute_dim_id: Callable = lambda x:x) -> list[int]:
+    ''' x shape (n1, n2, ... nN, dims) 
+        y shape is either (n2, ... nN, dims) --> returns (n1) 0 1 matches to y
+        
+    '''
+    found_ids = early_exit._pred(early_exit.close_pred, x, y, permute_dim_id = permute_dim_id)
+    if id_mapping is not None:
+        found_ids = [id_mapping[i] for i in found_ids]
+    return found_ids
+
+def find_in(tensors: torch.Tensor, tmin: torch.Tensor, tmax: torch.Tensor, id_mapping: Optional[list[int]] = None) -> list[int]:
+    ''' Find indices where rows are in between of tmin and tmax, tmin <= row <= tmax.
+        tensors shape (N, dims), tmin and tmax shape (dims).
+    '''
+    # R = torch.all((tensors >= tmin) & (tensors <= tmax), dim=tuple(range(1, tensors.ndim)))
+    found_ids = early_exit._pred(early_exit.range_pred, tensors, tmin, tmax)
+    if id_mapping is not None:
+        found_ids = [id_mapping[i] for i in found_ids]
+    return found_ids
+
+class StorageStats:     
+
+    def __init__(self, storage: "VectorStorage", batch_size: int = 1024):
+        ''' Storage statistics for vector storage.
+            Computes running means, variances, min and max for each dimension.
+            Useful to speedup comparisons and queries.
+            batch_size: Number of vectors to process in one recompute call.
+        '''
+        self.storage = storage
+        self.num_vectors: int = 0
+        self.dim_means: Optional[torch.Tensor] = None 
+        self.dim_variances: Optional[torch.Tensor] = None
+        self.var_dim_permutation: Optional[torch.Tensor] = None 
+        ''' Order of dimensions from most variative to least variative 
+            Useful to shortcut comparisons. 
+        '''
+        self.dim_mins: Optional[torch.Tensor] = None
+        self.dim_maxs: Optional[torch.Tensor] = None
+        self.batch_size = batch_size
+
+    def recompute(self) -> None:
+        delayed_count = self.storage.cur_id - self.num_vectors
+        if delayed_count < self.batch_size:
+            return
+        batch = self.storage.get_vectors((self.num_vectors, self.num_vectors + delayed_count)) # latest nonprocessed
+        n_batch = batch.size(0)
+        mean_batch = batch.mean(dim=0)
+        var_batch = batch.var(dim=0, unbiased=False)
+        n_new = self.num_vectors + n_batch
+        mean_new = (self.num_vectors * self.dim_means + n_batch * mean_batch) / n_new
+        var_new = ((self.num_vectors * self.dim_variances + n_batch * var_batch) / n_new
+                    + (self.num_vectors * n_batch * (self.dim_means - mean_batch)**2) / (n_new**2))
+        self.num_vectors = n_new
+        self.dim_means = mean_new
+        self.dim_variances = var_new
+        self.var_dim_permutation = torch.argsort(self.dim_variances, descending=True)
+        if self.dim_mins is None:
+            self.dim_mins = batch.min(dim=0).values
+            self.dim_maxs = batch.max(dim=0).values
+        else:
+            self.dim_mins = torch.minimum(self.dim_mins, batch.min(dim=0).values)
+            self.dim_maxs = torch.maximum(self.dim_maxs, batch.max(dim=0).values)
+        del batch, mean_batch, var_batch
+
 class VectorStorage:
     ''' Interface for storage for indexing '''
 
-    def get_vectors(self, *ids: int) -> torch.Tensor:
-        ''' If called without ids, should return all currently allocated vectors 
-            result shape (N, dims) - vectors of requested semantics
+    def __init__(self, max_size: int, dims: int, dtype = torch.float16, stats_batch_size: int = 1024):
+        self.vectors = torch.empty((max_size, dims), dtype=dtype)
+        self.cur_id = 0
+        if stats_batch_size == 0:
+            self.stats = None 
+        else:
+            self.stats = StorageStats(self, batch_size=stats_batch_size)
+
+    def get_vectors(self, ids: None | int | list[int] | tuple[int, int]) -> torch.Tensor:
+        ''' ids None --> whole storage view 
+            ids int --> single vector view by id
+            ids list --> tensor - copy of corresponding vectors 
         '''
-        pass 
+        if ids is None:
+            return self.vectors[:self.cur_id] # view
+        if type(ids) is tuple:
+            return self.vectors[ids[0]:ids[1]] # view by range
+        if isinstance(ids, int):
+            return self.vectors[ids[0]] # return a view by index 
+        if len(ids) == 1:
+            return self.vectors[ids[0]].unsqueeze(0)
+        return self.vectors[ids] # this will new tensor with values copied from mindices        
     
     def alloc_vector(self, vector: torch.Tensor) -> int:
-        ''' Adds vector to storage and returns new id
-        '''
-        pass
+        ''' Adds vector to storage and returns new id. '''
+        vector_id = self.cur_id
+        self.cur_id += 1
+        self.vectors[vector_id] = vector
+        if self.stats:
+            self.stats.recompute()
+        return vector_id
+    
+    # def find_eq()
 
-def find_vectors(tensors: torch.Tensor, args: list[torch.Tensor], predicate: Callable[[torch.Tensor], torch.Tensor],
-                    dim_permutation: Optional[torch.Tensor] = None,
-                    vectorization_threshold = 0) -> torch.Tensor:
-    ''' Find indices where row matches predicate. Returns 0 1 mask.
-        Predicate accepts at one step a tensor of a dimension dim_id of shape (K <= N) 
-        and should output the new 0 1 mask of shape (K).
-        Supports early-exit. Assumes 2d tensors (shapes (N, dims))
-        Note that vectorized operation would execute many unnecessary comparisons in many cases.
 
-        dim_permutation allows to iterate dimensions in different order
-        args should be of shape (dims)
-    '''
-    # tensors_v = tensors.view(-1, num_dims)  # Flatten tensors to 2D, but we do not want to be generic
-    num_dims = tensors.shape[-1]
-    if num_dims <= vectorization_threshold:
-        el_res = predicate(tensors, *args)
-        res = torch.all(el_res, dim=-1)
-        return res
-    # mask = torch.ones(tensors.shape[0], dtype=torch.bool, device=tensors.device)    
-    cur_ids = torch.arange(tensors.shape[0], device=tensors.device)
-    for dim_id in (dim_permutation or range(num_dims)):
-        if len(cur_ids) == 0:
-            break
-        cur_tensor = tensors[cur_ids, dim_id]
-        dim_args = [a[dim_id] for a in args]
-        mask[cur_ids] &= predicate(cur_tensor, *dim_args)
-    return mask
+# t1 = torch.tensor([
+#     [0, 1, 0, 0],
+#     [0, 1, 1, 0],
+#     [1, 0, 0, 0],
+# ])
 
-def find_eq(tensors: torch.Tensor, t: torch.Tensor, rtol=1e-5, atol=1e-4) -> torch.Tensor:
-    ''' Find indices where rows matches t.
-        tensors shape (N, dims), t shape (K, dims).
-    '''
-    return find_vectors(tensors, [t], 
-                        lambda cur_tensors, cur_t: torch.isclose(cur_tensors, cur_t, rtol=rtol, atol=atol))
+# t [0, 1, 2, 1]
 
-def find_in(tensors: torch.Tensor, tmin: torch.Tensor, tmax: torch.Tensor) -> torch.Tensor:
-    ''' Find indices where rows  are in between of tmin and tmax, tmin <= row <= tmax.
-        tensors shape (N, dims), tmin and tmax shape (dims).
-    '''
-    return find_vectors(tensors, [tmin, tmax],
-                        lambda cur_tensors, cur_tmin, cur_tmax: (cur_tensors >= cur_tmin) & (cur_tensors <= cur_tmax))
 
-t1 = torch.tensor([ [1,3,3,4,7,6], [1,2,4,4,7,6], [1,2,3,4,5,6], [2,2,3,4,5,6], [1,3,3,4,5,6], [1,2,3,4,5,6]])
-t2 = torch.tensor([1,2,3,4,5,6])
-res = torch.where(find_eq(t1, t2))[0]
+
+# res = torch.where(t1)
+# pass
+
+t1 = torch.tensor([ [2,3,3,4,7,6], [2,2,4,4,7,6], [1,2,3,4,5,6], [2,2,3,4,5,6], [2,3,3,4,5,6], [1,2,3,4,5,6]])
+t2 = torch.tensor([[1,2,3,4,5,6], [2,2,4,4,7,6]])
+t3 = torch.tensor([1,2,3,4,5,6])
+t4 = torch.tensor([6,6,6,6,6,6])
+
+R1 = torch.tensor([ 
+    [   
+        [2,2,3,4,7,6], 
+        [2,3,4,4,7,6], 
+    ],
+    [
+        [1,2,3,4,5,6], 
+        [2,2,3,4,5,6], 
+    ], 
+    [
+        [1,2,3,4,5,6], 
+        [2,3,4,4,5,6]
+    ],
+    [
+        [1,2,3,4,5,6], 
+        [2,2,3,4,8,6], 
+    ],     
+    ])
+R2 = torch.tensor([
+    [1,2,3,4,5,6], 
+    [2,3,4,4,5,6]
+])
+# R3 = torch.tensor([2,2,2,2,2,2])
+# R4 = torch.tensor([6,6,6,6,6,6])
+res = find_eq(t1, t4)
+
+# res = find_eq(R1, R2)
+res = find_in(t1, t3, t4)
 pass
 
 class SpatialIndex:
@@ -132,35 +237,29 @@ class SpatialIndex:
         '''
         self.storage = storage
     
-    def query_point(self, q: torch.Tensor) -> torch.Tensor:
+    def query_point(self, q: torch.Tensor) -> list[int]:
         ''' O(n). Return id of vector q in index if present. Empty tensor otherwise. '''
-        all_vectors = self.storage.get_vectors()
-        found_mask = find_eq(all_vectors, q)
-        found_idxs = torch.nonzero(found_mask, as_tuple=False).squeeze()
-        del found_mask
-        return found_idxs
+        all_vectors = self.storage.get_vectors(None)
+        return find_eq(all_vectors, q) # q here is one point among N points of all_vectors off shape (N, ..., dims)
     
-    def query_range(self, qmin: torch.Tensor, qmax: torch.Tensor) -> torch.Tensor:
+    def query_range(self, qmin: torch.Tensor, qmax: torch.Tensor) -> list[int]:
         ''' O(n). Returns ids stored in the index, shape (N), N >= 0 is most cases.'''
-        all_vectors = self.storage.get_vectors()
-        found_mask = find_in(all_vectors, qmin, qmax)
-        found_idxs = torch.nonzero(found_mask, as_tuple=False).squeeze()
-        del found_mask
-        return found_idxs
+        all_vectors = self.storage.get_vectors(None)
+        return find_in(all_vectors, qmin, qmax)
 
-    def insert(self, t: torch.Tensor) -> torch.Tensor:
+    def insert(self, t: torch.Tensor) -> int:
         ''' Inserts one vector t (shape (dims)) into index.
             If vector is already present - returns its vector id
             Otherwise, allocates new id in the storage.
             Default impl: O(n) as we search through all semantics
-            Returns id of vector, new or old, shape (1)
+            Returns id of vector, new or old
         '''
-        first_idx = self.query_point(t)
-        if first_idx is None:
-            first_idx = self.storage.alloc_vector(t) 
-        return first_idx    
+        found_ids = self.query_point(t)
+        if len(found_ids) == 0:
+            return self.storage.alloc_vector(t)
+        return found_ids[0]
 
-    def query(self, q: torch.Tensor) -> Sequence[int]:
+    def query(self, q: torch.Tensor) -> list[int]:
         ''' Point and Range (rectangular) query.
             For point query, q has shape [dims], result has 0 or 1 element id depending on whether point is found.            
             For range query, q has shape [N, dims], 
@@ -168,15 +267,13 @@ class SpatialIndex:
                 for N > 2, result depends on index, default behavior is to treat each ow as point and find
                            min max goting back to [2, dims] query.
         '''
-        assert 1 <= len(q.shape) <= 2, "Supporting only point and range queries with shapes (dims) or (N, dims)"
+        # assert 1 <= len(q.shape) <= 2, "Supporting only point and range queries with shapes (dims) or (N, dims)"
         if len(q.shape) == 1: # query point
-            first_idx = self.query_point(q)
-            return [] if first_idx is None else [first_idx]
+            return self.query_point(q)
         else:
-            if q.shape[0] == 1:
-                first_idx = self.query_point(q)
-                return [] if first_idx is None else [first_idx]
-            if q.shape[0] > 2:
+            if q.size(0) == 1:
+                return self.query_point(q[0])
+            if q.size(0) > 2:
                 qmin = q.min(dim=0).values
                 qmax = q.max(dim=0).values
             else:
@@ -190,8 +287,7 @@ class GridIndex(SpatialIndex):
         Rebuild scales down the grid to satisfy max bin size in number of points.
     '''
     
-    def __init__(self, epsilon: float | torch.Tensor = 1e-3, 
-                #  epsilon_scaling: Optional[float | torch.Tensor | Callable[["GridIndex"], float | torch.Tensor]] = None
+    def __init__(self, storage, epsilon: float | torch.Tensor = 1e-3, 
                 max_bin_size: int = math.inf):
         ''' 
             epsilon: Size of the bin in each dimension (0 or 1 dim tensor)
@@ -199,8 +295,7 @@ class GridIndex(SpatialIndex):
                             grid resize (expensive) will be triggered with new epsilon that 
                             would satisfy this condition.
         '''
-            # epsilon_scaling: Scaling happens on index rebuild, by default, grid is fixed.
-            #                  If callable, gets grid index and returns new epsilon.
+        super().__init__(storage)
         self.epsilon = epsilon
         self.max_bin_size = max_bin_size
         self.bins: dict[tuple, list[int]] = {} # tuple is bin index
@@ -217,9 +312,9 @@ class GridIndex(SpatialIndex):
             Happens when max_bin_size is set and current bin size exceeds it.
         '''
         assert len(self.cur_biggest_bin) > 0, "Cannot rebuild grid without bins."
-        # biggest_bin = get_entries_tensor(self.cur_biggest_bin)
-        bin_min = get_running_min(iter(self.cur_biggest_bin))
-        bin_max = get_running_max(iter(self.cur_biggest_bin))
+        biggest_bin_tensors = self.storage.get_vectors(self.cur_biggest_bin)
+        bin_min = biggest_bin_tensors.min(dim=0).values
+        bin_max = biggest_bin_tensors.max(dim=0).values
         self.epsilon = (bin_max - bin_min) / 2
         del bin_min, bin_max
         
@@ -230,111 +325,75 @@ class GridIndex(SpatialIndex):
             self.insert(entry) # reinsert with new epsilon
         pass
 
-    def insert(self, entry: IndexEntry):
+    def insert(self, t: torch.Tensor) -> int:
         ''' Add point to a grid bin. O(1), or O(s) in worst case where s - num of elements in bin. '''
-        bin_index = self._get_bin_index(entry.shape)
+        bin_index = self._get_bin_index(t)
         bin_entries = self.bins.setdefault(bin_index, [])
-        if self.collision is not None:
-            existing_idx = find_entry((e.shape for e in bin_entries), entry.shape)
-            if existing_idx >= 0:
-                bin_entries[existing_idx] = self.collision(bin_entries[existing_idx], entry)
-                return
-        bin_entries.append(entry)
+        if len(bin_entries) > 0:
+            bin_tensor = self.storage.get_vectors(bin_entries)
+            found_ids = find_eq(bin_tensor, t, bin_entries)
+            if len(found_ids) > 0:
+                return found_ids[0]
+        new_id = self.storage.alloc_vector(t)
+        bin_entries.append(t)
         if len(bin_entries) > len(self.cur_biggest_bin):
             self.cur_biggest_bin = bin_entries
         if len(self.cur_biggest_bin) >= self.max_bin_size:
             self._rebuild()
+        return new_id
+    
+    def query_point(self, q: torch.Tensor) -> list[int]:
+        ''' O(1) '''
+        bin_index = self._get_bin_index(q)
+        bin_entries = self.bins.get(bin_index, [])
+        if len(bin_entries) == 0:
+            return []
+        bin_tensor = self.storage.get_vectors(bin_entries)
+        return find_eq(bin_tensor, q, bin_entries)
 
-    def query(self, q: torch.Tensor) -> Sequence[IndexEntry]:
-        assert len(q.shape) == 1 or len(q.shape) == 2, "Query must be a point or range query."
-        if len(q.shape) == 1: # point query
-            bin_index = self._get_bin_index(q)
-            bin_entries = self.bins.get(bin_index, [])
-            existing_idx = find_entry((e.shape for e in bin_entries), q)
-            if existing_idx >= 0:
-                return [bin_entries[existing_idx]]  # return the found entry
-            return []  # no match found
-        else: # range query
-            if q.size[0] == 1:
-                return self.query(q[0])
-            if q.size[0] > 2:
-                min_max_tensor = torch.zeros(2, q.shape[1], dtype=q.dtype, device=q.device)
-                min_max_tensor[0] = q.min(dim=0).values
-                min_max_tensor[1] = q.max(dim=0).values
-                return self.query(min_max_tensor)
-            q_min = q[0]
-            q_max = q[1]
-            min_bin = self._get_bin_index(q_min)
-            max_bin = self._get_bin_index(q_max)
-            bin_ranges = product(range(b1, b2 + 1) for b1, b2 in zip(min_bin, max_bin))
-            range_entries = [e for bin_index in bin_ranges for e in self.bins.get(bin_index, [])]
-            if len(range_entries) == 0:
-                return []
-            
-            # NOTE: vector operations
-            # combined_bin = get_entries_tensor(range_entries)
-            # matches = torch.all((q_min <= combined_bin) & (combined_bin <= q_max), dim=1)
-            # match_indices = torch.nonzero(matches, as_tuple=False).squeeze().tolist()
-
-            # NOTE: early exit
-            match_indices = []
-            for entry_id, bin_entry in enumerate(range_entries):
-                in_range = True
-                for dim_id in range(bin_entry.shape.shape[-1]):
-                    if torch.any(bin_entry.shape[dim_id] < q_min[dim_id]) or torch.any(bin_entry.shape[dim_id] > q_max[dim_id]):
-                        in_range = False 
-                        break
-                if in_range:
-                    match_indices.append(entry_id)
-
-            filetered_entries = [range_entries[i] for i in match_indices]
-            return filetered_entries
+    def query_range(self, qmin: torch.Tensor, qmax: torch.Tensor) -> list[int]:
+        min_bin = self._get_bin_index(qmin)
+        max_bin = self._get_bin_index(qmax)
+        bin_ranges = product(range(b1, b2 + 1) for b1, b2 in zip(min_bin, max_bin))
+        range_entries = [e for bin_index in bin_ranges for e in self.bins.get(bin_index, [])]
+        if len(range_entries) == 0:
+            return []
+        
+        combined_tensor = self.storage.get_vectors(range_entries)
+        return find_in(combined_tensor, qmin, qmax, range_entries)   
         
 class MBR:        
 
-    def __init__(self, entry: IndexEntry, min_point: Optional[torch.Tensor] = None, max_point: Optional[torch.Tensor] = None):
-        self.entry: IndexEntry = entry
-        self._min_point: Optional[torch.Tensor] = min_point
-        self._max_point: Optional[torch.Tensor] = max_point
+    def __init__(self, r: torch.Tensor):
+        ''' r could be (dims), (K, dims) --> (2, dims) bounding box '''
+        self.r = r 
+        self.r_id = None
         self._area: Optional[float] = None 
+        if len(r.shape) == 2:
+            self.r = torch.stack((r.min(dim=0).values, r.max(dim=0).values), dim=0) # (2, dims)
+            
+    def is_point(self) -> bool:
+        return len(self.r.shape) == 1
 
-    def is_point(self):
-        return len(self.entry.shape.shape) == 1
+    def get_min(self) -> torch.Tensor:
+        return self.r if self.is_point() else self.r[0]
     
-    def get_min_point(self):
-        if self._min_point is None:
-            if self.is_point():
-                self._min_point = self.entry.shape
-            else:
-                self._min_point = self.entry.shape.min(dim=0).values
-        return self._min_point
-    
-    def get_max_point(self):
-        if self._max_point is None:
-            if self.is_point():
-                self._max_point = self.entry.shape
-            else:
-                self._max_point = self.entry.shape.max(dim=0).values
-        return self._max_point
-    
-    def area(self) -> float:
+    def get_max(self) -> torch.Tensor:
+        return self.r if self.is_point() else self.r[1]
+        
+    def area(self) -> float:        
         if self._area is None:
-            self._area = torch.prod(self.get_max_point() - self.get_min_point()).item()
+            if self.is_point():
+                self._area = 0.0
+            else:
+                self._area = torch.prod(self.get_max() - self.get_min()).item()
         return self._area
     
     def enlarge(self, *p: "MBR") -> "MBR":
         if len(p) == 0:
             return self
-        if len(p) == 1:
-            new_min_point = torch.minimum(self.get_min_point(), p[0].get_min_point())
-            new_max_point = torch.maximum(self.get_max_point(), p[0].get_max_point())
-            new_mbr = MBR(self.entry, new_min_point, new_max_point)
-        else:
-            # mbr_min_tensor = get_min_mbr_tensor([self, *p])
-            # mbr_max_tensor = get_max_mbr_tensor([self, *p])
-            new_min_point = get_running_min(self.entry.shape, *(x.entry.shape for x in p))
-            new_max_point = get_running_max(self.entry.shape, *(x.entry.shape for x in p))
-            new_mbr = MBR(self.entry, new_min_point, new_max_point)
+        rs = torch.stack([self.r, *(x.r for x in p)])
+        new_mbr = MBR(rs)
         return new_mbr
     
     def enlargement(self, p: "MBR") -> tuple[float, float, "MBR"]:
@@ -347,7 +406,7 @@ class MBR:
     
     def intersects(self, other: "MBR") -> bool:
         ''' Check if this MBR intersects with another MBR. '''
-        return torch.all(self.get_min_point() <= other.get_max_point()) and torch.all(other.get_min_point() <= self.get_max_point())
+        return torch.all(self.get_min() <= other.get_max()) and torch.all(other.get_min() <= self.get_max())
 
 @dataclass(eq=False, unsafe_hash=False)
 class RTreeNode:
@@ -364,24 +423,19 @@ class RTreeNode:
         return RTreeNode(self.children[i].mbr, [self.children[i]])
         
 def linear_split(node: RTreeNode, min_children: int = 1) -> list[RTreeNode]:
-    if node.is_leaf():
-        min_tensors = [mbr.get_min_point() for mbr in node.children]
-        max_tensors = [mbr.get_max_point() for mbr in node.children]
-    else:
-        min_tensors = [n.mbr.get_min_point() for n in node.children]
-        max_tensors = [n.mbr.get_max_point() for n in node.children]
-    # L = torch.argmin(mbr_min_tensor, dim=0)  # indices of min points in each dimension
-    Lt = get_runing_argmin(iter(min_tensors))
-    L = Lt.tolist()
-    # H = torch.argmax(mbr_max_tensor, dim=0)  # indices of max points in each dimension
-    Ht = get_ruuning_argmax(iter(max_tensors))
-    H = Ht.tolist()
-    del L, H
-    # separations = (max_tensors[H] - min_tensors[L]) / (node.mbr.get_max_point() - node.mbr.get_min_point())
-    separations = [(max_tensors[h] - min_tensors[l]) / (node.mbr.get_max_point() - node.mbr.get_min_point()) for l, h in zip(L, H)]
-    max_sep_dim_id = np.argmax(separations)
-    selected_l_id = L[max_sep_dim_id]
-    selected_h_id = H[max_sep_dim_id]
+    get_mbr = (lambda x: x) if node.is_leaf() else (lambda x: x.mbr)
+    min_tensors = torch.stack([get_mbr(x).get_min() for x in node.children])
+    max_tensors = torch.stack([get_mbr(x).get_max() for x in node.children])
+    Li = min_tensors.argmin(dim=0)
+    Hi = max_tensors.argmax(dim=0)
+    # separations = (max_tensors[H] - min_tensors[L]) / (node.mbr.max_point - node.mbr.min_point)
+    separations = (max_tensors[Hi] - min_tensors[Li]) / (node.mbr.get_max() - node.mbr.get_min())
+    mean_separations = separations.mean(dim=0)
+    max_sep_dim_id = mean_separations.argmax().item()
+    selected_l_id = Li[max_sep_dim_id].item()
+    selected_h_id = Hi[max_sep_dim_id].item()
+    if selected_l_id == selected_h_id:
+        pass
     child1 = node.create_node_from_child(selected_l_id)
     child2 = node.create_node_from_child(selected_h_id)
     new_children = [child1, child2]
@@ -409,68 +463,79 @@ class RTreeIndex(SpatialIndex):
         It is a tree structure where each node contains a minimum bounding rectangle (MBR) that covers its children.
         The MBR is defined by the minimum and maximum coordinates in each dimension.
     '''
-    def __init__(self, min_children: int = 2, max_children: int = 10, split_strategy = linear_split,
-                    collision: Optional[Callable[[IndexEntry, IndexEntry], IndexEntry]] = replace_on_collision):
+    def __init__(self, storage, min_children: int = 2, max_children: int = 10, split_strategy = linear_split):
+        super().__init__(storage)
         self.min_children = min_children
         self.max_children = max_children
         self.split_strategy = split_strategy
         self.root: RTreeNode | None = None
-        self.collision = collision
- 
 
-    def _insert(self, node: RTreeNode, mbr: MBR):
+    def _insert(self, node: RTreeNode, mbr: MBR) -> tuple[list[RTreeNode], int]:
         ''' Insert point into the R-Tree node. '''
         if node.is_leaf():
-            existing_idx = find_entry((c.entry.shape for c in node.children), mbr.entry.shape)
-            if existing_idx >= 0: # update
-                updated_entry = self.collision(node.children[existing_idx].entry, mbr.entry)
-                node.children[existing_idx].entry = updated_entry
-                return
+            index_ids = [c.r_id for c in node.children if c.is_point() == mbr.is_point()]
+            if len(index_ids) > 0:
+                node_tensors = self.storage.get_vectors(index_ids) # for rerctangles, storage should return rectangles
+                found_ids = find_eq(node_tensors, mbr.r, index_ids)
+                if len(found_ids) > 0:
+                    return [], found_ids[0]
+            mbr.r_id = self.storage.alloc_vector(mbr.r) #replace vector with allocated id
             node.children.append(mbr)
+            replacement = []
             if len(node.children) > self.max_children:
-                return self.split_strategy(node, self.min_children)
-            return []
+                replacement = self.split_strategy(node, self.min_children)
+            return replacement, mbr.r_id
         else:
             _, _, new_mbr, child_i = min(((c_enl, c_ar, new_mbr, i) for i, c in enumerate(node.children) for c_enl, c_ar, new_mbr in [c.enlargement(mbr)]), key = lambda x: (x[0], x[1]))
             selected_child = node.children[child_i]
             selected_child.mbr = new_mbr
-            replacement = self._insert(selected_child, mbr)
+            replacement, vector_id = self._insert(selected_child, mbr)
             if len(replacement) > 0: # overflow propagation
                 node.children = [*node.children[:child_i], *replacement, *node.children[child_i+1:]]
                 if len(node.children) > self.max_children:
-                    return self.split_strategy(node, self.min_children)
-            return []
+                    replacement = self.split_strategy(node, self.min_children)
+                else:
+                    replacement = []
+            return replacement, vector_id
 
-    def insert(self, entry: IndexEntry):
-        ''' Inserts one point or bounding rectangle of many points '''
-        mbr = MBR(entry)
+    def insert(self, t: torch.Tensor) -> int:
+        ''' Inserts one point (rects are not supported yet) ''' 
+        mbr = MBR(t)
         if self.root is None:
+            new_id = self.storage.alloc_vector(t)
+            mbr.r_id = new_id
             self.root = RTreeNode(mbr, [mbr])
+            return new_id
         else:
-            replacement = self._insert(self.root, mbr) 
+            replacement, vector_id = self._insert(self.root, mbr) 
             if len(replacement) > 0: # root split - need to create new root
-                self.root = RTreeNode(self.root.mbr, replacement)                
+                self.root = RTreeNode(self.root.mbr, replacement)             
+            return vector_id  
 
-    def _query(self, node: RTreeNode, mbr: MBR) -> Generator[IndexEntry, None]:
+    def _query(self, node: RTreeNode, mbr: MBR) -> Generator[int, None]:
         if node.is_leaf():
-            yield from (c.entry for c in node.children if c.intersects(mbr))
+            yield from (c.vector for c in node.children if c.intersects(mbr))
         else:
             for c in node.children:
                 if c.mbr.intersects(mbr):
                     yield from self._query(c, mbr)
-        
-    def query(self, q: torch.Tensor) -> Sequence[IndexEntry]:
-        mbr = MBR(IndexEntry(q))
-        res = list(self._query(self.root, mbr))
-        return res 
     
+    def query_point(self, q: torch.Tensor) -> list[int]:
+        return self.query(q)
+    
+    def query_range(self, qmin: torch.Tensor, qmax: torch.Tensor) -> list[int]:
+        return self.query(torch.stack((qmin, qmax)))
+    
+    def query(self, q: torch.Tensor) -> list[int]:
+        return list(self._query(self.root, MBR(q)))
+        
 class InteractionIndex(SpatialIndex):
-    ''' Maps semantics to binary vector based on dynamically computed epsilons. 
+    ''' Maps semantics to binary vector based on dynamically computed epsilons and given target. 
         One dim is one test and 0 means we far from passing the test, 1 - close.
         leaf (one interaction vector bin) splits when it has many semantics
     '''
-    def __init__(self, epsilon: float = 1e-3, max_bin_size: int = math.inf):
-        super().__init__()
+    def __init__(self, storage, epsilon):
+        super().__init__(storage)
         self.grid_index = GridIndex(epsilon=epsilon, max_bin_size=max_bin_size)
 
     def insert(self, entry: IndexEntry):
