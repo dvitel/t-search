@@ -16,35 +16,6 @@ import torch
 from term import Term, TermSignature, build_term, evaluate, ramped_half_and_half, term_sign
 
 
-def pack_bits(bits: torch.Tensor, sztp = (64, torch.int64)) -> list[torch.Tensor]:
-    ''' Splits bits (n, m) 0 1 uint8 tensor into ceil(m / sztp[0]) tensors of shape (n) 
-        Torch does not support shortcutting of operations, therefore we implement it on compressed bits         
-    '''
-    sz, tp = sztp 
-    bitmask = (1 << torch.arange(sz, dtype=tp, device=bits.device)) # shape [64]
-    max_packed_values = math.ceil(bits.shape[1] / sz) # number of packed values
-    packad = []
-    # bits_tp = bits.to(dtype=tp, device=bits.device) # convert bits to target type
-    for i in range(max_packed_values):
-        start = i * sz
-        end = start + sz
-        if end > bits.shape[1]:
-            end = bits.shape[1]
-        packed_chunk = torch.sum(bits[:, start:end] * bitmask[:end - start], dtype=tp, dim=1) # shape [n]
-        packad.append(packed_chunk)
-    return packad
-
-res = pack_bits(torch.tensor([[1, 0, 1, 1, 0, 1, 0, 1], [0, 1, 0, 0, 1, 1, 0, 0]], dtype=torch.uint8))
-pass
-
-def unpack_bits(packed: Sequence[torch.Tensor], sz: int, sztp = (64, torch.int64)) -> torch.Tensor:
-    ''' Converts packed (list of shape (n) tensors int64) back to (n, sz) shape uint8 of 0 1 values'''
-    sz, tp = sztp
-    bit_pos = torch.arg
-    for p in packed:
-
-
-
 class EvSearchTermination(Exception):
     ''' Reaching maximum of evals, gens, ops etc '''    
     pass 
