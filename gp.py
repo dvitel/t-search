@@ -13,6 +13,7 @@ from typing import Callable, Optional, Sequence
 from time import perf_counter
 import numpy as np
 import torch
+from spatial import RTreeIndex, SpatialIndex
 from term import Term, TermSignature, build_term, evaluate, ramped_half_and_half, term_sign
 
 
@@ -26,32 +27,35 @@ class GPEvSearch():
                        leaves: dict[str | TermSignature, torch.Tensor],
                        branch_ops: dict[str | TermSignature, Callable],
                        fitness_fns: list[Callable],
+                       sem_store_class: SpatialIndex = RTreeIndex,
                        max_gen: int = 100,
-                       max_root_evals: int = 100000, # 1000 inds per 100 gen
-                       max_evals: int = 10000000, # 1000 inds per 100 gen per 100 ops in ind
+                       max_root_evals: int = 100_000, 
+                       max_evals: int = 500_000,
                        pop_size: int = 1000,
                        with_caches: bool = False, # enables all caches: syntax, semantic, int, fitness
                        rtol = 1e-04, atol = 1e-03,
                        rnd_seed: Optional[int | np.random.RandomState] = None):
-        # self.target = target
         # self.term_to_tid: dict[Term, int] = {} 
         # self.tid_to_term: dict[int, Term] = {}
         assert len(leaves) > 0, "At least one leaf should be provided"
+        self.target = target
         self.term_to_sid: dict[Term, int] = {} # term to semantic id
         self.sid_to_terms: list[list[Term]] = [] # semantic id to terms
-        self.sid_to_iid: list[int] = [] # semantic id to interaction id
-        self.iid_to_sids: list[list[int]] = [] # interaction id to semantic ids
+        # self.sid_to_iid: list[int] = [] # semantic id to interaction id
+        # self.iid_to_sids: list[list[int]] = [] # interaction id to semantic ids
         # self.sid_to_fid: list[int] = [] # semantic id to fitness id
         # self.fid_to_sids: list[list[int]] = [] # fitness id to semantic ids
         self.syntax: dict[tuple[str, ...], Term] = {}
+        self.sem_store = sem_store_class(max_evals, target.shape[0], dtype=target.dtype, 
+                                         device = target.device, rtol=rtol, atol=atol)
 
         # IMPORTANT: semantics is used as cache of values, does not store computational graph
         #            when optimization is used, separate tensors and tensors on the path to the root should be new
         #            cache could be used only for values that are not on computational path root-variation point
-        self.semantics = torch.zeros(max_evals, target.shape[0], dtype=torch.float16, device=target.device)
-        self.semantics[0] = target
+        # self.semantics = torch.zeros(max_evals, target.shape[0], dtype=torch.float16, device=target.device)
+        # self.semantics[0] = target
         # delayed semantics collect the group to be inserted at some point (after one tree for instance)
-        self.delayed_semantics: dict[Term, torch.Tensor] = {}
+        self.delayed_semantics: dict[Term, torch.Tensor] = {} # not yet in the store
         # self.sem_id = 1 # next id to allocate for semantics 
         self.epsilons = None #torch.zeros_like(target) # for interactions 0 1 split
         self.interactions = torch.zeros(max_evals, target.shape[0], dtype=torch.uint8, device=target.device)
