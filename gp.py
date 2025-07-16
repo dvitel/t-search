@@ -13,7 +13,7 @@ from typing import Callable, Optional, Sequence
 from time import perf_counter
 import numpy as np
 import torch
-from spatial import RTreeIndex, SpatialIndex
+from spatial import InteractionIndex, RTreeIndex, SpatialIndex
 from term import Term, TermSignature, build_term, evaluate, ramped_half_and_half, term_sign
 
 
@@ -27,7 +27,7 @@ class GPEvSearch():
                        leaves: dict[str | TermSignature, torch.Tensor],
                        branch_ops: dict[str | TermSignature, Callable],
                        fitness_fns: list[Callable],
-                       sem_store_class: SpatialIndex = RTreeIndex,
+                       sem_store_class: SpatialIndex = InteractionIndex, # RTreeIndex,
                        max_gen: int = 100,
                        max_root_evals: int = 100_000, 
                        max_evals: int = 500_000,
@@ -35,38 +35,17 @@ class GPEvSearch():
                        with_caches: bool = False, # enables all caches: syntax, semantic, int, fitness
                        rtol = 1e-04, atol = 1e-03,
                        rnd_seed: Optional[int | np.random.RandomState] = None):
-        # self.term_to_tid: dict[Term, int] = {} 
-        # self.tid_to_term: dict[int, Term] = {}
         assert len(leaves) > 0, "At least one leaf should be provided"
         self.target = target
         self.term_to_sid: dict[Term, int] = {} # term to semantic id
-        self.sid_to_terms: list[list[Term]] = [] # semantic id to terms
-        # self.sid_to_iid: list[int] = [] # semantic id to interaction id
-        # self.iid_to_sids: list[list[int]] = [] # interaction id to semantic ids
-        # self.sid_to_fid: list[int] = [] # semantic id to fitness id
-        # self.fid_to_sids: list[list[int]] = [] # fitness id to semantic ids
-        self.syntax: dict[tuple[str, ...], Term] = {}
-        self.sem_store = sem_store_class(max_evals, target.shape[0], dtype=target.dtype, 
-                                         device = target.device, rtol=rtol, atol=atol)
+        self.sid_to_terms: dict[int, list[Term]] = {} # semantic id to terms
 
-        # IMPORTANT: semantics is used as cache of values, does not store computational graph
-        #            when optimization is used, separate tensors and tensors on the path to the root should be new
-        #            cache could be used only for values that are not on computational path root-variation point
-        # self.semantics = torch.zeros(max_evals, target.shape[0], dtype=torch.float16, device=target.device)
-        # self.semantics[0] = target
-        # delayed semantics collect the group to be inserted at some point (after one tree for instance)
+        self.syntax: dict[tuple[str, ...], Term] = {}
+        self.sem_store: SpatialIndex = sem_store_class(capacity = max_evals, dims = target.shape[0], dtype=target.dtype, 
+                                         device = target.device, rtol=rtol, atol=atol, target = target)
+        # self.fitness: torch.Tensor = torch.zeros((0, len(fitness_fns)), dtype=target.dtype, device=target.device)
+
         self.delayed_semantics: dict[Term, torch.Tensor] = {} # not yet in the store
-        # self.sem_id = 1 # next id to allocate for semantics 
-        self.epsilons = None #torch.zeros_like(target) # for interactions 0 1 split
-        self.interactions = torch.zeros(max_evals, target.shape[0], dtype=torch.uint8, device=target.device)
-        self.interactions[0] = 1
-        self.sid_to_iid = [0]
-        self.iid_to_sids = [[0]]
-        # # self.int_id = 0 # next id to allocate for interactions
-        # self.fitness = torch.zeros(max_evals, len(fitness_fns), dtype=torch.float16, device=target.device)
-        # self.sid_to_fid = [0]
-        # self.fid_to_sids = [[0]]
-        # # self.fit_id = 0
         self.leaves: list[Term] = []
         self.ops = branch_ops
         self.fitness_fns = fitness_fns
@@ -80,14 +59,8 @@ class GPEvSearch():
         self.pop_size: int = pop_size
         self.metrics: dict[str, int | float | list[int|float]] = field(default_factory=dict)
         self.with_caches = True
-        # self.sem_cache: dict[Term, torch.Tensor] = dict(leaves)
-        # self.int_cache: dict[Term, torch.Tensor] = {}
-        # self.fitness_cache = dict[Term, torch.Tensor] = {}
         self.rtol = rtol
         self.atol = atol
-        # self.last_outputs: dict[Term, torch.Tensor] = {}
-        # self.last_interactions: dict[Term, torch.Tensor] = {}
-        # self.last_fitness: dict[Term, torch.Tensor] = {}
         if rnd_seed is None:
             self.rnd = np.random
         elif isinstance(rnd_seed, np.random.RandomState):
@@ -99,11 +72,8 @@ class GPEvSearch():
             term = self.term_builder(signature, [])
             self.leaves.append(term)
             self.set_binding((term, 0), value)
-            # self.semantics[cur_term_id] = value
         self.process_delayed_semantics()
         self.with_caches = with_caches
-        # self.set_proximity(target, self.leaves) # set proximity for leaves
-        # self.set_fitness(self.leaves)
 
         self.forest: list[int] = [*leaves] # initial forest are leaves
 
@@ -118,20 +88,6 @@ class GPEvSearch():
             cache_cb(term, False)
         return term        
 
-    # def set_proximity(self, target: torch.Tensor, term_ids: list[int]) -> torch.Tensor:
-    #     ''' Important: semantics should be set for term_ids before this call '''
-    #     outputs = self.semantics[term_ids] # get outputs for the terms
-    #     proximity = torch.isclose(outputs, target.unsqueeze(0), rtol=self.rtol, atol=self.atol).to(dtype=torch.uint8) #∣inputi​−otheri​∣≤rtol×∣otheri​∣+atol
-    #     self.interactions[term_ids] = proximity # store interactions in the cache
-    #     pass
-    
-    # def set_fitness(self, term_ids: list[int]):
-    #     semantics = self.semantics[term_ids]
-    #     interactions = self.interactions[term_ids]
-    #     for fitness_id, fitness_fn in enumerate(self.fitness_fns):
-    #         fitness_fn(self.fitness[term_ids, fitness_id], semantics, interactions)
-    #     pass
-
     def timed(self, fn: Callable, key: str) -> Callable:
         ''' Decorator to time function execution '''
         def wrapper(*args, **kwargs):
@@ -143,15 +99,13 @@ class GPEvSearch():
         return wrapper
     
     def get_binding(self, term_with_pos: tuple[Term, int]) -> Optional[torch.Tensor]:
-        # if not self.with_caches:
-        #     return None 
         term = term_with_pos[0] # in this implementation we ignore position 
         if term in self.delayed_semantics:
             return self.delayed_semantics[term]
         semantic_id = self.term_to_sid.get(term, None)
         if semantic_id is None:
             return None
-        res = self.semantics[semantic_id]
+        res = self.sem_store.get_vectors(semantic_id)
         return res 
 
     def set_binding(self, term_with_pos: tuple[Term, int], value: torch.Tensor):
@@ -159,172 +113,24 @@ class GPEvSearch():
         if not self.with_caches:
             return
         term = term_with_pos[0] # ignoring position currently
-        # semantic_id = self.term_to_sid.get(term, None)
-        # assert semantic_id is None, "Term already has a binding. Term reevaluaton?"
-
-        # search for same semantics through iteractions index
         self.delayed_semantics[term] = value
-
-    def _rebuild_interactions(self):
-        # cur_sem_size = len(self.sid_to_iid)
-        # if possible_delayed is None:
-        #     semantics = self.semantics[:cur_sem_size]
-        # else:
-        #     semantics = torch.stack([ self.semantics[:cur_sem_size], possible_delayed ])
-        semantics = self.semantics[:len(self.sid_to_iid)]
-        distances = torch.abs(semantics - self.semantics[0])
-        self.epsilons = torch.mean(distances, dim=0)
-        ints = (distances < self.epsilons.unsqueeze(0)).to(dtype=torch.uint8)
-        unique_interactions, unique_indices = torch.unique(ints, sorted=True, dim=0, return_inverse = True) # O(n log(n)) - we allow for index rebuild
-        iid_to_sids = [[] for _ in range(unique_interactions.size(0))]
-        sid_to_iid = []
-        for sem_id, int_id in enumerate(reversed(unique_indices)):
-            iid_id_host = int_id.item()
-            iid_to_sids[iid_id_host].append(sem_id)        
-            sid_to_iid.append(iid_id_host)
-
-        self.interactions[:unique_interactions.size(0)] = unique_interactions[::-1]
-        self.sid_to_iid = sid_to_iid
-        self.iid_to_sids = iid_to_sids
-
-        del distances, unique_interactions, unique_indices
-
-    def _get_unique_interactions(self, semantics: torch.Tensor) -> tuple[torch.Tensor, list[int]]:
-        distances = torch.abs(semantics - self.semantics[0])
-        ints = (distances < self.epsilons.unsqueeze(0)).to(dtype=torch.uint8)
-        unique_interactions, unique_indices = torch.unique(ints, sorted=True, dim=0, return_inverse = True) # O(n log(n)) - we allow for index rebuild
-        iid_to_sids = [[] for _ in range(unique_interactions.size(0))]
-        sid_to_iid = []
-        for sem_id, int_id in enumerate(reversed(unique_indices)):
-            iid_id_host = int_id.item()
-            iid_to_sids[iid_id_host].append(sem_id)        
-            sid_to_iid.append(iid_id_host)
-        return unique_interactions, sid_to_iid, iid_to_sids
-
-
-    def _get_unique_semantics(self, semantics: torch.Tensor) -> tuple[torch.Tensor, list[int]]:
-        unique_semantics, unique_indices = torch.unique(semantics, sorted=True, dim=0, return_inverse = True) # O(n log(n)) - also expensive for lareg semantics tensor
-        sid_to_pids = [[] for _ in range(unique_semantics.size(0))]
-        pid_to_sid = []
-        for prog_id, sem_id in enumerate(unique_indices):
-            sid_id_host = sem_id.item()
-            sid_to_pids[sid_id_host].append(prog_id)        
-            pid_to_sid.append(sid_id_host)    
-        return unique_semantics, pid_to_sid, sid_to_pids
-    
-    def get_close_indices(self, x: torch.Tensor, y: torch.Tensor) -> bool:
-        ''' Check if two semantics are equal
-            x of size (n1, m), y - (n2, m). Result z is (n1, n2) with 1 where they are close
-        '''
-        z = torch.isclose(x.unsqueeze(1), y.unsqueeze(0), rtol=self.rtol, atol=self.atol).all(dim=2).to(dtype=torch.uint8)
-
-        indices = torch.nonzero(z, as_tuple=False)
-
-        return [(idx[0].item(), idx[1].item()) for idx in indices]
-    
-    def get_same_indices(self, x: torch.Tensor, y: torch.Tensor) -> bool:
-        ''' Check if two semantics are equal
-            x of size (n1, m), y - (n2, m). Result z is (n1, n2) with 1 where they are equal
-        '''
-        z = (x.unsqueeze(1) == y.unsqueeze(0)).all(dim=2).to(dtype=torch.uint8)
-
-        indices = torch.nonzero(z, as_tuple=False)
-
-        return [(idx[0].item(), idx[1].item()) for idx in indices]
 
     def process_delayed_semantics(self):
         if len(self.delayed_semantics) == 0:
             return set()
         terms = list(self.delayed_semantics.keys())
         semantics = torch.stack(list(self.delayed_semantics.values()))
-        unique_semantics, pid_to_sid, sid_to_pids = self._get_unique_semantics(semantics)
-        if self.epsilons is None: #start, we have only target semantics 
-            close_indices = self.get_close_indices(unique_semantics, self.semantics[:1])
-            if len(close_indices) > 0: # we have target semantics in the current semantics
-                loc_sids = [x for x, _ in close_indices]
-                loc_pids = [pid for sid in loc_sids for pid in sid_to_pids[sid]]
-                self.best = [terms[pid] for pid in loc_pids]
-                raise EvSearchTermination("Best individuals found at start: {}".format(self.best))
-            else:
-                cur_sid_id = len(self.sid_to_iid)
-                self.semantics[cur_sid_id:cur_sid_id + unique_semantics.size(0)] = unique_semantics
-                self.term_to_sid.update({term: cur_sid_id + sid for term, sid in zip(terms, pid_to_sid)})
-                self.sid_to_terms.extend([[terms[pid] for pid in pids] for pids in sid_to_pids])
-                self._rebuild_interactions()
-        else: # starting search for interactions bin
-            unique_interactions, sid_to_iid, iid_to_sids = self._get_unique_interactions(unique_semantics)
-            same_indices = self.get_same_indices(unique_interactions, self.interactions[:len(self.iid_to_sids)])
-            glob_iid_to_loc_sids = {}
-            loc_iid_to_glob_iid_map = dict(same_indices)
-            for (local_iid, glob_iid) in same_indices:
-                glob_iid_to_loc_sids.setdefault(glob_iid, []).extend(iid_to_sids[local_iid])
-            loc_sid_to_glob_sid_map = {}
-            for glob_iid, loc_sids in glob_iid_to_loc_sids.items():
-                glob_sids = self.iid_to_sids[glob_iid]
-                local_semantics = unique_semantics[loc_sids]
-                glob_semantics = self.semantics[glob_sids]
-                close_indices = self.get_close_indices(local_semantics, glob_semantics)
-                # here we establish semantic equivalence between terms 
-                loc_sid_to_glob_sid_map.update({loc_sids[loc_sid_i]:glob_sids[glob_sid_i] for loc_sid_i, glob_sid_i in close_indices})
-            # new_sid_to_iid = []
-            start_sid = len(self.sid_to_iid)
-            start_iid = len(self.iid_to_sids)
-            new_loc_sids = []
-            new_loc_iids = []
-            for loc_sid, loc_iid in enumerate(sid_to_iid):
-                if loc_sid in loc_sid_to_glob_sid_map: # sid match noop - iid will also match 
-                    continue
-                new_loc_sids.append(loc_sid)
-                cur_sid = len(self.sid_to_iid)
-                loc_sid_to_glob_sid_map[loc_sid] = cur_sid
-                if loc_iid in loc_iid_to_glob_iid_map: # iid matched - add glob_sid 
-                    cur_iid = loc_iid_to_glob_iid_map[loc_iid]
-                    self.iid_to_sids[cur_iid].append(cur_sid)
-                else:
-                    cur_iid = len(self.iid_to_sids)
-                    self.iid_to_sids.append([cur_sid]) # new iid
-                    new_loc_iids.append(loc_iid)
-                self.sid_to_iid.append(cur_iid)
-            self.semantics[start_sid:len(self.sid_to_iid)] = unique_semantics[new_loc_sids]
-            self.interactions[start_iid:len(self.iid_to_sids)] = unique_interactions[new_loc_iids]
-            term_to_sid = {term: loc_sid_to_glob_sid_map[loc_sid] for term, loc_sid in zip(terms, pid_to_sid)}
-            self.term_to_sid.update(term_to_sid)
-            if len(self.sid_to_iid) > len(self.sid_to_terms):
-                self.sid_to_terms += [[]] * (len(self.sid_to_iid) - len(self.sid_to_terms))
-            for loc_sid, pids in enumerate(sid_to_pids):
-                sid_terms = [terms[pid] for pid in pids]
-                glob_sid = loc_sid_to_glob_sid_map[loc_sid]
-                self.sid_to_terms[glob_sid].extend(sid_terms)
+        sem_ids = self.sem_store.insert(semantics)
+        new_sem_ids = set()
+        for sem_id in sem_ids:
+            if sem_id not in self.sid_to_terms:
+                new_sem_ids.add(sem_id)
+        for term, sem_id in zip(terms, sem_ids):
+            self.term_to_sid[term] = sem_id
+            self.sid_to_terms.setdefault(sem_id, []).append(term)
 
         self.delayed_semantics = {}
-        return set([self.term_to_sid[term] for term in terms])
-
-    # def get_ints(self, terms: list[Term]):
-    #     if self.with_int_cache:
-    #         context.last_interactions = {}
-    #         missed_terms = []
-    #         for t in term:
-    #             if t in context.int_cache:
-    #                 context.last_interactions[t] = context.int_cache[t]
-    #             else:
-    #                 missed_terms.append(t)
-    #         if len(missed_terms) > 0:            
-    #             new_interactions = int_fn(context, missed_terms)
-    #             for term, ints in zip(missed_terms, new_interactions):
-    #                 context.int_cache[term] = ints
-    #                 context.last_interactions[term] = ints        
-    
-    # def init_fn(self, size: int) -> Sequence[Term]:
-    #     pass
-
-    # def eval_fn(self, terms: Sequence[Term]) -> torch.Tensor:
-    #     pass
-
-    # def analyze_fn(self, population: Sequence[Term], fitness: torch.Tensor) -> Optional[Term]:
-    #     pass 
-
-    # def breed_fn(self, population: Sequence[Term], fitness: torch.Tensor) -> Sequence[Term]:
-    #     pass
+        return new_sem_ids
 
     def run(self,
                 init_fn: Callable[["GPEvSearch", int], Sequence[Term]], 
@@ -364,15 +170,6 @@ def init_each(context: GPEvSearch, size: int, init_fn = ramped_half_and_half):
             res.append(term)
     return res
 
-# def compute_fitnesses(fitness_fns, interactions, outputs, population, gold_outputs, derived_objectives = [], derived_info = {}, fitness_prep = np_fitness_prep):
-#     fitness_list = []
-#     for fitness_fn in fitness_fns:
-#         fitness = fitness_fn(interactions, outputs, population = population, gold_outputs = gold_outputs, 
-#                                 derived_objectives = derived_objectives, **derived_info)
-#         fitness_list.append(fitness) 
-#     fitnesses = fitness_prep(fitness_list)
-#     return fitnesses   
-
 def eval_terms(context: GPEvSearch, terms: list[Term]) -> torch.Tensor:
     semantics = []
     sids = set()
@@ -382,10 +179,9 @@ def eval_terms(context: GPEvSearch, terms: list[Term]) -> torch.Tensor:
         sids.update(sids_set)
         semantics.append(term_sem)
     sids = list(sids)
-    if context.with_caches:
+    if len(sids) > 0:
         semantics = context.semantics[sids]
-    else:
-        semantics = torch.stack(semantics, dim=0)
+    semantics = torch.stack(semantics, dim=0)
     fitnessT = torch.zeros(len(context.fitness_fns), semantics.size(0), dtype=torch.float16, device=semantics.device)
     for fn_id, fn in enumerate(context.fitness_fns):
         fitnessT[fn_id] = fn(context, semantics)
