@@ -15,6 +15,7 @@
 
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+import inspect
 from itertools import product
 import math
 from typing import Any, Callable, Generator, Optional, Sequence, Type
@@ -60,6 +61,13 @@ class Term:
 # class BindingValue: 
 #     value: Optional[Any] = None
 #     value_builder: Optional[Callable] = None
+
+def sign_from_fn(fn: Callable, name: Optional[str] = None) -> TermSignature:
+    ''' Get signature from function '''
+    s = inspect.signature(fn)
+    arity = len(s.parameters)
+    category = "" # TODO: get from function signature
+    return TermSignature(name=fn.__name__, type=TermType(arity=arity, category=category))
 
 def term_sign(signature: str | TermSignature, args: Sequence[Term] = []):
     if type(signature) is str:
