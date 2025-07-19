@@ -296,6 +296,11 @@ class GPEvSearch():
         return solution
     
 if __name__ == "__main__":
-    process = GPEvSearch()        
+
+    from torch_alg import alg_ops_torch, koza_1
+
+    free_vars, target = koza_1.sample_set("train")
+
+    process = GPEvSearch(target)        
 
     process.run()
