@@ -15,6 +15,7 @@
 
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from itertools import product
 import math
 from typing import Any, Callable, Generator, Optional, Sequence, Type
 
@@ -77,30 +78,56 @@ def build_term(term_cache: dict[tuple, Term], signature: str | TermSignature, ar
         term = term_cache[key]
         cache_cb(term, True)
     return term
+
     
 def postorder_traversal(term: Term, enter_args: Callable, exit_term: Callable):
-    q = deque([(0, term, None)])
+    ''' enter_args and exit_term are called with entered term and its parent.
+        if enter_args returns True, args will be skipped, 
+        if exit_term returns True, traversal will be terminated.
+    '''
+    q = deque([(0, term, 0, None)])
     while len(q) > 0:
-        cur_i, cur_term, cur_parent = q.popleft()
-        if cur_i == 0:
-            enter_args(cur_term, cur_parent)
-        if cur_i >= len(cur_term.args):
-            exit_term(cur_term, cur_parent)
+        cur_arg_i, cur_term, cur_term_i, cur_parent = q.popleft()
+        if cur_arg_i == 0:
+            should_skip_args = enter_args(cur_term, cur_term_i, cur_parent)
+            if should_skip_args:
+                should_end_traversal = exit_term(cur_term, cur_term_i, cur_parent)
+                if should_end_traversal:
+                    return
+                continue
+        if cur_arg_i >= len(cur_term.args):
+            should_end_traversal = exit_term(cur_term, cur_term_i, cur_parent)
+            if should_end_traversal:
+                return
         else:
-            cur_arg = cur_term.args[cur_i]
-            q.appendleft((cur_i + 1, cur_term, cur_parent))
-            q.appendleft((0, cur_arg, cur_term))
+            cur_arg = cur_term.args[cur_arg_i]
+            q.appendleft((cur_arg_i + 1, cur_term, cur_term_i, cur_parent))
+            q.appendleft((0, cur_arg, cur_arg_i, cur_term))
 
-def postorder_map(term: Term, fn: Callable) -> Any:    
-    term_args = {None: []}    
-    def _enter_args(t: Term, p: Term):
-        term_args[t] = []
-    def _exit_term(t: Term, p: Term):
-        processed_t = fn(t, term_args[t])
-        term_args[p].append(processed_t)
-        del term_args[t]
+
+def postorder_map(term: Term, fn: Callable, with_cache = False) -> Any:  
+    args_stack = [[]]
+    term_cache = {}
+    if with_cache:
+        def add_res(t: Term, res: Any):
+            term_cache[t] = res
+    else:
+        def add_res(t: Term, res: Any):
+            pass
+    def _enter_args(t: Term, term_i, p: Term):
+        if t in term_cache:
+            return True
+        args_stack.append([])
+    def _exit_term(t: Term, term_i, p: Term):
+        if t in term_cache:
+            processed_t = term_cache[t]
+        else:
+            term_processed_args = args_stack.pop()
+            processed_t = fn(t, *term_processed_args)
+            add_res(t, processed_t)
+        args_stack[-1].append(processed_t) #add to parent args
     postorder_traversal(term, _enter_args, _exit_term)
-    return term_args[None][0]
+    return args_stack[0][0]
 
 def term_to_str(term: Term) -> str: 
     ''' LISP style string '''
@@ -108,23 +135,117 @@ def term_to_str(term: Term) -> str:
         if len(args) == 0:
             return term.signature.name
         return "(" + " ".join([term.signature.name, *args]) + ")"    
-    res = postorder_map(term, t_to_s)
+    res = postorder_map(term, t_to_s, with_cache=True)
     return res 
 
 def get_leaves(root: Term, name: Optional[str | TermSignature] = None, leaves_cache = {}) -> list[Term]:
     ''' Find all leaves in root that are equal to term by name '''
     if root not in leaves_cache:
         leaves = []
-        def _exit_term(term: Term, parent: Term):
+        def _exit_term(term: Term, *_):
             if len(term.args) == 0:
                 leaves.append(term)
-        postorder_traversal(root, lambda t,p: (), _exit_term)
+        postorder_traversal(root, lambda *_: (), _exit_term)
         leaves_cache[root] = leaves
     leaves = leaves_cache[root]
     if name is None:
         return leaves
     filtered_leaves = [child_term for child_term in leaves if child_term.signature.name == name or child_term.signature == name]
     return filtered_leaves
+
+@dataclass(eq=False, unsafe_hash=False)
+class TermPos:
+    term: Term
+    occur: int = 0 # -> id of term occrance in root
+    pos: int = 0 # pos in parent args
+    depth: int = 0
+    at_depth: int = 0
+
+    def __eq__(self, other):
+        if isinstance(other, TermPos):
+            return self.term == other.term and self.occur == other.occur
+        return False
+
+    def __hash__(self):
+        return hash((self.term, self.occur))    
+
+def get_depths(term: Term, depth_cache: dict[Term, int]) -> dict[Term, int]:
+    
+    def _enter_args(term: Term, *_):
+        if term in depth_cache:
+            return True # skip args
+    
+    def _exit_term(term: Term, term_i, parent: Term):
+        if term in depth_cache:
+            return 
+        depth_cache[term] = depth_cache.get(term, -1) + 1
+        if parent is not None: 
+            depth_cache[parent] = max(depth_cache.get(parent, -1), depth_cache.get(term, 0))
+
+    postorder_traversal(term, _enter_args, _exit_term) 
+
+    return depth_cache   
+
+def get_term_pos(term: Term, depth_cache: dict[Term, int]) -> dict[TermPos, TermPos]: 
+    ''' Returns dictionary where keys are all positions in the term and values are references to parent position 
+        NOTE: we do not return thee root of the term as TermPos as it does not have parent
+    '''
+
+    get_depths(term, depth_cache)
+    
+    subterms: dict[TermPos, TermPos] = {}
+    term_at_depths = {}
+    last_term_pos: dict[Term, TermPos] = {}
+    term_occur = {}
+    def _enter_args(term: Term, term_i, parent: Term):
+        cur_occur = term_occur.get(term, 0)
+        term_occur[term] = cur_occur + 1
+        term_at_depths[term] = term_at_depths.get(parent, -1) + 1
+        term_pos = TermPos(term, cur_occur, term_i, depth_cache.get(term, 0), term_at_depths.get(term, 0))
+        last_term_pos[term] = term_pos
+        parent_pos = last_term_pos.get(parent, None)
+        if parent_pos is not None:
+            subterms[term_pos] = parent_pos
+
+    def _exit_term(term: Term, *_):
+        del last_term_pos[term]
+        del term_at_depths[term]
+
+    postorder_traversal(term, _enter_args, _exit_term)
+
+    return subterms
+
+def pick_term_pos(term: Term, depth_cache: dict[Term, int], 
+                   pred: Callable[[TermPos], tuple[bool, bool]]) -> dict[TermPos, TermPos]:
+    ''' Return TermPos that satisfy given predicate. Allows early termination (find_first patern)
+        NOTE: we do not return thee root of the term as TermPos as it does not have parent
+    '''
+    get_depths(term, depth_cache)
+    
+    selected_pos = []
+    subterms: dict[TermPos, TermPos] = {}
+    term_at_depths = {}
+    last_term_pos: dict[Term, TermPos] = {}
+    term_occur = {}
+    def _exit_term(term: Term, term_i, parent: Term):
+        cur_occur = term_occur.get(term, 0)
+        term_occur[term] = cur_occur + 1
+        term_at_depths[term] = term_at_depths.get(parent, -1) + 1
+        term_pos = TermPos(term, cur_occur, term_i, depth_cache.get(term, 0), term_at_depths.get(term, 0))
+        last_term_pos[term] = term_pos
+        should_pick, should_break = pred(term_pos)
+        parent_pos = last_term_pos.get(parent, None)
+        if parent_pos is not None:
+            subterms[term_pos] = parent_pos
+        if should_pick:
+            selected_pos.append(term_pos)
+        if should_break:
+            return True # stop traversal
+
+    postorder_traversal(term, lambda t,p:(), _exit_term)
+
+    return subterms, selected_pos
+
 
 @dataclass(eq=False, unsafe_hash=False)
 class UnifyBindings:
@@ -277,50 +398,49 @@ def parse_term(term_cache, term_str: str, i: int = 0) -> tuple[Term, int]:
             branches[0].append(leaf)
     return branches[0][0], i
 
-# parents should be eventually cached
-def get_parents(term: Term):
-    term_poss = {}
-    term_parents = {}
-    def _enter(term: Term, parent: Optional[Term]):
-        term_pos = term_poss.get(term, -1) + 1
-        term_poss[term] = term_pos
-        if parent in term_poss:
-            parent_pos = term_poss[parent] - 1 # parent term cannot be inside itself
-            term_parents[(term, term_pos)] = (parent, parent_pos)
-    postorder_traversal(term, _enter, lambda t,p: ())
-    return term_parents
-
-def get_chain_to_root(term_pos: tuple[Term, int], term_parents: dict[tuple[Term, int], tuple[Term, int]]) -> Generator[tuple[Term, int], None, None]:
-    ''' Get chain of term positions to root '''
-    yield term_pos
+def replace(term_builder, term_pos: TermPos, with_term: Term, term_parents: dict[TermPos, TermPos]) -> Term:
     cur_pos = term_pos
+    new_term = with_term
     while cur_pos in term_parents:
-        cur_pos = term_parents[cur_pos]
-        yield cur_pos
+
+        cur_parent = term_parents[cur_pos]
+
+        new_parent_term_args = [*cur_parent.term.args[:cur_pos.pos], new_term, *cur_parent.term.args[cur_pos.pos + 1:]]
+        new_term = term_builder(cur_parent.term.signature, new_parent_term_args)
+
+        cur_pos = cur_parent
+        
+    return new_term
 
 def evaluate(term: Term, ops: dict[str | TermSignature, Callable],
-                get_binding: Callable[[Term, int], Any] = lambda ti: None,
-                set_binding: Callable[[Term, int], Any] = lambda ti,v:()) -> Any:
+                get_binding: Callable[[Term], Any] = lambda ti: None,
+                set_binding: Callable[[Term], Any] = lambda ti,v:()) -> Any:
     ''' Fully or partially evaluates term (concrete or abstract) '''
-    term_poss = {}
- 
-    def _eval(term: Term, args: list[Any]):
-        term_pos = term_poss.get(term, -1) + 1
-        term_poss[term] = term_pos
-        if any(arg is None for arg in args):
-            return None        
-        res = get_binding((term, term_pos))
+    
+    none_terms_to_skip = set()
+    def _enter_args(term: Term, parent: Term):
+        if term in none_terms_to_skip:
+            return True
+        res = get_binding(term)
         if res is not None:
-            return res
-        if res is None:
-            op_fn = ops.get(term.signature, None) or ops.get(term.signature.name, None)
-            if op_fn is not None:
-                res = op_fn(*args)
-                set_binding((term, term_pos), res)
-        return res
-    res_semantics = postorder_map(term, _eval)
-    return res_semantics
+            return True
+        
+    def _exit_term(term: Term, p: Term):
+        if term in none_terms_to_skip or get_binding(term) is not None:
+            return 
+        args = [get_binding(arg) for arg in term.args]
+        if any(arg is None for arg in args):
+            none_terms_to_skip.add(term)
+            return
+        op_fn = ops.get(term.signature, None) or ops.get(term.signature.name, None)
+        if op_fn is not None:
+            fn_res = op_fn(*args)
+            set_binding(term, fn_res)
 
+    postorder_traversal(term, _enter_args, _exit_term)
+
+    return get_binding(term)
+    
 inf_count_constraints: dict[str, int] = defaultdict(lambda: math.inf)
 
 def grow(term_builder: Callable, leaf_ops: list[TermSignature], branch_ops: list[TermSignature],
@@ -420,6 +540,127 @@ def ramped_half_and_half(term_builder: Callable, leaf_ops: list[TermSignature], 
     else:
         return full(term_builder, leaf_ops, branch_ops, full_depth = depth, counts_constraints = counts_constraints, rnd = rnd)
    
+
+# IDEA: dropout in GP, frozen tree positions which cannot be mutated or crossovered - for later
+# def select_rnd_pos(term: Term, positions: Sequence[TermPos],
+#                                 select_node_leaf_prob: Optional[float] = 0.1,
+#                                 rnd: np.random.RandomState = np.random,
+#                                 exclude_root = True) -> Optional[TermPos]:
+#     if len(positions) == 0:
+#         return None
+#     if select_node_leaf_prob is None:
+#         selected_id = rnd.randint(1, len(positions)) # excluding root
+#         selected_pos = positions[selected_id]
+#         return selected_pos
+#     nonleaves = []
+#     leaves = [] 
+#     for child_id in range(len(positions)):
+#         child = positions[child_id]
+#         if len(child.term.args) > 0:
+#             nonleaves.append(child)
+#         else:
+#             leaves.append(child) 
+#     if len(nonleaves) == 0 and len(leaves) == 0:
+#         return None
+#     if (rnd.rand() < select_node_leaf_prob and len(leaves) > 0) or len(nonleaves) == 0:
+#         selected_idx = rnd.choice(len(leaves))
+#         selected_pos = leaves[selected_idx]
+#     else:
+#         selected_idx = rnd.choice(len(nonleaves))
+#         selected_pos = nonleaves[selected_idx]
+#     return selected_pos
+
+def get_pos_scores(term: Term, positions: list[TermPos],
+                        select_node_leaf_prob: Optional[float] = 0.1,
+                        rnd: np.random.RandomState = np.random) -> Optional[np.ndarray]:
+    pos_proba = rnd.rand(len(positions))
+    if select_node_leaf_prob is not None:
+        proba_mod = np.array([select_node_leaf_prob if len(pos.term.args) == 0 else (1 - select_node_leaf_prob) for pos in positions ])
+        pos_proba *= proba_mod
+    return pos_proba
+
+def select_positions(term: Term, positions: list[TermPos], num_positions: int,
+                        select_node_leaf_prob: Optional[float] = 0.1,
+                        rnd: np.random.RandomState = np.random) -> list[int]:
+    # selecting poss for given number of mutants 
+    pos_proba = get_pos_scores(term, positions, select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
+    if pos_proba is None:
+        return []
+    ordered_pos_ids = np.argsort(pos_proba)[-1:-num_positions-1:-1].tolist()
+    if len(ordered_pos_ids) < num_positions:
+        repeat_cnt = math.ceil(num_positions / len(ordered_pos_ids))
+        ordered_pos_ids = (ordered_pos_ids * repeat_cnt)[:num_positions]
+    return ordered_pos_ids
+
+
+def one_point_rand_mutation(term_builder, term: Term, positions: dict[TermPos, TermPos], 
+                            leaf_ops: list[TermSignature], branch_ops: list[TermSignature],
+                            rnd: np.random.RandomState = np.random,
+                            select_node_leaf_prob: Optional[float] = 0.1,
+                            # include_root = True, 
+                            tree_max_depth = 17,
+                            num_children = 1) -> list[Term]:
+    # if include_root:
+    pos_list = [TermPos(term), *positions.keys()] # we always include root to avoid checks after selection
+    # else:
+    #     pos_list = list(positions.keys())
+    selected_pos = select_positions(term, pos_list, num_children, select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
+    # if len(selected_pos) == 0:
+    #     return [term] * num_children # noop
+    mutants = []
+    for pos_id in selected_pos:
+        position: TermPos = pos_list[pos_id]
+        new_child = grow(term_builder, leaf_ops, branch_ops, grow_depth = min(5, tree_max_depth - position.at_depth), 
+                            grow_leaf_prob = None, rnd = rnd)
+        if new_child is None:
+            mutants.append(term) # noop
+        else:
+            mutated_term = replace(term_builder, position, new_child, positions)
+            mutants.append(mutated_term)
+        
+    return mutants
+
+def one_point_rand_crossover(term_builder, term1: Term, term2: Term,
+                                           positions1: dict[TermPos, TermPos], positions2: dict[TermPos, TermPos],
+                                rnd: np.random.RandomState = np.random,
+                                select_node_leaf_prob: Optional[float] = 0.1,
+                                include_root = True, tree_max_depth = 17,
+                                num_children = 1):
+    pos_list1 = [TermPos(term1), *positions1.keys() ]
+    pos_proba1 = get_pos_scores(term1, pos_list1, include_root = include_root,
+                                select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
+    
+    pos_ids1 = np.argsort(pos_proba1)
+            
+    pos_list2 = [TermPos(term2), *positions2.keys()]
+    pos_proba2 = get_pos_scores(term2, pos_list2, include_root = include_root,
+                                select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
+    
+    pos_ids2 = np.argsort(pos_proba2)
+    
+    selected_pairs = []
+
+    while len(selected_pairs) < num_children:
+        for pos_id1, pos_id2 in product(reversed(pos_ids1), reversed(pos_ids2)):
+            pos1 = pos_list1[pos_id1]
+            pos2 = pos_list2[pos_id2]
+            if pos1.at_depth + pos2.depth <= tree_max_depth:
+                selected_pairs.append((pos1, positions1, pos2.term))
+            if len(selected_pairs) >= num_children:
+                break
+            if pos2.at_depth + pos1.depth <= tree_max_depth:
+                selected_pairs.append((pos2, positions2, pos1.term))
+            if len(selected_pairs) >= num_children:
+                break
+
+    children = []
+    for pos, poss, term in selected_pairs:
+        new_child = replace(term_builder, pos, term, poss)
+        children.append(new_child)
+
+    return children
+
+
 if __name__ == "__main__":
 
     term_cache = {}
