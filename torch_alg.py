@@ -1,12 +1,13 @@
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
+import inspect
 from typing import Any, Callable, Literal, Optional
 import torch
 
 from term import Term, build_term, evaluate, get_leaves, parse_term
 
-alg_ops_torch = {
+alg_ops = {
     "add": lambda a, b: a + b,
     "mul": lambda a, b: a * b,
     "pow": lambda a, b: a ** b,
@@ -33,22 +34,25 @@ def get_full_grid(grid_values: list[torch.Tensor]) -> torch.Tensor:
 # t1 = get_full_grid([torch.tensor([1,2]), torch.tensor([1,2]), torch.tensor([4,5])])
 # pass 
 
-def get_rand_grid_point(grid_values: list[torch.Tensor]) -> torch.Tensor:
+def get_rand_grid_point(grid_values: list[torch.Tensor], 
+                        *, generator: torch.Generator | None = None) -> torch.Tensor:
     assert len(grid_values) > 0, "Grid values should not be empty"
-    values = [v[torch.randint(0, len(v), (1,))] for v in grid_values]
+    values = [v[torch.randint(0, len(v), (1,), generator=generator)] for v in grid_values]
     stacked = torch.cat(values, dim=0)
     return stacked
 
 # t2 = get_rand_grid_point([torch.tensor([1,2]), torch.tensor([1,2]), torch.tensor([4,5])])
 # pass
 
-def get_rand_points(num_samples: int, ranges: torch.Tensor) -> torch.Tensor:
+def get_rand_points(num_samples: int, ranges: torch.Tensor,
+                        *, generator: torch.Generator | None = None) -> torch.Tensor:
     ''' ranges: tensor 1d - free var, 2d - [min, max] 
         return rand sample of values in ranges '''
     mins = ranges[:, 0]
     maxs = ranges[:, 1]
     dist = maxs - mins
-    values = mins[:, torch.newaxis] + dist[:, torch.newaxis] * torch.rand(len(ranges), num_samples, device=ranges.device)
+    values = mins[:, torch.newaxis] + dist[:, torch.newaxis] * torch.rand(len(ranges), num_samples, device=ranges.device,
+                                                                            generator = generator)
     return values
 
 # t3 = get_rand_points(10, torch.tensor([[1, 2], [3, 4], [5, 6]]))
@@ -66,7 +70,8 @@ def get_rand_full_grid(num_samples, ranges: torch.Tensor) -> torch.Tensor:
 # pass
 
 def get_interval_points(steps: torch.Tensor | float, ranges: torch.Tensor, 
-                        deltas: Optional[torch.Tensor] = None, rand_deltas = False) -> list[torch.Tensor]:
+                        deltas: Optional[torch.Tensor] = None, rand_deltas = False,
+                        generator: torch.Generator | None = None) -> list[torch.Tensor]:
     
     
     # mins = ranges[:, 0]
@@ -76,7 +81,7 @@ def get_interval_points(steps: torch.Tensor | float, ranges: torch.Tensor,
         steps = torch.full_like(ranges[:, 0], steps)
     if rand_deltas:
         deltas = deltas or steps
-        deltas *= torch.rand(ranges.shape[0], device=ranges.device)
+        deltas *= torch.rand(ranges.shape[0], device=ranges.device, generator = generator)
     if deltas is None:
         deltas = torch.zeros_like(steps)
     values = [torch.arange(r[0] + d, r[1], s) for r, s, d in zip(ranges, steps, deltas)]
@@ -107,14 +112,15 @@ def get_rand_interval_points(num_samples: int, ranges: torch.Tensor,
 # pass
 
 # https://en.wikipedia.org/wiki/Chebyshev_nodes
-def get_chebyshev_points(num_samples, ranges: torch.Tensor, rand_deltas = False):
+def get_chebyshev_points(num_samples, ranges: torch.Tensor, rand_deltas = False,
+                            generator: torch.Generator | None = None) -> torch.Tensor:
     assert num_samples > 0, "Number of samples should be greater than 1"
     mins = ranges[:, 0]
     maxs = ranges[:, 1]
     dist = maxs - mins
     indexes = torch.arange(1, num_samples + 1, dtype=float, device=ranges.device) #torch.tile(torch.arange(0, num_samples), (ranges.shape[0], 1))
     if rand_deltas:
-        indexes = torch.rand(ranges.shape[0], device=ranges.device)[:, torch.newaxis] + indexes
+        indexes = torch.rand(ranges.shape[0], device=ranges.device, generator=generator)[:, torch.newaxis] + indexes
     else:
         indexes = torch.zeros(ranges.shape[0], device=ranges.device)[:, torch.newaxis] + indexes
     index_vs = torch.cos((2.0 * indexes - 1) / (2.0 * num_samples) * torch.pi)
@@ -227,7 +233,7 @@ def lbfgs_optimize(term: Term, gold_outputs: torch.Tensor, semantics: torch.Tens
         nonlocal last_outputs, last_errors, last_bindings
         optimizer.zero_grad()        
         last_bindings = {**other_ops, **leaf_ops}
-        outputs = evaluate(term, alg_ops_torch, last_bindings, last)
+        outputs = evaluate(term, alg_ops, last_bindings, last)
         assert outputs is not None, "Term evaluation should be full. Term is evaluated partially"
         last_outputs = outputs
         loss_els = (outputs - gold_outputs) ** 2
@@ -254,19 +260,19 @@ def lbfgs_optimize(term: Term, gold_outputs: torch.Tensor, semantics: torch.Tens
     # res = evaluate(term, all_ops, {})
     pass
 
-
-@dataclass(frozen=True, eq=False, unsafe_hash=False)
 class Benchmark: 
-    name: str
-    fn: Callable
-    train_sampling: Callable = get_rand_points
-    train_args: dict[str, Any] = {}
-    test_sampling: Optional[Callable] = None # None - use train sampling
-    test_args: Optional[dict[str, Any]] = None
 
-    def __post_init__(self):
-        if self.name is None:
-            self.name = self.gold_fn.__name__
+    def __init__(self, name: str | None, fn: Callable,
+                 train_sampling: Callable = get_rand_points, 
+                 train_args: dict[str, Any] = None,
+                 test_sampling: Optional[Callable] = None, 
+                 test_args: Optional[dict[str, Any]] = None):
+        self.name = name or fn.__name__
+        self.fn = fn
+        self.train_sampling: Callable = train_sampling
+        self.train_args: dict[str, Any] = train_args or {}
+        self.test_sampling: Optional[Callable] = test_sampling
+        self.test_args: Optional[dict[str, Any]] = test_args
         self.sampled = {}
 
     def with_train_sampling(self, train_sampling = None, **kwargs):
@@ -276,17 +282,23 @@ class Benchmark:
         return Benchmark(self.name, self.fn, self.train_sampling, self.train_args,
                          test_sampling or self.test_sampling, kwargs)
 
-    def sample_set(self, set_name: Literal["train", "test"], device = "cpu") -> tuple[torch.Tensor, torch.Tensor]:
+    def sample_set(self, set_name: Literal["train", "test"], 
+                            device = "cpu", dtype = torch.float32,
+                            generator: torch.Generator | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         if set_name in self.sampled:
             return self.sampled[set_name]
         if set_name == "test" and self.test_sampling is None:
             return self.sample_set("train", device)
         sample_args = self.train_args if set_name == "train" else self.test_args
-        prepared_args = {k:(torch.tensor(v, device = device) if type(v) is list else v) for k, v in sample_args.items()}
+        prepared_args = {k:(torch.tensor(v, device = device, dtype=dtype) if type(v) is list else v) for k, v in sample_args.items()}
         sample_fn = self.train_sampling if set_name == "train" else self.test_sampling
+        signature = inspect.signature(sample_fn)
+        if 'generator' in signature.parameters:
+            prepared_args['generator'] = generator
         free_vars = sample_fn(**prepared_args) 
         gold_outputs = self.fn(*free_vars)
         self.sampled[set_name] = (free_vars, gold_outputs)
+        return free_vars, gold_outputs
 
 
 koza_1 = Benchmark("koza_1", lambda x: x*x*x*x + x*x*x + x*x + x,

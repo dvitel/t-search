@@ -22,18 +22,13 @@ from typing import Any, Callable, Generator, Optional, Sequence, Type
 
 import numpy as np
 
-@dataclass(frozen=True)
-class TermType: 
-    arity: int = 0
-    category: str = ""
-
-zero_type = TermType()    
 
 @dataclass(frozen=True)
 class TermSignature:
     ''' Descriptive, have to be stateless - state is outside'''
     name: str
-    type: TermType = zero_type
+    arity: int = 0
+    category: str = "" # type name or other grouping
     
 @dataclass(eq=False, unsafe_hash=False)
 class Term:
@@ -66,17 +61,14 @@ def sign_from_fn(fn: Callable, name: Optional[str] = None) -> TermSignature:
     ''' Get signature from function '''
     s = inspect.signature(fn)
     arity = len(s.parameters)
-    category = "" # TODO: get from function signature
-    return TermSignature(name=fn.__name__, type=TermType(arity=arity, category=category))
-
-def term_sign(signature: str | TermSignature, args: Sequence[Term] = []):
-    if type(signature) is str:
-        signature = TermSignature(signature, TermType(arity = len(args), category=signature))
-    return signature
+    name = name or fn.__name__
+    category = name # TODO: get from function signature
+    return TermSignature(name=name, arity=arity, category=category)
 
 def build_term(term_cache: dict[tuple, Term], signature: str | TermSignature, args: Sequence[Term] = [], 
                cache_cb: Callable = lambda t,hit:()) -> Term:
-    signature = term_sign(signature, args)
+    if type(signature) is str:
+        signature = TermSignature(signature, arity = len(args), category="")
     key = (signature, *args)
     if key not in term_cache:
         term = Term(signature, list(args))
@@ -87,6 +79,8 @@ def build_term(term_cache: dict[tuple, Term], signature: str | TermSignature, ar
         cache_cb(term, True)
     return term
 
+TRAVERSAL_EXIT_NODE = 1 
+TRAVERSAL_EXIT = 2
     
 def postorder_traversal(term: Term, enter_args: Callable, exit_term: Callable):
     ''' enter_args and exit_term are called with entered term and its parent.
@@ -97,15 +91,17 @@ def postorder_traversal(term: Term, enter_args: Callable, exit_term: Callable):
     while len(q) > 0:
         cur_arg_i, cur_term, cur_term_i, cur_parent = q.popleft()
         if cur_arg_i == 0:
-            should_skip_args = enter_args(cur_term, cur_term_i, cur_parent)
-            if should_skip_args:
-                should_end_traversal = exit_term(cur_term, cur_term_i, cur_parent)
-                if should_end_traversal:
-                    return
+            status = enter_args(cur_term, cur_term_i, cur_parent)
+            if status == TRAVERSAL_EXIT:
+                return
+            if status == TRAVERSAL_EXIT_NODE:
+                # should_end_traversal = exit_term(cur_term, cur_term_i, cur_parent)
+                # if should_end_traversal:
+                #     return
                 continue
         if cur_arg_i >= len(cur_term.args):
-            should_end_traversal = exit_term(cur_term, cur_term_i, cur_parent)
-            if should_end_traversal:
+            status = exit_term(cur_term, cur_term_i, cur_parent)
+            if status == TRAVERSAL_EXIT:
                 return
         else:
             cur_arg = cur_term.args[cur_arg_i]
@@ -124,15 +120,14 @@ def postorder_map(term: Term, fn: Callable, with_cache = False) -> Any:
             pass
     def _enter_args(t: Term, term_i, p: Term):
         if t in term_cache:
-            return True
+            processed_t = term_cache[t]
+            args_stack[-1].append(processed_t)
+            return TRAVERSAL_EXIT_NODE
         args_stack.append([])
     def _exit_term(t: Term, term_i, p: Term):
-        if t in term_cache:
-            processed_t = term_cache[t]
-        else:
-            term_processed_args = args_stack.pop()
-            processed_t = fn(t, *term_processed_args)
-            add_res(t, processed_t)
+        term_processed_args = args_stack.pop()
+        processed_t = fn(t, term_processed_args)
+        add_res(t, processed_t)
         args_stack[-1].append(processed_t) #add to parent args
     postorder_traversal(term, _enter_args, _exit_term)
     return args_stack[0][0]
@@ -145,6 +140,9 @@ def term_to_str(term: Term) -> str:
         return "(" + " ".join([term.signature.name, *args]) + ")"    
     res = postorder_map(term, t_to_s, with_cache=True)
     return res 
+
+Term.__repr__ = term_to_str
+Term.__str__ = term_to_str
 
 def get_leaves(root: Term, name: Optional[str | TermSignature] = None, leaves_cache = {}) -> list[Term]:
     ''' Find all leaves in root that are equal to term by name '''
@@ -177,18 +175,23 @@ class TermPos:
     def __hash__(self):
         return hash((self.term, self.occur))    
 
-def get_depths(term: Term, depth_cache: dict[Term, int]) -> dict[Term, int]:
+def get_depths(term: Term, depth_cache: Optional[dict[Term, int]] = None) -> dict[Term, int]:
     
-    def _enter_args(term: Term, *_):
-        if term in depth_cache:
-            return True # skip args
-    
-    def _exit_term(term: Term, term_i, parent: Term):
-        if term in depth_cache:
-            return 
-        depth_cache[term] = depth_cache.get(term, -1) + 1
+    depth_cache = depth_cache or {}
+
+    def update_parent(term: Term, parent: Term):
         if parent is not None: 
-            depth_cache[parent] = max(depth_cache.get(parent, -1), depth_cache.get(term, 0))
+            depth_cache[parent] = max(depth_cache.get(parent, -1), depth_cache.get(term, 0))        
+
+    def _exit_term(term: Term, term_i, parent: Term):
+        depth_cache[term] = depth_cache.get(term, -1) + 1
+        update_parent(term, parent)
+
+    def _enter_args(term: Term, term_i, parent: Term):
+        if term in depth_cache:
+            update_parent(term, parent)
+            return TRAVERSAL_EXIT_NODE # skip args
+    
 
     postorder_traversal(term, _enter_args, _exit_term) 
 
@@ -248,9 +251,9 @@ def pick_term_pos(term: Term, depth_cache: dict[Term, int],
         if should_pick:
             selected_pos.append(term_pos)
         if should_break:
-            return True # stop traversal
+            return TRAVERSAL_EXIT
 
-    postorder_traversal(term, lambda t,p:(), _exit_term)
+    postorder_traversal(term, lambda *_:(), _exit_term)
 
     return subterms, selected_pos
 
@@ -324,12 +327,12 @@ def match_term(term: Term, pattern: Term, is_equiv: Callable = points_are_equiv)
         * is wildcard leaf. X, Y, Z are meta-variables for non-linear matrching
     '''
     eq_terms = []
-    def _exit_term(t: Term, p: Term):
+    def _exit_term(t: Term, term_i: int, p: Term):
         bindings = UnifyBindings()
         if unify(bindings, is_equiv, t, pattern):
             eq_terms.append((t, bindings))
         pass
-    postorder_traversal(term, lambda t,p: (), _exit_term)
+    postorder_traversal(term, lambda *_: (), _exit_term)
     return eq_terms
 
 def bind_terms(terms: list[Term], values: Any | list[Optional[Any]]) -> dict[tuple[Term, int], Any]:
@@ -421,33 +424,35 @@ def replace(term_builder, term_pos: TermPos, with_term: Term, term_parents: dict
     return new_term
 
 def evaluate(term: Term, ops: dict[str | TermSignature, Callable],
-                get_binding: Callable[[Term], Any] = lambda ti: None,
-                set_binding: Callable[[Term], Any] = lambda ti,v:()) -> Any:
+                get_binding: Callable[[tuple[Term, int]], Any] = lambda ti: None,
+                set_binding: Callable[[tuple[Term, int], Any], Any] = lambda ti,v:()) -> Any:
     ''' Fully or partially evaluates term (concrete or abstract) '''
     
-    none_terms_to_skip = set()
-    def _enter_args(term: Term, parent: Term):
-        if term in none_terms_to_skip:
-            return True
-        res = get_binding(term)
+    term_occur = {}
+    args_stack = [[]]
+    def _enter_args(term: Term, term_i, parent: Term):
+        cur_occur = term_occur.get(term, 0)        
+        res = get_binding((term, cur_occur))
         if res is not None:
-            return True
+            args_stack[-1].append(res)
+            return TRAVERSAL_EXIT_NODE
+        args_stack.append([])
         
-    def _exit_term(term: Term, p: Term):
-        if term in none_terms_to_skip or get_binding(term) is not None:
-            return 
-        args = [get_binding(arg) for arg in term.args]
-        if any(arg is None for arg in args):
-            none_terms_to_skip.add(term)
-            return
-        op_fn = ops.get(term.signature, None) or ops.get(term.signature.name, None)
-        if op_fn is not None:
-            fn_res = op_fn(*args)
-            set_binding(term, fn_res)
+    def _exit_term(term: Term, term_i, p: Term):
+        cur_occur = term_occur.get(term, 0)
+        term_occur[term] = cur_occur + 1
+        args = args_stack.pop()
+        if all(arg is not None for arg in args):
+            op_fn = ops.get(term.signature, None) or ops.get(term.signature.name, None)
+            if op_fn is not None:
+                res = op_fn(*args)
+        if res is not None:            
+            set_binding((term, cur_occur), res)
+        args_stack[-1].append(res)
 
     postorder_traversal(term, _enter_args, _exit_term)
 
-    return get_binding(term)
+    return args_stack[0][0]
     
 inf_count_constraints: dict[str, int] = defaultdict(lambda: math.inf)
 
@@ -681,7 +686,16 @@ if __name__ == "__main__":
     pass
 
 
-    t1, _ = parse_term(term_cache, "(f (f (f x x) (f x (f x)) (f x (f x))))")
+    t1_str = "(f (f (f x x) (f x (f x)) (f x (f x))))"
+    t1, _ = parse_term(term_cache, t1_str)
+
+    depth = get_depths(t1)
+    print(depth)
+    pass    
+
+    print(term_to_str(t1))
+    assert term_to_str(t1) == t1_str, f"Expected {t1_str}, got {term_to_str(t1)}"
+    pass
     # t1, _ = parse_term("(f x y z)")
     # p1, _ = parse_term(term_cache, "(f (f X X) Y Y)")
     p1, _ = parse_term(term_cache, "(f ? ? *)")
@@ -696,4 +710,5 @@ if __name__ == "__main__":
     bindings = bind_terms(leaves, 1)
     print(term_to_str(t1))
     ev1 = evaluate(t1, {"f": lambda x, y: x + y, "g": lambda x: x * 2, "h": lambda x: x ** 2}, bindings.get, bindings.setdefault)
+
     pass    

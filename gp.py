@@ -6,6 +6,7 @@
         4. Mutation: one-point subtree
 '''
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import partial
 import math
@@ -14,13 +15,14 @@ from time import perf_counter
 import numpy as np
 import torch
 from spatial import InteractionIndex, RTreeIndex, SpatialIndex
-from term import Term, TermSignature, build_term, evaluate, get_term_pos, one_point_rand_crossover, one_point_rand_mutation, ramped_half_and_half, sign_from_fn, term_sign, term_to_str
+from term import Term, TermSignature, build_term, evaluate, get_term_pos, one_point_rand_crossover, one_point_rand_mutation, ramped_half_and_half, sign_from_fn, term_to_str
 from sklearn.base import BaseEstimator, RegressorMixin
 
 def tournament_selection(gp_solver: 'GPSolver', population: list[Term], size: int, tournament_selection_size = 7):
     ''' Fitness is 1d tensor of fitness selected for tournament '''
     fitness = gp_solver.get_fitness(population)
-    selected_ids = torch.randint(fitness.shape[0], (size, tournament_selection_size), dtype=torch.int, device=fitness.device)
+    selected_ids = torch.randint(fitness.shape[0], (size, tournament_selection_size), dtype=torch.int, device=fitness.device,
+                                 generator=gp_solver.torch_gen)
     selected_fitnesses = fitness[selected_ids]
     best_id_id = torch.argmin(selected_fitnesses, dim=-1)
     best_ids = torch.gather(selected_ids, dim=-1, index = best_id_id.unsqueeze(-1)).squeeze(-1)
@@ -41,7 +43,8 @@ def lexicase_selection(gp_solver: 'GPSolver', population: list[Term], size: int)
         raise RuntimeError("Target is not set for lexicase selection")
     interactions = torch.abs(outcomes - target)
 
-    shuffled_test_ids = torch.randperm(interactions.shape[-1], device=interactions.device)
+    shuffled_test_ids = torch.randperm(interactions.shape[-1], device=interactions.device,
+                                        generator=gp_solver.torch_gen)
     # candidate_ids = torch.arange(interactions.shape[0], device=interactions.device) # all candidates
     for test_id in shuffled_test_ids:
         test_min_diff = torch.min(interactions[candidate_ids, test_id])
@@ -51,7 +54,8 @@ def lexicase_selection(gp_solver: 'GPSolver', population: list[Term], size: int)
             break
     if len(candidate_ids) == 1:
         return candidate_ids[0]
-    best_id_id = torch.randint(len(candidate_ids), (1,), device=interactions.device)
+    best_id_id = torch.randint(len(candidate_ids), (1,), device=interactions.device,
+                                generator=gp_solver.torch_gen)
     best_id = candidate_ids[best_id_id]
     return best_id
 
@@ -76,9 +80,11 @@ def mut_cross2_breed(gp_solver: 'GPSolver', population: list[Term], size: int,
 
     selected_ids = selection_fn(gp_solver, population, size)
 
-    mutation_mask = torch.rand(size, device=population.device) < mutation_rate
+    mutation_mask = torch.rand(size, device=population.device,
+                                generator=gp_solver.torch_gen) < mutation_rate
     
-    crossover_mask = torch.rand(size // 2, device=population.device) < crossover_rate
+    crossover_mask = torch.rand(size // 2, device=population.device,
+                                    generator=gp_solver.torch_gen) < crossover_rate
 
     selected_ids_list = selected_ids.tolist()
     mutation_mask_list = mutation_mask.tolist()
@@ -154,17 +160,29 @@ def l1_loss(predictions, target):
     """ L1 loss function """
     return torch.mean(torch.abs(predictions - target), dim=-1)  
 
+def timed(gp_solver: 'GPSolver', fn: Callable, key: str) -> Callable:
+    ''' Decorator to time function execution '''
+    def wrapper(*args, **kwargs):
+        start_time = perf_counter()
+        result = fn(*args, **kwargs)
+        elapsed_time = perf_counter() - start_time
+        gp_solver.metrics.setdefault(key, []).append(elapsed_time)
+        return result
+    return wrapper
+
 class GPSolver(BaseEstimator, RegressorMixin):
 
     def __init__(self, 
                 # target: torch.Tensor,
                 # leaves: dict[str | TermSignature, torch.Tensor],
                 # branch_ops: dict[str | TermSignature, Callable],
-                ops: list[Callable] | dict[str, Callable] = alg_ops_torch, # we refer to  each func by its position in the list 
+                ops: list[Callable] | dict[str, Callable], # we refer to  each func by its position in the list 
                 fitness_fn: Callable = mse_loss,
                 init_fn: Callable = init_each(ramped_half_and_half),
                 eval_fn: Callable = evaluate,
                 breed_fn: Callable = mut_cross2_breed,
+                max_consts: int = 5, # 0 to disable consts in terms
+                max_vars: int = 10, # max number of free variables
                 # fitness_fns: dict[str, Callable],
                 # main_fitness_id: int = 0,
             #    sem_store_class: SpatialIndex = InteractionIndex, # RTsreeIndex,
@@ -174,8 +192,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 pop_size: int = 1000,
                 with_caches: bool = False, # enables all caches: syntax, semantic, int, fitness
                 rtol = 1e-04, atol = 1e-03,
-                rnd_seed: Optional[int | np.random.RandomState] = None,
-                device = "cuda"):
+                rnd_seed: Optional[int] = None,
+                torch_rnd_seed: Optional[int] = None,
+                device = "cpu", dtype = torch.float32):
         
         if type(ops) is dict:
             self.ops = list(ops.values())
@@ -183,13 +202,34 @@ class GPSolver(BaseEstimator, RegressorMixin):
         else:
             self.ops = ops
             ops_names = [ f"f{opi}" if op.__name__ == "<lambda>" else op.__name__ for opi, op in enumerate(ops) ]
-        self.ops = ops
-        self.ops_signatures = [sign_from_fn(op, op_name) for op_name, op in zip(ops_names, ops)]
-        self.ops_map = {sign: self.ops[i] for i, sign in enumerate(self.ops_signatures)}        
+        all_signatures = [sign_from_fn(op, op_name) for op_name, op in zip(ops_names, self.ops)]
+        self.ops_signatures = [sign for sign in all_signatures if sign.arity > 0]
+        self.leaf_signatures = [sign for sign in all_signatures if sign.arity == 0]
+        self.max_consts = max_consts
+        self.max_vars = max_vars
+        self.term_consts: dict[Term, list[torch.Tensor]] = {} # tree root to const occurances 
+        self.term_vars: dict[Term, list[int]] = {}            # tree root to variable occurances
+        # NOTE: variables and consts are stored separately from tree - abstract shapes x * x + c * x + c 
+        #       in this approach we have a problem with caching semantics of intermediate terms, as for different c and x, the results are different
+        #       solution: make term_output as dictionary with keys (root, term). Root should be a part of all keys to identify concrete selection of c, x
+        #       alternative: create subclasses of Term for Vars and Values - this is more explicit approach and better 
+        #                    Vars = Term + var id, Values = Term + value Any.
+        #                    Do we need (term, occur) in this case? Seems yes.
+        self.count_constraints = defaultdict(lambda: math.inf)
+        if self.max_consts > 0:
+            const_signature = TermSignature("c", 0, "c")
+            self.leaf_signatures.append(const_signature)
+            self.count_constraints["c"] = self.max_consts
+        if self.max_vars > 0:
+            var_signature = TermSignature("x", 0, "x")
+            self.leaf_signatures.append(var_signature)
+            self.count_constraints["x"] = self.max_vars
+        self.free_vars = []
+        self.ops_map = {sign: self.ops[i] for i, sign in enumerate(all_signatures)} 
         self.fitness_fn = fitness_fn
-        self.init_fn = init_fn
-        self.eval_fn = eval_fn
-        self.breed_fn = breed_fn
+        self.init_fn = timed(self, init_fn, "init_fn")
+        self.eval_fn = timed(self, eval_fn, "eval_fn")
+        self.breed_fn = timed(self, breed_fn, "breed_fn")
         self.max_gen = max_gen
         self.max_root_evals = max_root_evals
         self.max_evals = max_evals
@@ -198,14 +238,18 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.rtol = rtol
         self.atol = atol
         self.device = device
+        self.dtype = dtype
 
         if rnd_seed is None:
             self.rnd = np.random
-        elif isinstance(rnd_seed, np.random.RandomState):
-            self.rnd = rnd_seed
         else:
-            self.rnd = np.random.RandomState(rnd_seed)        
+            self.rnd = np.random.RandomState(rnd_seed)     
 
+        if torch_rnd_seed is None:
+            self.torch_gen = None
+        else:
+            self.torch_gen = torch.Generator(device=device)
+            self.torch_gen.manual_seed(rnd_seed)   
 
         # next are runtime fields and caches that works across fit calls
         self.target = None 
@@ -240,17 +284,15 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         # self.forest: list[int] = [*leaves] # initial forest are leaves
 
-    def _build_free_vars(self, free_vars: Sequence, term_outputs = None) -> dict[Term, torch.Tensor]:
-        term_outputs = term_outputs or {}
+    def _build_free_vars(self, free_vars: Sequence) -> list[torch.Tensor]:
+        new_free_vars = []
         for i, xi in enumerate(free_vars):
-            fv_name = f"x{i}"
-            term = self.term_builder(fv_name, [])                
             if not torch.is_tensor(xi):
-                fv = torch.tensor(xi, dtype=self.device)
+                fv = torch.tensor(xi, dtype=self.dtype, device=self.device)
             else:
-                fv = xi.to(self.device)
-            term_outputs[term] = fv 
-        return term_outputs
+                fv = xi.to(device = self.device, dtype = self.dtype)
+            new_free_vars.append(fv)
+        return new_free_vars
 
     def _reset_state(self, free_vars: Optional[Sequence] = None, target: Optional[Sequence] = None):
         ''' Called before each fit '''
@@ -261,38 +303,36 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.metrics: dict[str, int | float | list[int|float]] = {}
         self.leaf_signatures = []
         if free_vars is not None:
-            self._build_free_vars(free_vars, self.term_outputs)
+            self.free_vars = self._build_free_vars(free_vars)
         if target is None:
             self.target = None
         else:
             if not torch.is_tensor(target):
-                self.target = torch.tensor(target, dtype = self.device)
+                self.target = torch.tensor(target, device = self.device, dtype = self.dtype)
             else:
-                self.target = target.to(self.device)
+                self.target = target.to(device = self.device, dtype = self.dtype)
 
-    def term_builder(self, signature: str | TermSignature, args: list[Term]) -> Term:
+    def term_builder(self, signature: TermSignature, args: list[Term]) -> Term:
+        # if signature.category == "c": # building constant 
+        #     # TODO
+        #     pass 
+        # elif signature.category == "x": # building variable
+        #     # TODO 
+        #     pass 
         def cache_cb(term: Term, cache_hit: bool):
             key = "syntax_hit" if cache_hit else "syntax_miss"
             self.metrics[key] = self.metrics.get(key, 0) + 1
-        if self.with_caches:
+        if self.with_caches or (len(args) == 0):
             term = build_term(self.syntax, signature, args, cache_cb)
         else:
-            term = Term(term_sign(signature, args), args)
+            term = Term(signature, args)
             cache_cb(term, False)
         return term        
-
-    def timed(self, fn: Callable, key: str) -> Callable:
-        ''' Decorator to time function execution '''
-        def wrapper(*args, **kwargs):
-            start_time = perf_counter()
-            result = fn(*args, **kwargs)
-            elapsed_time = perf_counter() - start_time
-            self.metrics.setdefault(key, []).append(elapsed_time)
-            return result
-        return wrapper
     
-    def _get_binding(self, term_with_pos: tuple[Term, int]) -> Optional[torch.Tensor]:
+    def _get_binding(self, root: Term, term_with_pos: tuple[Term, int]) -> Optional[torch.Tensor]:        
         term = term_with_pos[0] # in this implementation we ignore position 
+        # if term.signature.category == "c": # constant
+
         if term in self.term_outputs:
             return self.term_outputs[term]
         # semantic_id = self.term_to_sid.get(term, None)
@@ -352,14 +392,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
         return fitness  
     
     def get_fitness(self, terms: list[Term]) -> torch.Tensor:
-        fitness = torch.tensor([self.term_fitness[term] for term in terms], device=terms.device)
+        fitness = torch.stack([self.term_fitness[term] for term in terms])
         return fitness
     
     def get_outcomes(self, terms: list[Term]) -> torch.Tensor:
-        outcomes = torch.stack([self.term_outputs[term] for term in terms], device=terms.device)
+        outcomes = torch.stack([self.term_outputs[term] for term in terms])
         return outcomes
     
-    def fit(self, X: np.ndarray, y: np.ndarray) -> 'GPSolver':
+    def fit(self, X: np.ndarray | torch.Tensor, y: np.ndarray | torch.Tensor) -> 'GPSolver':
         """
         Fit the solver to the data.
 
@@ -374,17 +414,17 @@ class GPSolver(BaseEstimator, RegressorMixin):
         try:
             self.forest = self.init_fn(self, self.pop_size)
             while self.gen < self.max_gen and self.evals < self.max_evals and self.root_evals < self.max_root_evals:
-                solution = self.eval(population)
+                solution = self.eval(self.forest)
                 if solution:
                     break        
-                population = self.breed_fn(self, population, self.pop_size)  
+                population = self.breed_fn(self, self.forest, self.pop_size)  
                 self.gen += 1
         except EvSearchTermination as e:
             pass
         self.is_fitted_ = True
         return self
     
-    def predict(self, X: np.ndarray) -> np.ndarray:
+    def predict(self, X: np.ndarray | torch.Tensor) -> np.ndarray:
         """
         Predict using the trained solver.
 
@@ -413,11 +453,18 @@ class GPSolver(BaseEstimator, RegressorMixin):
     
 if __name__ == "__main__":
 
-    from torch_alg import alg_ops_torch, koza_1
+    from torch_alg import alg_ops, koza_1
+    
+    device = "cuda"
+    dtype = torch.float16
+    rnd_seed = 42
 
-    free_vars, target = koza_1.sample_set("train")
+    solver = GPSolver(ops = alg_ops, device = device, dtype = dtype,
+                        rnd_seed = rnd_seed, torch_rnd_seed = rnd_seed)
 
-    solver = GPSolver()
+    free_vars, target = koza_1.sample_set("train", device = device, dtype = dtype,
+                                            generator=solver.torch_gen)
+
 
     solver.fit(free_vars, target)
 
