@@ -18,65 +18,199 @@ from dataclasses import dataclass, field
 import inspect
 from itertools import product
 import math
-from typing import Any, Callable, Generator, Optional, Sequence, Type
+from typing import Any, Callable, Generator, Literal, Optional, Sequence, Type
 
 import numpy as np
 
+# @dataclass(frozen=True)
+# class TermType:
+#     name: str # int, float, func type or general category of term like variable, constant, etc.
+#     type_arity: int = 0
+#     # args: tuple['TermType',...] = field(default_factory=tuple)
+
+#     # def arity(self):
+#     #     return len(self.args)
+
+#     def arity(self) -> int:
+#         return self.type_arity
+
+# @dataclass(frozen=True)
+# class TermSignature:
+#     ''' Descriptive, have to be stateless - state is outside'''
+#     name: str
+#     term_type: TermType
+
+#     def arity(self) -> int:
+#         return self.term_type.arity()
+        
+# untyped_var_signature = TermSignature("x", TermType(name="x", type_arity=0))
+# untyped_const_signature = TermSignature("c", TermType(name="c", type_arity=0))
+
+# def get_simple_fn_signature(name: str, arity: int):
+#     return TermSignature(name=name, term_type=TermType(name=name, type_arity=arity))
+
+# def fn_to_simple_signature(fn: Callable, name: Optional[str] = None, type_name: Optional[str] = None) -> TermSignature:
+#     ''' Get signature from function. Very simple untyped fn signatures where only arities are important. '''
+#     s = inspect.signature(fn)
+#     name = name or fn.__name__
+#     arity = len(s.parameters)
+#     term_type = TermType(type_name or name, arity)
+#     return TermSignature(name=name, term_type=term_type)
+
+UNTYPED_ID = 0 # type id by default
 
 @dataclass(frozen=True)
-class TermSignature:
-    ''' Descriptive, have to be stateless - state is outside'''
-    name: str
-    arity: int = 0
-    category: str = "" # type name or other grouping
+class TermType:
+    args: tuple[int] = field(default_factory=tuple) # type ids of arguments 
+    returns: int = UNTYPED_ID # type id of return value
+
+    def arity(self) -> int:
+        return len(self.args)    
+
+UNTYPED = TermType()
+
+def get_untyped_fun_type(arity: int, untyped_funcs = {}) -> TermType:
+    if arity not in untyped_funcs:
+        untyped_funcs[arity] = TermType(args=(UNTYPED_ID,) * arity, returns=UNTYPED_ID)
+    return untyped_funcs[arity]
+
+def get_term_type(term: 'Term') -> TermType:
+    if term.arity() == 0:
+        return UNTYPED
+    return get_untyped_fun_type(term.arity())
     
-@dataclass(eq=False, unsafe_hash=False)
 class Term:
-    signature: TermSignature
-    args: list['Term'] = field(default_factory=list)
-    # NOTE: bindings are not detouched from term 
-    # bindings: dict[int, int] = field(default_factory=dict)
-    # ''' Binding defines index in semantics, the vector which specifies evaluation of the term 
-    #     Map: evaluation id to semantics id 
-    # '''
+    ''' Base class for tree nodes '''
 
+    def get_args(self) -> tuple['Term', ...]:
+        return ()
 
-# @dataclass
-# class TermPos:
-#     ''' Index of position by Term object and its occurance
-#         We avoid adding other data to minimize memory footprint.
-#     '''
-#     child_term: Term 
-#     occur: int 
+    def arity(self) -> int:
+        return 0
+    
+    def get_term_id(self) -> tuple:
+        return ()
+    
+    def get_signature(self, up_to: Literal["term_type", "type", "term_id", "all"]) -> tuple:
+        if up_to == "term_type":
+            return (get_term_type(self), )
+        if up_to == "type":
+            return (get_term_type(self), self.__class__)
+        if up_to == "term_id":
+            return (get_term_type(self), self.__class__, *self.get_term_id())
+        return (get_term_type(self), self.__class__, *self.get_term_id(), *self.get_args())
+    
+    def get_signatures(self):
+        tp = get_term_type(self)
+        return [
+            (tp,), (tp, self.__class__), (tp, self.__class__, *self.get_term_id())
+        ]
+    
+@dataclass(frozen=True, eq=False, unsafe_hash=False)
+class Op(Term):
+    op_id: int
 
-#     # idx: int # global index it postorder
-#     # depth: int 
+    args: tuple['Term', ...] = field(default_factory=tuple)
 
-# @dataclass(eq=False, unsafe_hash=False, kw_only=True)
-# class BindingValue: 
-#     value: Optional[Any] = None
-#     value_builder: Optional[Callable] = None
+    def get_args(self) -> tuple['Term', ...]:
+        return self.args
+    
+    def arity(self):
+        return len(self.args)
+    
+    def get_term_id(self):
+        return (self.op_id, )
+    
+@dataclass(frozen=True, eq=False, unsafe_hash=False)
+class Variable(Term):
+    ''' Stores reference to concrete variable '''
+    var_id: int
 
-def sign_from_fn(fn: Callable, name: Optional[str] = None) -> TermSignature:
-    ''' Get signature from function '''
-    s = inspect.signature(fn)
-    arity = len(s.parameters)
-    name = name or fn.__name__
-    category = name # TODO: get from function signature
-    return TermSignature(name=name, arity=arity, category=category)
+    def get_term_id(self):
+        return (self.var_id, )
+    
+@dataclass(frozen=True, eq=False, unsafe_hash=False)
+class Value(Term):
+    ''' Represents constants of target domain 
+        Note that constant ref is used, the values are stored separately.
+    '''
+    value_id: int 
 
-def build_term(term_cache: dict[tuple, Term], signature: str | TermSignature, args: Sequence[Term] = [], 
-               cache_cb: Callable = lambda t,hit:()) -> Term:
-    if type(signature) is str:
-        signature = TermSignature(signature, arity = len(args), category="")
-    key = (signature, *args)
-    if key not in term_cache:
-        term = Term(signature, list(args))
-        cache_cb(term, False)
-        term_cache[key] = term
-    else:
-        term = term_cache[key]
+    def get_term_id(self):
+        return (self.value_id, )
+    
+@dataclass(frozen=True, eq=False, unsafe_hash=False)
+class Wildcard(Term):
+    is_star: bool = False # ? or *
+
+    def __str__(self):
+        return "*" if self.is_star else "?"
+    
+    def __repr__(self):
+        return str(self)
+    
+    def get_term_id(self):
+        return (self.is_star, )
+
+@dataclass(frozen=True, eq=False, unsafe_hash=False)
+class MetaVariable(Term):
+    name: str 
+
+    def __str__(self):
+        return self.name
+    
+    def __repr__(self):
+        return self.name
+    
+    def get_term_id(self):
+        return (self.name, )
+
+def name_to_term(name: str, args: Sequence[Term], 
+                 alloc_id: Callable[[TermType, Type, Any], int]) -> Term:
+    ''' Attempts parsing of a name for creating either var or const. 
+        Resorts to func signature at the end.
+        op_cache maps arity to name to allocated term_id.
+        This is untyped approach where we only consider arity, more complex approach should 
+        replace int key of op_cache to TermType dataclass
+    '''    
+    if len(args) == 0:
+        if name == "?":
+            return Wildcard(is_star=False)
+        if name == "*":
+            return Wildcard(is_star=True)
+        if name.isupper():
+            return MetaVariable(name)        
+        try:
+            value = float(name)
+        except ValueError:
+            value = None
+        if value is not None:
+            value_id = alloc_id(UNTYPED, Value, value)
+            return Value(value_id)
+        var_id = alloc_id(UNTYPED, Variable, name)
+        return Variable(var_id)
+    fun_type = get_untyped_fun_type(len(args))
+    op_id = alloc_id(fun_type, Op, name)
+    return Op(op_id, tuple(args))
+
+def cache_term(term_cache: dict[tuple, Term], term: Term,
+                cache_cb: Callable = lambda t,s:()) -> Term:
+    '''  Check if term is already present and if so, returns cached version for given term.
+         Untyped approach, more complex method should define signature preciselly. 
+         
+         Returns cached instance of term and hit/miss flag
+    '''
+    
+    # 3 parts, term type as general category, term_id, 
+    #          uniquelly identifies Node among possible nodes,
+    #          arg refs should be previously cached
+    signature = term.get_signature(up_to="all")
+    if signature in term_cache:
+        term = term_cache[signature]
         cache_cb(term, True)
+    else:
+        term_cache[signature] = term
+        cache_cb(term, False)
     return term
 
 TRAVERSAL_EXIT_NODE = 1 
@@ -99,12 +233,12 @@ def postorder_traversal(term: Term, enter_args: Callable, exit_term: Callable):
                 # if should_end_traversal:
                 #     return
                 continue
-        if cur_arg_i >= len(cur_term.args):
+        if cur_arg_i >= cur_term.arity():
             status = exit_term(cur_term, cur_term_i, cur_parent)
             if status == TRAVERSAL_EXIT:
                 return
         else:
-            cur_arg = cur_term.args[cur_arg_i]
+            cur_arg = cur_term.get_args()[cur_arg_i]
             q.appendleft((cur_arg_i + 1, cur_term, cur_term_i, cur_parent))
             q.appendleft((0, cur_arg, cur_arg_i, cur_term))
 
@@ -132,48 +266,56 @@ def postorder_map(term: Term, fn: Callable, with_cache = False) -> Any:
     postorder_traversal(term, _enter_args, _exit_term)
     return args_stack[0][0]
 
-def term_to_str(term: Term) -> str: 
+def term_to_str(term: Term, op_cache: dict[TermType, dict[int, str]],
+                            const_cache: dict[int, Any]) -> str: 
     ''' LISP style string '''
     def t_to_s(term: Term, args: list[str]):
-        if len(args) == 0:
-            return term.signature.name
-        return "(" + " ".join([term.signature.name, *args]) + ")"    
+        if isinstance(term, Value):
+            return str(const_cache[term.value_id])
+        if isinstance(term, Variable):
+            return op_cache[UNTYPED][term.var_id]
+        if isinstance(term, Op):
+            op_name = op_cache[get_term_type(term)][term.op_id]            
+            return "(" + " ".join([op_name, *args]) + ")"    
+        raise str(term)
     res = postorder_map(term, t_to_s, with_cache=True)
     return res 
 
 Term.__repr__ = term_to_str
 Term.__str__ = term_to_str
 
-def get_leaves(root: Term, name: Optional[str | TermSignature] = None, leaves_cache = {}) -> list[Term]:
+def get_leaves(root: Term, leaf_type: Variable | Value | Wildcard | MetaVariable | None = None, 
+               leaves_cache = {}) -> list[Term]:
     ''' Find all leaves in root that are equal to term by name '''
     if root not in leaves_cache:
         leaves = []
         def _exit_term(term: Term, *_):
-            if len(term.args) == 0:
+            if isinstance(term, Value) or isinstance(term, Variable):
                 leaves.append(term)
         postorder_traversal(root, lambda *_: (), _exit_term)
         leaves_cache[root] = leaves
     leaves = leaves_cache[root]
-    if name is None:
+    if leaf_type is None:
         return leaves
-    filtered_leaves = [child_term for child_term in leaves if child_term.signature.name == name or child_term.signature == name]
+    filtered_leaves = [child_term for child_term in leaves if isinstance(child_term, leaf_type)]
     return filtered_leaves
 
-@dataclass(eq=False, unsafe_hash=False)
+# @dataclass(eq=False, unsafe_hash=False)
+@dataclass(frozen=True)
 class TermPos:
     term: Term
     occur: int = 0 # -> id of term occrance in root
     pos: int = 0 # pos in parent args
-    depth: int = 0
     at_depth: int = 0
+    # depth: int = 0
 
-    def __eq__(self, other):
-        if isinstance(other, TermPos):
-            return self.term == other.term and self.occur == other.occur
-        return False
+    # def __eq__(self, other):
+    #     if isinstance(other, TermPos):
+    #         return self.term == other.term and self.occur == other.occur
+    #     return False
 
-    def __hash__(self):
-        return hash((self.term, self.occur))    
+    # def __hash__(self):
+    #     return hash((self.term, self.occur))    
 
 def get_depths(term: Term, depth_cache: Optional[dict[Term, int]] = None) -> dict[Term, int]:
     
@@ -182,28 +324,54 @@ def get_depths(term: Term, depth_cache: Optional[dict[Term, int]] = None) -> dic
     def update_parent(term: Term, parent: Term):
         if parent is not None: 
             depth_cache[parent] = max(depth_cache.get(parent, -1), depth_cache.get(term, 0))        
+    
+    def _enter_args(term: Term, term_i, parent: Term):
+        if term in depth_cache:
+            update_parent(term, parent)
+            return TRAVERSAL_EXIT_NODE # skip args    
 
     def _exit_term(term: Term, term_i, parent: Term):
         depth_cache[term] = depth_cache.get(term, -1) + 1
         update_parent(term, parent)
 
-    def _enter_args(term: Term, term_i, parent: Term):
-        if term in depth_cache:
-            update_parent(term, parent)
-            return TRAVERSAL_EXIT_NODE # skip args
-    
-
     postorder_traversal(term, _enter_args, _exit_term) 
 
     return depth_cache   
 
-def get_term_pos(term: Term, depth_cache: dict[Term, int]) -> dict[TermPos, TermPos]: 
+def get_counts(term: Term, constraints: dict[tuple, int] | None = None, 
+               count_cache: Optional[dict[Term, dict[tuple, int]]] = None) -> dict[Term, dict[tuple, int]]:
+    count_cache = count_cache or {} 
+    if constraints is None:
+        return count_cache
+
+    def _enter_args(term: Term, term_i, parent: Term):
+        if term in count_cache:
+            return TRAVERSAL_EXIT_NODE # skip args    
+    
+    def _exit_term(term: Term, term_i, parent: Term):
+        counts = {k:arg_count for k in constraints.keys()
+                      for arg_count in [sum(count_cache[a].get(k, 0) for a in term.args)]
+                      if arg_count > 0}
+        cur_signatures = [s for s in term.get_signatures() if s in constraints]
+        for s in cur_signatures:
+            counts[s] = counts.get(s, 0) + 1
+        pass
+
+    postorder_traversal(term, _enter_args, _exit_term)     
+
+    return count_cache
+
+def is_count_valid(term: Term, constraints: dict[tuple, int],
+                   count_cache: Optional[dict[Term, dict[tuple, int]]] = None) -> bool:
+    counts = get_counts(term, constraints, count_cache)
+    res = all(counts.get(term, {}).get(k, 0) <= v for k, v in constraints.items())
+    return res
+
+def get_term_pos(term: Term) -> dict[TermPos, TermPos]: 
     ''' Returns dictionary where keys are all positions in the term and values are references to parent position 
         NOTE: we do not return thee root of the term as TermPos as it does not have parent
     '''
 
-    get_depths(term, depth_cache)
-    
     subterms: dict[TermPos, TermPos] = {}
     term_at_depths = {}
     last_term_pos: dict[Term, TermPos] = {}
@@ -212,7 +380,7 @@ def get_term_pos(term: Term, depth_cache: dict[Term, int]) -> dict[TermPos, Term
         cur_occur = term_occur.get(term, 0)
         term_occur[term] = cur_occur + 1
         term_at_depths[term] = term_at_depths.get(parent, -1) + 1
-        term_pos = TermPos(term, cur_occur, term_i, depth_cache.get(term, 0), term_at_depths.get(term, 0))
+        term_pos = TermPos(term, cur_occur, term_i, term_at_depths[term])
         last_term_pos[term] = term_pos
         parent_pos = last_term_pos.get(parent, None)
         if parent_pos is not None:
@@ -226,13 +394,11 @@ def get_term_pos(term: Term, depth_cache: dict[Term, int]) -> dict[TermPos, Term
 
     return subterms
 
-def pick_term_pos(term: Term, depth_cache: dict[Term, int], 
+def pick_term_pos(term: Term,
                    pred: Callable[[TermPos], tuple[bool, bool]]) -> dict[TermPos, TermPos]:
     ''' Return TermPos that satisfy given predicate. Allows early termination (find_first patern)
         NOTE: we do not return thee root of the term as TermPos as it does not have parent
     '''
-    get_depths(term, depth_cache)
-    
     selected_pos = []
     subterms: dict[TermPos, TermPos] = {}
     term_at_depths = {}
@@ -242,7 +408,7 @@ def pick_term_pos(term: Term, depth_cache: dict[Term, int],
         cur_occur = term_occur.get(term, 0)
         term_occur[term] = cur_occur + 1
         term_at_depths[term] = term_at_depths.get(parent, -1) + 1
-        term_pos = TermPos(term, cur_occur, term_i, depth_cache.get(term, 0), term_at_depths.get(term, 0))
+        term_pos = TermPos(term, cur_occur, term_i, term_at_depths.get(term, 0))
         last_term_pos[term] = term_pos
         should_pick, should_break = pred(term_pos)
         parent_pos = last_term_pos.get(parent, None)
@@ -275,13 +441,19 @@ class UnifyBindings:
         for k in keys:
             if k != to_key and k not in self.renames:
                 self.renames[k] = to_key
-    
+
 def points_are_equiv(*ts: Term) -> bool:
     if len(ts) == 0:
         return True
-    arg_counts = [(len(sf), len(s) > 0 and s[-1] == "*") for t in ts for s in ["".join(a.signature.name for a in t.args)] for sf in [s.rstrip("*")]]
+    def rstrip(args: tuple[Term]):
+        filtered = tuple(reversed(args[i] for i in range(len(args) - 1, -1, -1) if not (isinstance(args[i], Wildcard) and args[i].is_star)))
+        return filtered
+    arg_counts = [(len(sf), len(s) > 0 and (isinstance(s[-1], Wildcard) and s[-1].is_star))
+                  for t in ts 
+                  for s in [t.get_args()] 
+                  for sf in [rstrip(s)]]
     max_count = max(ac for ac, _ in arg_counts)
-    res = all(t.signature.name == ts[0].signature.name and (has_wildcard or (not has_wildcard and (ac == max_count))) for t, (ac, has_wildcard) in zip(ts, arg_counts))
+    res = all(t.get_signature(up_to="term_id") == ts[0].get_signature(up_to="term_id") and (has_wildcard or (not has_wildcard and (ac == max_count))) for t, (ac, has_wildcard) in zip(ts, arg_counts))
     return res
 
 def unify(b: UnifyBindings, is_equiv: Callable, *terms: Term) -> bool:
@@ -292,11 +464,11 @@ def unify(b: UnifyBindings, is_equiv: Callable, *terms: Term) -> bool:
         Note: we do not check here that bound meta-variables recursivelly resolve to concrete terms.
         This should be done by the caller.
     '''
-    filtered_terms = [t for t in terms if t.signature.name not in "?*"]
+    filtered_terms = [t for t in terms if not isinstance(t, Wildcard)]
     if len(filtered_terms) < 2:
         return True
-    t_is_meta = [t.signature.name.isupper() for t in filtered_terms]
-    meta_operators = set([t.signature.name for t, is_meta in zip(filtered_terms, t_is_meta) if is_meta])
+    t_is_meta = [isinstance(t, MetaVariable) for t in filtered_terms]
+    meta_operators = set([t.name for t, is_meta in zip(filtered_terms, t_is_meta) if is_meta])
     meta_terms = b.get(*meta_operators)
     bound_meta_terms = [bx for bx in meta_terms if bx is not None]
     concrete_terms = [t for t, is_meta in zip(filtered_terms, t_is_meta) if not is_meta]
@@ -317,7 +489,7 @@ def unify(b: UnifyBindings, is_equiv: Callable, *terms: Term) -> bool:
                 b.set(to_key, term)
             b.set_same(unbound_meta_operators, to_key)
     if len(all_concrete_terms) >= 2:
-        for arg_tuple in zip(*(t.args for t in all_concrete_terms)):
+        for arg_tuple in zip(*(t.get_args() for t in all_concrete_terms)):
             if not unify(b, is_equiv, *arg_tuple):
                 return False
     return True
@@ -373,9 +545,10 @@ def parse_literal(term_str: str, i: int = 0):
     assert literal, f"Literal cannot be empty at position {i}:{j} in term string: {term_str}"
     return literal, j
 
-def parse_term(term_cache, term_str: str, i: int = 0) -> tuple[Term, int]:
+def parse_term(term_cache, alloc_id, term_str: str, i: int = 0) -> tuple[Term, int]:
     ''' Read term from string, return term and end of term after i '''
     branches = deque([[]])
+    op_cache = op_cache or {}
     while True:
         i = skip_spaces(term_str, i)
         if i >= len(term_str):
@@ -391,7 +564,8 @@ def parse_term(term_cache, term_str: str, i: int = 0) -> tuple[Term, int]:
                     args.append(arg)
                 elif type(arg) is tuple: 
                     bindings[arg[0]] = arg[1]
-            term = build_term(term_cache, name, args)
+            new_term = name_to_term(name, args, alloc_id)
+            term = cache_term(term_cache, new_term)
             branches[0].append(term)
             i += 1            
         elif term_str[i] == '(': # branch
@@ -405,153 +579,213 @@ def parse_term(term_cache, term_str: str, i: int = 0) -> tuple[Term, int]:
         else: #leaf
             literal, i = parse_literal(term_str, i)
             # terms.appendleft([binding])
-            leaf = build_term(term_cache, literal)
+            new_term = name_to_term(literal, [], alloc_id)
+            leaf = cache_term(term_cache, literal)
             branches[0].append(leaf)
     return branches[0][0], i
 
-def replace(term_builder, term_pos: TermPos, with_term: Term, term_parents: dict[TermPos, TermPos]) -> Term:
+def replacement_counts(pos: TermPos, with_term: Term, root: Term,
+                            count_cache: dict[Term, dict[tuple, int]]):
+    root_keys = count_cache[root].keys()
+    res = {k:count_cache[root][k] - count_cache[pos.term].get(k, 0) + count_cache[with_term].get(k, 0) for k in root_keys}
+    return res
+
+def replacement_counts_sat(pos: TermPos, with_term: Term, root: Term,
+                            count_cache: dict[Term, dict[tuple, int]],
+                            count_constraints: dict[tuple, int] | None = None) -> bool:
+    if count_constraints is None:
+        return True
+    replace_counts = replacement_counts(pos, with_term, root, count_cache)
+    res = all(replace_counts.get(k, 0) <= v for k, v in count_constraints.items())
+    return res
+
+def replace(term_cacher: Callable,
+            term_pos: TermPos, with_term: Term, term_parents: dict[TermPos, TermPos]) -> Term:
     cur_pos = term_pos
     new_term = with_term
     while cur_pos in term_parents:
 
         cur_parent = term_parents[cur_pos]
 
-        new_parent_term_args = [*cur_parent.term.args[:cur_pos.pos], new_term, *cur_parent.term.args[cur_pos.pos + 1:]]
-        new_term = term_builder(cur_parent.term.signature, new_parent_term_args)
+        cur_args = cur_parent.term.get_args()
 
+        new_parent_term_args = tuple(*cur_args[:cur_pos.pos], new_term, *cur_args[cur_pos.pos + 1:])
+        # assert isinstance(cur_parent.term, Op), f"Expected Op term"
+        new_op = Op(cur_parent.term.op_id, new_parent_term_args)
+        new_term = term_cacher(new_op)
         cur_pos = cur_parent
         
     return new_term
 
-def evaluate(term: Term, ops: dict[str | TermSignature, Callable],
-                get_binding: Callable[[tuple[Term, int]], Any] = lambda ti: None,
-                set_binding: Callable[[tuple[Term, int], Any], Any] = lambda ti,v:()) -> Any:
+def evaluate(term: Term, ops: list[Callable],
+                get_binding: Callable[[Term], Any] = lambda ti: None,
+                set_binding: Callable[[Term, Any], Any] = lambda ti,v:()) -> Any:
     ''' Fully or partially evaluates term (concrete or abstract) '''
     
-    term_occur = {}
+    # term_occur = {}
     args_stack = [[]]
     def _enter_args(term: Term, term_i, parent: Term):
-        cur_occur = term_occur.get(term, 0)        
-        res = get_binding((term, cur_occur))
+        # cur_occur = term_occur.get(term, 0)        
+        res = get_binding(term) #, cur_occur))
         if res is not None:
             args_stack[-1].append(res)
             return TRAVERSAL_EXIT_NODE
         args_stack.append([])
         
     def _exit_term(term: Term, term_i, p: Term):
-        cur_occur = term_occur.get(term, 0)
-        term_occur[term] = cur_occur + 1
+        # cur_occur = term_occur.get(term, 0)
+        # term_occur[term] = cur_occur + 1
         args = args_stack.pop()
-        if all(arg is not None for arg in args):
-            op_fn = ops.get(term.signature, None) or ops.get(term.signature.name, None)
-            if op_fn is not None:
-                res = op_fn(*args)
+        if isinstance(term, Op) and all(arg is not None for arg in args):
+            op_fn = ops[term.op_id]
+            res = op_fn(*args)
         if res is not None:            
-            set_binding((term, cur_occur), res)
+            # set_binding((term, cur_occur), res)
+            set_binding(term, res)
         args_stack[-1].append(res)
 
     postorder_traversal(term, _enter_args, _exit_term)
 
     return args_stack[0][0]
     
-inf_count_constraints: dict[str, int] = defaultdict(lambda: math.inf)
+# inf_count_constraints: dict[tuple, int] = defaultdict(lambda: math.inf)
 
-def grow(term_builder: Callable, leaf_ops: list[TermSignature], branch_ops: list[TermSignature],
+# def signature_match(from_sig: tuple, to_sig: tuple) -> bool:
+#     if len(from_sig) > len(to_sig):
+#         return False
+#     for x, y in zip(from_sig, to_sig):
+#         if x != y:
+#             return False
+#     return True
+
+# def check_signature_constraints(constraints: dict, signature: tuple) -> bool:
+#     keys_to_check = [sig for sig in constraints.keys() if signature_match(sig, signature) ]
+#     for i in range(len(signature)):
+#         subsign = signature[:i+1]
+#         if subsign in constraints and constraints[subsign] <= 0:
+#             return False
+#     return True
+
+def grow(term_cacher: Callable, 
+         leaves: list[tuple[tuple, Callable]],
+         ops: list[tuple[TermType, Type, int]],
+         count_constraints: dict[tuple[Type, int], int] | None = None,
          grow_depth = 5, grow_leaf_prob: Optional[float] = None,
-         counts_constraints: dict[str, int] = inf_count_constraints,
          rnd: np.random.RandomState = np.random) -> Optional[Term]:
     ''' Grow a tree with a given depth '''
-    allowed_leaves = [t for t in leaf_ops if counts_constraints[t.category] > 0]
-    allowed_branches = [t for t in branch_ops if counts_constraints[t.category] > 0]
-    args = []
+    allowed_leaves = [t for t in leaves if (count_constraints is None) or (count_constraints.get(t[0], 1) > 0) ]
+    allowed_branches = [t for t in ops if (count_constraints is None) or (count_constraints.get(t, 1) > 0)]    
     if (grow_depth == 0) or len(allowed_branches) == 0:
         if len(allowed_leaves) == 0:
             return None 
         leaf_index = rnd.choice(len(allowed_leaves))
-        selected_op = allowed_leaves[leaf_index]
-        counts_constraints[selected_op.category] -= 1        
+        selected_sign, term_builder = allowed_leaves[leaf_index]
+        if (count_constraints is not None) and (selected_sign in count_constraints):
+            count_constraints[selected_sign] -= 1        
+        new_term: Term = term_builder()
     else:
         disallowed_category = set() #already attempted with None results
         while True: # backtrack in case if counts_constraints were noto satisfied - attempting other symbol - or return none
-            iter_allowed_leaves = [t for t in allowed_leaves if t.category not in disallowed_category]
-            iter_allowed_branches = [f for f in allowed_branches if f.category not in disallowed_category]
+            iter_allowed_leaves = [t for t in allowed_leaves if t[0] not in disallowed_category]
+            iter_allowed_branches = [f for f in allowed_branches if f not in disallowed_category]
             if len(iter_allowed_branches) == 0 and len(iter_allowed_leaves) == 0:
                 return None
+            selected_op = None 
             if grow_leaf_prob is None:
                 func_index = rnd.choice(len(iter_allowed_branches) + len(iter_allowed_leaves))
-                selected_op = iter_allowed_branches[func_index] if func_index < len(iter_allowed_branches) else iter_allowed_leaves[func_index - len(iter_allowed_branches)]
+                if func_index < len(iter_allowed_branches):
+                    selected_op = iter_allowed_branches[func_index]
+                else: 
+                    selected_sign, term_builder = iter_allowed_leaves[func_index - len(iter_allowed_branches)]
+                    new_term = term_builder()
             elif len(iter_allowed_leaves) > 0 and rnd.rand() < grow_leaf_prob:
                 leaf_index = rnd.choice(len(iter_allowed_leaves))
-                selected_op = iter_allowed_leaves[leaf_index]
+                selected_sign, term_builder = iter_allowed_leaves[leaf_index]
+                new_term = term_builder()
             else:
                 func_index = rnd.choice(len(iter_allowed_branches))
                 selected_op = iter_allowed_branches[func_index]
-            new_counts_constraints = dict(counts_constraints)
-            new_counts_constraints[selected_op.category] -= 1            
-            for _ in range(selected_op.arity):
-                term = grow(term_builder, allowed_leaves, allowed_branches,
-                            grow_depth = grow_depth - 1, grow_leaf_prob = grow_leaf_prob, 
-                            counts_constraints = new_counts_constraints, rnd = rnd)
-                args.append(term)
-                if term is None:
-                    break
-            if len(args) > 0 and args[-1] is None:
-                disallowed_category.add(selected_op)
-                continue 
-            counts_constraints.update(new_counts_constraints)
-            break
-    return term_builder(selected_op, args)
+            if selected_op is not None:
+                term_type, term_builder, op_id = selected_op
+                new_counts_constraints = None if count_constraints is None else dict(count_constraints)
+                if (new_counts_constraints is not None) and (selected_op in new_counts_constraints):
+                    new_counts_constraints[selected_op] -= 1            
+                args = []
+                for _ in range(term_type.arity()):
+                    term = grow(term_builder, 
+                                allowed_leaves, allowed_branches,
+                                count_constraints = new_counts_constraints, 
+                                grow_depth = grow_depth - 1, grow_leaf_prob = grow_leaf_prob, 
+                                rnd = rnd)
+                    args.append(term)
+                    if term is None:
+                        break
+                if len(args) > 0 and args[-1] is None:
+                    disallowed_category.add(selected_op)
+                    continue 
+                new_term = term_builder(op_id, tuple(args))
+                if count_constraints is not None:
+                    count_constraints.update(new_counts_constraints)
+            break    
+    return term_cacher(new_term)
 
-def full(term_builder: Callable, leaf_ops: list[TermSignature], branch_ops: list[TermSignature],
-         full_depth = 5,
-         counts_constraints: dict[str, int] = inf_count_constraints,
-         rnd: np.random.RandomState = np.random) -> Optional[Term]:
+def full(term_cacher: Callable, 
+         leaves: list[tuple[tuple, Callable]],
+         ops: list[tuple[TermType, Type, int]],
+         count_constraints: dict[tuple, int] | None = None,
+         full_depth = 5, rnd: np.random.RandomState = np.random) -> Optional[Term]:
     ''' Grow a tree with a given depth '''
-    allowed_leaves = [t for t in leaf_ops if counts_constraints[t.category] > 0]    
-    allowed_branches = [f for f in branch_ops if counts_constraints[f.category] > 0]
-    args = []
+    allowed_leaves = [t for t in leaves if (count_constraints is None) or (count_constraints.get(t[0], 1) > 0) ]
+    allowed_branches = [t for t in ops if (count_constraints is None) or (count_constraints.get(t, 1) > 0)]    
     if full_depth == 0 or len(allowed_branches) == 0:
         if len(allowed_leaves) == 0:
             return None         
         leaf_id = rnd.choice(len(allowed_leaves))
-        selected_op = allowed_leaves[leaf_id]
-        counts_constraints[selected_op.category] -= 1          
+        selected_sign, term_builder = allowed_leaves[leaf_id]
+        if (count_constraints is not None) and (selected_sign in count_constraints):
+            count_constraints[selected_sign] -= 1
+        new_term: Term = term_builder()
     else:
         disallowed_category = set() #already attempted with None results
         while True: # backtrack in case if counts_constraints were noto satisfied - attempting other symbol - or return none
-            iter_allowed_branches = [f for f in allowed_branches if f.category not in disallowed_category]
+            iter_allowed_branches = [f for f in allowed_branches if f not in disallowed_category]
             if len(iter_allowed_branches) == 0:
                 return None
             branch_id = rnd.choice(len(iter_allowed_branches))
             selected_op = iter_allowed_branches[branch_id]
-            new_counts_constraints = dict(counts_constraints)
-            new_counts_constraints[selected_op.category] -= 1
-            for _ in range(selected_op.arity):
+            new_counts_constraints = None if count_constraints is None else dict(count_constraints)
+            if (new_counts_constraints is not None) and (selected_op in new_counts_constraints):
+                new_counts_constraints[selected_op] -= 1
+            term_type, term_builder, op_id = selected_op
+            args = []
+            for _ in range(term_type.arity()):
                 node = full(term_builder, allowed_leaves, allowed_branches, 
-                            full_depth=full_depth - 1, counts_constraints = new_counts_constraints, 
-                            rnd = rnd)
+                            count_constraints = new_counts_constraints,
+                            full_depth=full_depth - 1, rnd = rnd)
                 args.append(node)
                 if node is None:
                     break 
             if len(args) > 0 and args[-1] is None:
                 disallowed_category.add(selected_op.category)
                 continue  
-            if counts_constraints is not None:
-                counts_constraints.update(new_counts_constraints)       
+            new_term = term_builder(op_id, tuple(args))
+            if count_constraints is not None:
+                count_constraints.update(new_counts_constraints) 
             break  
-    return term_builder(selected_op, args)
+    return term_cacher(new_term)
 
-
-def ramped_half_and_half(term_builder: Callable, leaf_ops: list[TermSignature], branch_ops: list[TermSignature],
-                         rhh_min_depth = 1, rhh_max_depth = 5, rhh_grow_prob = 0.5, 
-                         counts_constraints: dict[str, int] = inf_count_constraints,                
-                         rnd: np.random.RandomState = np.random) -> Optional[Term]:
+def ramped_half_and_half(term_cacher: Callable, 
+                        leaves: list[tuple[tuple, Callable]],
+                        ops: list[tuple[TermType, Type, int]],
+                        count_constraints: dict[tuple, int] | None = None,
+                        rhh_min_depth = 1, rhh_max_depth = 5, rhh_grow_prob = 0.5,                          
+                        rnd: np.random.RandomState = np.random) -> Optional[Term]:
     ''' Generate a population of half full and half grow trees '''
     depth = rnd.randint(rhh_min_depth, rhh_max_depth+1)
     if rnd.rand() < rhh_grow_prob:
-        return grow(term_builder, leaf_ops, branch_ops, grow_depth = depth, counts_constraints = counts_constraints, rnd = rnd)
+        return grow(term_cacher, leaves, ops, count_constraints, grow_depth = depth, rnd = rnd)
     else:
-        return full(term_builder, leaf_ops, branch_ops, full_depth = depth, counts_constraints = counts_constraints, rnd = rnd)
+        return full(term_cacher, leaves, ops, count_constraints, full_depth = depth, rnd = rnd)
    
 
 # IDEA: dropout in GP, frozen tree positions which cannot be mutated or crossovered - for later
@@ -588,7 +822,7 @@ def get_pos_scores(term: Term, positions: list[TermPos],
                         rnd: np.random.RandomState = np.random) -> Optional[np.ndarray]:
     pos_proba = rnd.rand(len(positions))
     if select_node_leaf_prob is not None:
-        proba_mod = np.array([select_node_leaf_prob if len(pos.term.args) == 0 else (1 - select_node_leaf_prob) for pos in positions ])
+        proba_mod = np.array([select_node_leaf_prob if pos.term.arity() == 0 else (1 - select_node_leaf_prob) for pos in positions ])
         pos_proba *= proba_mod
     return pos_proba
 
@@ -606,13 +840,21 @@ def select_positions(term: Term, positions: list[TermPos], num_positions: int,
     return ordered_pos_ids
 
 
-def one_point_rand_mutation(term_builder, term: Term, positions: dict[TermPos, TermPos], 
-                            leaf_ops: list[TermSignature], branch_ops: list[TermSignature],
+def one_point_rand_mutation(term_cacher, term: Term, positions: dict[TermPos, TermPos], 
+                            leaves: list[tuple[tuple, Callable]],
+                            ops: list[tuple[TermType, Type, int]],
+                            count_constraints: dict[tuple, int] | None = None,
+                            depth_cache: dict[Term, int] | None = None,
+                            count_cache: dict[Term, dict[tuple, int]] | None = None,
                             rnd: np.random.RandomState = np.random,
                             select_node_leaf_prob: Optional[float] = 0.1,
                             # include_root = True, 
                             tree_max_depth = 17,
                             num_children = 1) -> list[Term]:
+    
+    depth_cache = get_depths(term, depth_cache)
+    count_cache = get_counts(term, count_constraints, count_cache)  
+
     # if include_root:
     pos_list = [TermPos(term), *positions.keys()] # we always include root to avoid checks after selection
     # else:
@@ -620,25 +862,38 @@ def one_point_rand_mutation(term_builder, term: Term, positions: dict[TermPos, T
     selected_pos = select_positions(term, pos_list, num_children, select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
     # if len(selected_pos) == 0:
     #     return [term] * num_children # noop
+
     mutants = []
     for pos_id in selected_pos:
         position: TermPos = pos_list[pos_id]
-        new_child = grow(term_builder, leaf_ops, branch_ops, grow_depth = min(5, tree_max_depth - position.at_depth), 
+        cur_count_constraints = None if count_constraints is None else dict(count_constraints)
+        new_child = grow(term_cacher, leaves, ops, 
+                            count_constraints=cur_count_constraints,
+                            grow_depth = min(5, tree_max_depth - position.at_depth), 
                             grow_leaf_prob = None, rnd = rnd)
         if new_child is None:
             mutants.append(term) # noop
         else:
-            mutated_term = replace(term_builder, position, new_child, positions)
+            mutated_term = replace(term_cacher, position, new_child, positions)
             mutants.append(mutated_term)
         
     return mutants
 
-def one_point_rand_crossover(term_builder, term1: Term, term2: Term,
-                                           positions1: dict[TermPos, TermPos], positions2: dict[TermPos, TermPos],
+def one_point_rand_crossover(term_cacher, term1: Term, term2: Term,
+                                           positions1: dict[TermPos, TermPos], positions2: dict[TermPos, TermPos], 
+                                count_constraints: dict[tuple, int] | None = None,
+                                depth_cache: dict[Term, int] | None = None,
+                                count_cache: dict[Term, dict[tuple, int]] | None = None,
                                 rnd: np.random.RandomState = np.random,
                                 select_node_leaf_prob: Optional[float] = 0.1,
                                 include_root = True, tree_max_depth = 17,
                                 num_children = 1):
+    
+    depth_cache = get_depths(term1, depth_cache)
+    depth_cache = get_depths(term2, depth_cache)
+    count_cache = get_counts(term1, count_constraints, count_cache)
+    count_cache = get_counts(term2, count_constraints, count_cache)
+
     pos_list1 = [TermPos(term1), *positions1.keys() ]
     pos_proba1 = get_pos_scores(term1, pos_list1, include_root = include_root,
                                 select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
@@ -657,18 +912,20 @@ def one_point_rand_crossover(term_builder, term1: Term, term2: Term,
         for pos_id1, pos_id2 in product(reversed(pos_ids1), reversed(pos_ids2)):
             pos1 = pos_list1[pos_id1]
             pos2 = pos_list2[pos_id2]
-            if pos1.at_depth + pos2.depth <= tree_max_depth:
+            if (pos1.at_depth + depth_cache[pos2.term] <= tree_max_depth) and \
+                replacement_counts_sat(pos1, pos2.term, term1, count_cache, count_constraints):
                 selected_pairs.append((pos1, positions1, pos2.term))
             if len(selected_pairs) >= num_children:
                 break
-            if pos2.at_depth + pos1.depth <= tree_max_depth:
+            if (pos2.at_depth + depth_cache[pos1.term] <= tree_max_depth) and \
+                replacement_counts_sat(pos2, pos1.term, term2, count_cache, count_constraints):
                 selected_pairs.append((pos2, positions2, pos1.term))
             if len(selected_pairs) >= num_children:
                 break
 
     children = []
     for pos, poss, term in selected_pairs:
-        new_child = replace(term_builder, pos, term, poss)
+        new_child = replace(term_cacher, pos, term, poss)
         children.append(new_child)
 
     return children
