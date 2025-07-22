@@ -569,16 +569,16 @@ def replace(term_cacher: Callable,
         
     return new_term
 
-def evaluate(term: Term, ops: list[Callable],
-                get_binding: Callable[[Term], Any] = lambda ti: None,
-                set_binding: Callable[[Term, Any], Any] = lambda ti,v:()) -> Any:
+def evaluate(root: Term, ops: list[Callable],
+                get_binding: Callable[[Term, Term], Any] = lambda ti: None,
+                set_binding: Callable[[Term, Term, Any], Any] = lambda ti,v:()) -> Any:
     ''' Fully or partially evaluates term (concrete or abstract) '''
     
     # term_occur = {}
     args_stack = [[]]
     def _enter_args(term: Term, term_i, parent: Term):
         # cur_occur = term_occur.get(term, 0)        
-        res = get_binding(term) #, cur_occur))
+        res = get_binding(root, term) #, cur_occur))
         if res is not None:
             args_stack[-1].append(res)
             return TRAVERSAL_EXIT_NODE
@@ -593,11 +593,10 @@ def evaluate(term: Term, ops: list[Callable],
             op_fn = ops[term.op_id]
             res = op_fn(*args)
         if res is not None:            
-            # set_binding((term, cur_occur), res)
-            set_binding(term, res)
+            set_binding(root, term, res)
         args_stack[-1].append(res)
 
-    postorder_traversal(term, _enter_args, _exit_term)
+    postorder_traversal(root, _enter_args, _exit_term)
 
     return args_stack[0][0]
     
@@ -665,7 +664,7 @@ def grow(term_cacher: Callable,
                     new_counts_constraints[selected_op] -= 1            
                 args = []
                 for _ in range(term_type.arity()):
-                    term = grow(term_builder, 
+                    term = grow(term_cacher, 
                                 allowed_leaves, allowed_branches,
                                 count_constraints = new_counts_constraints, 
                                 grow_depth = grow_depth - 1, grow_leaf_prob = grow_leaf_prob, 
@@ -712,14 +711,14 @@ def full(term_cacher: Callable,
             term_type, term_builder, op_id = selected_op
             args = []
             for _ in range(term_type.arity()):
-                node = full(term_builder, allowed_leaves, allowed_branches, 
+                node = full(term_cacher, allowed_leaves, allowed_branches, 
                             count_constraints = new_counts_constraints,
                             full_depth=full_depth - 1, rnd = rnd)
                 args.append(node)
                 if node is None:
                     break 
             if len(args) > 0 and args[-1] is None:
-                disallowed_category.add(selected_op.category)
+                disallowed_category.add(selected_op)
                 continue  
             new_term = term_builder(op_id, tuple(args))
             if count_constraints is not None:
@@ -945,6 +944,7 @@ if __name__ == "__main__":
     # bindings = bind_terms(leaves, 1)
     bindings = {parse_term(term_cache, alloc_id, "x")[0]: 1}
     print(str(t1))
-    ev1 = evaluate(t1, [lambda x, y: x + y, lambda x: x * 2, lambda x: x ** 2], bindings.get, bindings.setdefault)
+    ev1 = evaluate(t1, [lambda x, y: x + y, lambda x: x * 2, lambda x: x ** 2], lambda _,x: bindings.get(x), 
+                   lambda _,*x: bindings.setdefault(*x))
 
     pass    

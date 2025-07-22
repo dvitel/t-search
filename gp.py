@@ -137,21 +137,45 @@ def mut_cross2_breed(gp_solver: 'GPSolver', population: list[Term], size: int,
 
     return children
 
-
-def init_one(self):
-    return ramped_half_and_half(self.term_builder, self.leaves, self.ops, rnd=self.rnd)
-
 def init_each(init_fn: Callable) -> Callable:
     def _init(gp_solver: 'GPSolver', size: int) -> list[Term]:
         res = []
         for _ in range(size):
-            term = init_fn(gp_solver.term_builder, gp_solver.leaf_signatures, gp_solver.ops_signatures, 
+            term = init_fn(gp_solver._cache_term, gp_solver.leaves, gp_solver.branches, 
+                            count_constraints = gp_solver.get_count_constraints(),
                             rnd=gp_solver.rnd)
+            print(str(term))
             if term is not None:
                 res.append(term)
         return res
     return _init
 
+def eval(gp_solver: 'GPSolver', terms: list[Term], eval_fn = evaluate) -> bool:
+    terms_for_fitness = []
+    for term in terms:
+        term_output = eval_fn(term, gp_solver.ops, gp_solver._get_binding, gp_solver._set_binding)
+        # sids_set = context.process_delayed_semantics() # semantics of tree term
+        # sids.update(sids_set)
+        if term not in gp_solver.term_fitness:
+            terms_for_fitness.append(term)
+    if len(terms_for_fitness) == 0:
+        return False 
+    predictions = torch.stack([gp_solver.term_outputs[t] for t in terms_for_fitness ])
+    # fitness = torch.zeros(semantics.shape[0], len(self.fitness_fns), dtype=semantics.dtype, device=semantics.device)
+    fitness: torch.Tensor = gp_solver.fitness_fn(predictions, gp_solver.target)
+    # for fn_id, fn in enumerate(self.fitness_fns.values()):
+    #     fitness[:, fn_id] = fn(self, semantics)
+    for term, term_fitness in zip(terms_for_fitness, fitness):
+        gp_solver.term_fitness[term] = term_fitness
+
+    best_id = fitness.argmin().item()
+    best_term = terms_for_fitness[best_id]
+    best_fitness = fitness[best_id]
+    cur_best_fitness = gp_solver.term_fitness.get(gp_solver.best_term, None)
+    if cur_best_fitness is None or (best_fitness <= gp_solver.term_fitness[gp_solver.best_term]):
+        gp_solver.best_term = best_term    
+    return fitness  
+    
 def mse_loss(predictions, target):
     """ Mean Squared Error loss function """
     return torch.mean((predictions - target) ** 2, dim=-1)
@@ -176,13 +200,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 ops: list[Callable] | dict[str, Callable], # we refer to each func by its position in the list 
                 fitness_fn: Callable = mse_loss,
                 init_fn: Callable = init_each(ramped_half_and_half),
-                eval_fn: Callable = evaluate,
+                eval_fn: Callable = eval,
                 breed_fn: Callable = mut_cross2_breed,
                 max_consts: int = 5, # 0 to disable consts in terms
                 max_vars: int = 10, # max number of free variables
                 max_gen: int = 100,
-                max_root_evals: int = 100_000, 
-                max_evals: int = 500_000,
+                max_root_evals: int = 10_000, 
+                max_evals: int = 100_000,
                 pop_size: int = 1000,
                 with_caches: bool = False, # enables all caches: syntax, semantic, int, fitness
                 rtol = 1e-04, atol = 1e-03,
@@ -208,8 +232,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         if self.debug:
 
+            solver = self
+
             def _term_to_str(self: Term):
-                return term_to_str(self, name_getter=lambda x: self._get_name(*x))
+                return term_to_str(self, name_getter=lambda x: solver._get_name(*x))
             
             Term.__str__ = _term_to_str
             Term.__repr__ = _term_to_str
@@ -231,7 +257,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if self.max_consts > 0:            
             const_signature = (UNTYPED, Value)
             self.count_constraints[const_signature] = self.max_consts
-            self.default_leaves.append(self._alloc_const)
+            self.default_leaves.append((const_signature, self._alloc_const))
         if self.max_vars > 0:
             var_signature = (UNTYPED, Variable)
             self.count_constraints[var_signature] = self.max_vars
@@ -311,12 +337,15 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
     def _alloc_const(self) -> Value: 
         ''' Should we random sample of try some grid? Anyway we tune '''
-        value = self.const_range[0] + torch.rand((1,), device=self.device, dtype=self.dtype) * self.const_range[1]
+        value = self.const_range[0] + torch.rand((1,), device=self.device, dtype=self.dtype,
+                                                    generator=self.torch_gen) * self.const_range[1]
         const_id = len(self.consts)
         self.consts.append(value)
         return Value(const_id)
 
-    def _add_free_vars(self, free_vars: Sequence) -> list[torch.Tensor]:
+    def _add_free_vars(self, free_vars: Sequence):
+        if self.max_vars == 0:
+            return
         for i, xi in enumerate(free_vars):
             if not torch.is_tensor(xi):
                 fv = torch.tensor(xi, dtype=self.dtype, device=self.device)
@@ -324,7 +353,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 fv = xi.to(device = self.device, dtype = self.dtype)
             self.vars.append(fv)
             self.var_names.append(f"x{i}")
-            self.leaves.append((UNTYPED, Variable, i), lambda i=i: Variable(i))
+            self.leaves.append(((UNTYPED, Variable), lambda i=i: Variable(i)))
 
     def _reset_state(self, free_vars: Optional[Sequence] = None, target: Optional[Sequence] = None):
         ''' Called before each fit '''
@@ -379,7 +408,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
             term = cache_term(self.syntax, term, cache_cb)
         else:
             cache_cb(term, False)
-        return term        
+        return term     
+
+    def get_count_constraints(self) -> dict[tuple, int]:
+        return dict(self.count_constraints)   
     
     def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:        
         if isinstance(term, Variable):
@@ -392,8 +424,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         return None 
 
-    def _set_binding(self, term: Term, value: torch.Tensor):
+    def _set_binding(self, root: Term, term: Term, value: torch.Tensor):
         self.evals += 1
+        if root == term:
+            self.root_evals += 1
         if not self.with_caches:
             return
         self.term_outputs[term] = value
@@ -414,32 +448,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
     #     self.delayed_semantics = {}
     #     return new_sem_ids
-
-    def eval(self, terms: list[Term]) -> bool:
-        terms_for_fitness = []
-        for term in terms:
-            self.eval_fn(term, self.ops, self._get_binding, self._set_binding)
-            # sids_set = context.process_delayed_semantics() # semantics of tree term
-            # sids.update(sids_set)
-            if term not in self.term_fitness:
-                terms_for_fitness.append(term)
-        if len(terms_for_fitness) == 0:
-            return False 
-        predictions = torch.stack([self.term_outputs[t] for t in terms_for_fitness ])
-        # fitness = torch.zeros(semantics.shape[0], len(self.fitness_fns), dtype=semantics.dtype, device=semantics.device)
-        fitness: torch.Tensor = self.fitness_fn(predictions, self.target)
-        # for fn_id, fn in enumerate(self.fitness_fns.values()):
-        #     fitness[:, fn_id] = fn(self, semantics)
-        for term, term_fitness in zip(terms_for_fitness, fitness):
-            self.term_fitness[term] = term_fitness
-
-        best_id = fitness.argmin().item()
-        best_term = terms_for_fitness[best_id]
-        best_fitness = fitness[best_id]
-        cur_best_fitness = self.term_fitness.get(self.best_term, None)
-        if cur_best_fitness is None or (best_fitness <= self.best_fitness):
-            self.best_term = best_term    
-        return fitness  
     
     def get_fitness(self, terms: list[Term]) -> torch.Tensor:
         fitness = torch.stack([self.term_fitness[term] for term in terms])
@@ -464,7 +472,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         try:
             self.forest = self.init_fn(self, self.pop_size)
             while self.gen < self.max_gen and self.evals < self.max_evals and self.root_evals < self.max_root_evals:
-                solution = self.eval(self.forest)
+                solution = self.eval_fn(self, self.forest)
                 if solution:
                     break        
                 population = self.breed_fn(self, self.forest, self.pop_size)  
