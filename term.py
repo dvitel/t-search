@@ -15,9 +15,11 @@
 
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from functools import partial
 import inspect
 from itertools import product
 import math
+from types import MethodType
 from typing import Any, Callable, Generator, Literal, Optional, Sequence, Type
 
 import numpy as np
@@ -106,7 +108,7 @@ class Term:
             (tp,), (tp, self.__class__), (tp, self.__class__, *self.get_term_id())
         ]
     
-@dataclass(frozen=True, eq=False, unsafe_hash=False)
+@dataclass(frozen=True, eq=False, unsafe_hash=False, repr=False)
 class Op(Term):
     op_id: int
 
@@ -121,7 +123,7 @@ class Op(Term):
     def get_term_id(self):
         return (self.op_id, )
     
-@dataclass(frozen=True, eq=False, unsafe_hash=False)
+@dataclass(frozen=True, eq=False, unsafe_hash=False, repr=False)
 class Variable(Term):
     ''' Stores reference to concrete variable '''
     var_id: int
@@ -129,7 +131,7 @@ class Variable(Term):
     def get_term_id(self):
         return (self.var_id, )
     
-@dataclass(frozen=True, eq=False, unsafe_hash=False)
+@dataclass(frozen=True, eq=False, unsafe_hash=False, repr=False)
 class Value(Term):
     ''' Represents constants of target domain 
         Note that constant ref is used, the values are stored separately.
@@ -139,29 +141,17 @@ class Value(Term):
     def get_term_id(self):
         return (self.value_id, )
     
-@dataclass(frozen=True, eq=False, unsafe_hash=False)
+@dataclass(frozen=True, eq=False, unsafe_hash=False, repr=False)
 class Wildcard(Term):
-    is_star: bool = False # ? or *
-
-    def __str__(self):
-        return "*" if self.is_star else "?"
-    
-    def __repr__(self):
-        return str(self)
+    name: Literal["?", "*"] = "?"
     
     def get_term_id(self):
-        return (self.is_star, )
+        return (self.name, )
 
-@dataclass(frozen=True, eq=False, unsafe_hash=False)
+@dataclass(frozen=True, eq=False, unsafe_hash=False, repr=False)
 class MetaVariable(Term):
     name: str 
 
-    def __str__(self):
-        return self.name
-    
-    def __repr__(self):
-        return self.name
-    
     def get_term_id(self):
         return (self.name, )
 
@@ -174,10 +164,8 @@ def name_to_term(name: str, args: Sequence[Term],
         replace int key of op_cache to TermType dataclass
     '''    
     if len(args) == 0:
-        if name == "?":
-            return Wildcard(is_star=False)
-        if name == "*":
-            return Wildcard(is_star=True)
+        if name in ["?", "*"]:
+            return Wildcard(name)
         if name.isupper():
             return MetaVariable(name)        
         try:
@@ -266,18 +254,14 @@ def postorder_map(term: Term, fn: Callable, with_cache = False) -> Any:
     postorder_traversal(term, _enter_args, _exit_term)
     return args_stack[0][0]
 
-def term_to_str(term: Term, op_cache: dict[TermType, dict[int, str]],
-                            const_cache: dict[int, Any]) -> str: 
+def term_to_str(term: Term, ids_to_names_cache: dict[tuple, str]) -> str: 
     ''' LISP style string '''
     def t_to_s(term: Term, args: list[str]):
-        if isinstance(term, Value):
-            return str(const_cache[term.value_id])
-        if isinstance(term, Variable):
-            return op_cache[UNTYPED][term.var_id]
+        sign = term.get_signature(up_to="term_id")
+        name = str(ids_to_names_cache.get(sign, term.get_term_id()[0]))
         if isinstance(term, Op):
-            op_name = op_cache[get_term_type(term)][term.op_id]            
-            return "(" + " ".join([op_name, *args]) + ")"    
-        raise str(term)
+            return "(" + " ".join([name, *args]) + ")"    
+        return name
     res = postorder_map(term, t_to_s, with_cache=True)
     return res 
 
@@ -442,18 +426,18 @@ class UnifyBindings:
             if k != to_key and k not in self.renames:
                 self.renames[k] = to_key
 
-def points_are_equiv(*ts: Term) -> bool:
+def points_are_equiv(*ts: Term, ids_to_names_cache: dict[tuple, str] = {}) -> bool:
     if len(ts) == 0:
         return True
     def rstrip(args: tuple[Term]):
-        filtered = tuple(reversed(args[i] for i in range(len(args) - 1, -1, -1) if not (isinstance(args[i], Wildcard) and args[i].is_star)))
+        filtered = tuple(reversed([args[i] for i in range(len(args) - 1, -1, -1) if not (isinstance(args[i], Wildcard) and args[i].name == "*")]))
         return filtered
-    arg_counts = [(len(sf), len(s) > 0 and (isinstance(s[-1], Wildcard) and s[-1].is_star))
+    arg_counts = [(len(sf), len(s) > 0 and (isinstance(s[-1], Wildcard) and s[-1].name == "*"))
                   for t in ts 
                   for s in [t.get_args()] 
                   for sf in [rstrip(s)]]
     max_count = max(ac for ac, _ in arg_counts)
-    res = all(t.get_signature(up_to="term_id") == ts[0].get_signature(up_to="term_id") and (has_wildcard or (not has_wildcard and (ac == max_count))) for t, (ac, has_wildcard) in zip(ts, arg_counts))
+    res = all(ids_to_names_cache[t.get_signature(up_to="term_id")] == ids_to_names_cache[ts[0].get_signature(up_to="term_id")] and (has_wildcard or (not has_wildcard and (ac == max_count))) for t, (ac, has_wildcard) in zip(ts, arg_counts))
     return res
 
 def unify(b: UnifyBindings, is_equiv: Callable, *terms: Term) -> bool:
@@ -494,7 +478,7 @@ def unify(b: UnifyBindings, is_equiv: Callable, *terms: Term) -> bool:
                 return False
     return True
 
-def match_term(term: Term, pattern: Term, is_equiv: Callable = points_are_equiv):
+def match_term(term: Term, pattern: Term, is_equiv: Callable):
     ''' Search for all occurances of pattern in term. 
         * is wildcard leaf. X, Y, Z are meta-variables for non-linear matrching
     '''
@@ -507,17 +491,17 @@ def match_term(term: Term, pattern: Term, is_equiv: Callable = points_are_equiv)
     postorder_traversal(term, lambda *_: (), _exit_term)
     return eq_terms
 
-def bind_terms(terms: list[Term], values: Any | list[Optional[Any]]) -> dict[tuple[Term, int], Any]:
-    ''' Manually asign semantic vector id to a specific term in specific evaluation '''    
-    if len(terms) == 0:
-        return 
-    if type(values) is not list:
-        values = [values] * len(terms)
-    values += [None] * (len(terms) - len(values))
-    res = {}
-    for leaf_id, (leaf, value) in enumerate(zip(terms, values)):
-        res[(leaf, leaf_id)] = value
-    return res # None for unset bindings
+# def bind_terms(terms: list[Term], values: Any | list[Optional[Any]]) -> dict[tuple[Term, int], Any]:
+#     ''' Manually asign semantic vector id to a specific term in specific evaluation '''    
+#     if len(terms) == 0:
+#         return 
+#     if type(values) is not list:
+#         values = [values] * len(terms)
+#     values += [None] * (len(terms) - len(values))
+#     res = {}
+#     for leaf_id, (leaf, value) in enumerate(zip(terms, values)):
+#         res[(leaf, leaf_id)] = value
+#     return res # None for unset bindings
 
 def skip_spaces(term_str: str, i: int) -> int:
     while i < len(term_str) and term_str[i].isspace():
@@ -545,10 +529,10 @@ def parse_literal(term_str: str, i: int = 0):
     assert literal, f"Literal cannot be empty at position {i}:{j} in term string: {term_str}"
     return literal, j
 
-def parse_term(term_cache, alloc_id, term_str: str, i: int = 0) -> tuple[Term, int]:
+def parse_term(term_cache, alloc_id: Callable[[TermType, Type, Any], int], 
+               term_str: str, i: int = 0) -> tuple[Term, int]:
     ''' Read term from string, return term and end of term after i '''
     branches = deque([[]])
-    op_cache = op_cache or {}
     while True:
         i = skip_spaces(term_str, i)
         if i >= len(term_str):
@@ -560,7 +544,7 @@ def parse_term(term_cache, alloc_id, term_str: str, i: int = 0) -> tuple[Term, i
             bindings = {}
             for arg_i in range(1, len(cur_term)):
                 arg = cur_term[arg_i]
-                if type(arg) is Term:
+                if isinstance(arg, Term):
                     args.append(arg)
                 elif type(arg) is tuple: 
                     bindings[arg[0]] = arg[1]
@@ -580,7 +564,7 @@ def parse_term(term_cache, alloc_id, term_str: str, i: int = 0) -> tuple[Term, i
             literal, i = parse_literal(term_str, i)
             # terms.appendleft([binding])
             new_term = name_to_term(literal, [], alloc_id)
-            leaf = cache_term(term_cache, literal)
+            leaf = cache_term(term_cache, new_term)
             branches[0].append(leaf)
     return branches[0][0], i
 
@@ -636,6 +620,7 @@ def evaluate(term: Term, ops: list[Callable],
         # cur_occur = term_occur.get(term, 0)
         # term_occur[term] = cur_occur + 1
         args = args_stack.pop()
+        res = None
         if isinstance(term, Op) and all(arg is not None for arg in args):
             op_fn = ops[term.op_id]
             res = op_fn(*args)
@@ -930,42 +915,68 @@ def one_point_rand_crossover(term_cacher, term1: Term, term2: Term,
 
     return children
 
+def dict_alloc_id(term_type: TermType, term_class: Type, args: Any, 
+                  names_to_ids_cache, ids_to_names_cache) -> int:
+    ''' Dummy allocator for testing '''
+    term_type_cache = names_to_ids_cache.setdefault(term_type, {})
+    type_cache = term_type_cache.setdefault(term_class, {})
+    if args in type_cache:
+        return type_cache[args]
+    else:
+        cur_id = len(type_cache)
+        type_cache[args] = cur_id
+        ids_to_names_cache[(term_type, term_class, cur_id)] = args
+        return cur_id
 
 if __name__ == "__main__":
 
     term_cache = {}
+    names_to_ids = {}
+    ids_to_names = {}
+    alloc_id = partial(dict_alloc_id, names_to_ids_cache=names_to_ids, ids_to_names_cache=ids_to_names)
+
+    def _term_to_str(self: Term):
+        return term_to_str(self, ids_to_names_cache=ids_to_names)
+    
+    Term.__str__ = _term_to_str
+    Term.__repr__ = _term_to_str
+
     # tests
-    # t1, _ = parse_term(term_cache, "(f (f X (f x (f x)) (f x (f x))))")
-    # t2, _ = parse_term(term_cache, "(f (f (f x x) Y Y))")
-    # t3, _ = parse_term(term_cache, "(f Z)")
+    t1, _ = parse_term(term_cache, alloc_id, "(f (f X (f x (f x)) (f x (f x))))")
+    print(str(t1))
+    t1_str1 = term_to_str(t1, ids_to_names_cache=ids_to_names)
+    t2, _ = parse_term(term_cache, alloc_id, "(f (f (f x x) Y Y))")
+    t3, _ = parse_term(term_cache, alloc_id, "(f Z)")
     # b = UnifyBindings()
     # res = unify(b, points_are_equiv, t1, t2, t3)
     pass
 
 
-    t1_str = "(f (f (f x x) (f x (f x)) (f x (f x))))"
-    t1, _ = parse_term(term_cache, t1_str)
+    t1_str = "(f (f (f x x) (f 1.42 (f x)) (f 1.42 (f x))))"
+    # t1_str = "(f x x 1.43 1.42)"
+    t1, _ = parse_term(term_cache, alloc_id, t1_str)
 
     depth = get_depths(t1)
     print(depth)
     pass    
 
-    print(term_to_str(t1))
-    assert term_to_str(t1) == t1_str, f"Expected {t1_str}, got {term_to_str(t1)}"
+    print(str(t1))
+    assert str(t1) == t1_str, f"Expected {t1_str}, got {term_to_str(t1)}"
     pass
     # t1, _ = parse_term("(f x y z)")
-    # p1, _ = parse_term(term_cache, "(f (f X X) Y Y)")
-    p1, _ = parse_term(term_cache, "(f ? ? *)")
-    matches = match_term(t1, p1)
-    matches = [(term_to_str(m[0]), {k:term_to_str(v) for k, v in m[1].bindings.items()}) for m in matches]
+    p1, _ = parse_term(term_cache, alloc_id, "(f (f X X) Y Y)")
+    # p1, _ = parse_term(term_cache, alloc_id, "(f *)")
+    matches = match_term(t1, p1, partial(points_are_equiv, ids_to_names_cache=ids_to_names))
+    matches = [(str(m[0]), {k:str(v) for k, v in m[1].bindings.items()}) for m in matches]
     pass
 
 
     # res, _ = parse_term("  \n(   f   (g    x :0:1)  (h \nx) :0:12)  \n", 0)
-    t1, _ = parse_term(term_cache, "  \n(   f   (g    x)  (h \nx))  \n", 0)
-    leaves = get_leaves(t1, "x", leaves_cache = {})
-    bindings = bind_terms(leaves, 1)
-    print(term_to_str(t1))
-    ev1 = evaluate(t1, {"f": lambda x, y: x + y, "g": lambda x: x * 2, "h": lambda x: x ** 2}, bindings.get, bindings.setdefault)
+    t1, _ = parse_term(term_cache, alloc_id, "  \n(   f   (g    x)  (h \nx))  \n", 0)
+    leaves = get_leaves(t1, Variable, leaves_cache = {})
+    # bindings = bind_terms(leaves, 1)
+    bindings = {parse_term(term_cache, alloc_id, "x")[0]: 1}
+    print(str(t1))
+    ev1 = evaluate(t1, [lambda x, y: x + y, lambda x: x * 2, lambda x: x ** 2], bindings.get, bindings.setdefault)
 
     pass    
