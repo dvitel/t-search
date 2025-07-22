@@ -24,41 +24,6 @@ from typing import Any, Callable, Generator, Literal, Optional, Sequence, Type
 
 import numpy as np
 
-# @dataclass(frozen=True)
-# class TermType:
-#     name: str # int, float, func type or general category of term like variable, constant, etc.
-#     type_arity: int = 0
-#     # args: tuple['TermType',...] = field(default_factory=tuple)
-
-#     # def arity(self):
-#     #     return len(self.args)
-
-#     def arity(self) -> int:
-#         return self.type_arity
-
-# @dataclass(frozen=True)
-# class TermSignature:
-#     ''' Descriptive, have to be stateless - state is outside'''
-#     name: str
-#     term_type: TermType
-
-#     def arity(self) -> int:
-#         return self.term_type.arity()
-        
-# untyped_var_signature = TermSignature("x", TermType(name="x", type_arity=0))
-# untyped_const_signature = TermSignature("c", TermType(name="c", type_arity=0))
-
-# def get_simple_fn_signature(name: str, arity: int):
-#     return TermSignature(name=name, term_type=TermType(name=name, type_arity=arity))
-
-# def fn_to_simple_signature(fn: Callable, name: Optional[str] = None, type_name: Optional[str] = None) -> TermSignature:
-#     ''' Get signature from function. Very simple untyped fn signatures where only arities are important. '''
-#     s = inspect.signature(fn)
-#     name = name or fn.__name__
-#     arity = len(s.parameters)
-#     term_type = TermType(type_name or name, arity)
-#     return TermSignature(name=name, term_type=term_type)
-
 UNTYPED_ID = 0 # type id by default
 
 @dataclass(frozen=True)
@@ -122,6 +87,12 @@ class Op(Term):
     
     def get_term_id(self):
         return (self.op_id, )
+    
+def get_callable_signature(fn: Callable) -> TermType:
+    ''' Returns signature of callable as TermType and type of callable '''
+    sig = inspect.signature(fn)
+    args = len([p for p in sig.parameters.values() if p.kind != inspect.Parameter.KEYWORD_ONLY])
+    return get_untyped_fun_type(args)
     
 @dataclass(frozen=True, eq=False, unsafe_hash=False, repr=False)
 class Variable(Term):
@@ -254,19 +225,16 @@ def postorder_map(term: Term, fn: Callable, with_cache = False) -> Any:
     postorder_traversal(term, _enter_args, _exit_term)
     return args_stack[0][0]
 
-def term_to_str(term: Term, ids_to_names_cache: dict[tuple, str]) -> str: 
+def term_to_str(term: Term, name_getter: Callable[[tuple], str | None]) -> str: 
     ''' LISP style string '''
     def t_to_s(term: Term, args: list[str]):
         sign = term.get_signature(up_to="term_id")
-        name = str(ids_to_names_cache.get(sign, term.get_term_id()[0]))
+        name = str(name_getter(sign) or term.get_term_id()[0])
         if isinstance(term, Op):
             return "(" + " ".join([name, *args]) + ")"    
         return name
     res = postorder_map(term, t_to_s, with_cache=True)
     return res 
-
-Term.__repr__ = term_to_str
-Term.__str__ = term_to_str
 
 def get_leaves(root: Term, leaf_type: Variable | Value | Wildcard | MetaVariable | None = None, 
                leaves_cache = {}) -> list[Term]:
@@ -936,7 +904,7 @@ if __name__ == "__main__":
     alloc_id = partial(dict_alloc_id, names_to_ids_cache=names_to_ids, ids_to_names_cache=ids_to_names)
 
     def _term_to_str(self: Term):
-        return term_to_str(self, ids_to_names_cache=ids_to_names)
+        return term_to_str(self, name_getter=ids_to_names.get)
     
     Term.__str__ = _term_to_str
     Term.__repr__ = _term_to_str
@@ -944,7 +912,7 @@ if __name__ == "__main__":
     # tests
     t1, _ = parse_term(term_cache, alloc_id, "(f (f X (f x (f x)) (f x (f x))))")
     print(str(t1))
-    t1_str1 = term_to_str(t1, ids_to_names_cache=ids_to_names)
+    t1_str1 = term_to_str(t1, name_getter=ids_to_names.get)
     t2, _ = parse_term(term_cache, alloc_id, "(f (f (f x x) Y Y))")
     t3, _ = parse_term(term_cache, alloc_id, "(f Z)")
     # b = UnifyBindings()
@@ -961,7 +929,7 @@ if __name__ == "__main__":
     pass    
 
     print(str(t1))
-    assert str(t1) == t1_str, f"Expected {t1_str}, got {term_to_str(t1)}"
+    assert str(t1) == t1_str, f"Expected {t1_str}, got {str(t1)}"
     pass
     # t1, _ = parse_term("(f x y z)")
     p1, _ = parse_term(term_cache, alloc_id, "(f (f X X) Y Y)")

@@ -10,12 +10,12 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import partial
 import math
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence, Type
 from time import perf_counter
 import numpy as np
 import torch
 from spatial import InteractionIndex, RTreeIndex, SpatialIndex
-from term import Term, TermSignature, build_term, evaluate, get_term_pos, one_point_rand_crossover, one_point_rand_mutation, ramped_half_and_half, sign_from_fn, term_to_str
+from term import UNTYPED, Op, Term, TermType, Value, Variable, cache_term, evaluate, get_callable_signature, get_term_pos, one_point_rand_crossover, one_point_rand_mutation, ramped_half_and_half, term_to_str
 from sklearn.base import BaseEstimator, RegressorMixin
 
 def tournament_selection(gp_solver: 'GPSolver', population: list[Term], size: int, tournament_selection_size = 7):
@@ -173,19 +173,13 @@ def timed(gp_solver: 'GPSolver', fn: Callable, key: str) -> Callable:
 class GPSolver(BaseEstimator, RegressorMixin):
 
     def __init__(self, 
-                # target: torch.Tensor,
-                # leaves: dict[str | TermSignature, torch.Tensor],
-                # branch_ops: dict[str | TermSignature, Callable],
-                ops: list[Callable] | dict[str, Callable], # we refer to  each func by its position in the list 
+                ops: list[Callable] | dict[str, Callable], # we refer to each func by its position in the list 
                 fitness_fn: Callable = mse_loss,
                 init_fn: Callable = init_each(ramped_half_and_half),
                 eval_fn: Callable = evaluate,
                 breed_fn: Callable = mut_cross2_breed,
                 max_consts: int = 5, # 0 to disable consts in terms
                 max_vars: int = 10, # max number of free variables
-                # fitness_fns: dict[str, Callable],
-                # main_fitness_id: int = 0,
-            #    sem_store_class: SpatialIndex = InteractionIndex, # RTsreeIndex,
                 max_gen: int = 100,
                 max_root_evals: int = 100_000, 
                 max_evals: int = 500_000,
@@ -194,38 +188,54 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 rtol = 1e-04, atol = 1e-03,
                 rnd_seed: Optional[int] = None,
                 torch_rnd_seed: Optional[int] = None,
-                device = "cpu", dtype = torch.float32):
+                device = "cpu", dtype = torch.float32,
+                debug = True, # flag will rewrite Term str and repr 
+                ):
         
         if type(ops) is dict:
             self.ops = list(ops.values())
-            ops_names = list(ops.keys())
+            self.ops_names = list(ops.keys())
         else:
             self.ops = ops
-            ops_names = [ f"f{opi}" if op.__name__ == "<lambda>" else op.__name__ for opi, op in enumerate(ops) ]
-        all_signatures = [sign_from_fn(op, op_name) for op_name, op in zip(ops_names, self.ops)]
-        self.ops_signatures = [sign for sign in all_signatures if sign.arity > 0]
-        self.leaf_signatures = [sign for sign in all_signatures if sign.arity == 0]
+            self.ops_names = [ f"f{opi}" if op.__name__ == "<lambda>" else op.__name__ for opi, op in enumerate(ops) ]
+        self.all_signatures = [get_callable_signature(op) for op in self.ops]
+        self.default_leaves = [((sign, Op, op_id), lambda op_id = op_id:Op(op_id, ())) 
+                          for op_id, sign in enumerate(self.all_signatures) if sign.arity() == 0]        
+        self.branches = [(sign, Op, op_id) for op_id, sign in enumerate(self.all_signatures) if sign.arity() > 0]
         self.max_consts = max_consts
         self.max_vars = max_vars
-        self.term_consts: dict[Term, list[torch.Tensor]] = {} # tree root to const occurances 
+        self.debug = debug
+
+        if self.debug:
+
+            def _term_to_str(self: Term):
+                return term_to_str(self, name_getter=lambda x: self._get_name(*x))
+            
+            Term.__str__ = _term_to_str
+            Term.__repr__ = _term_to_str
+
+        self.vars: list[torch.Tensor] = []
+        self.var_names: list[str] = []
+        self.consts: list[torch.Tensor] = []
+        self.const_range: tuple[torch.Tensor, torch.Tensor] | None = None # detected from y on reset
+        self.term_consts: dict[Term, list[int]] = {} # for each term stores all present cocnstants
         self.term_vars: dict[Term, list[int]] = {}            # tree root to variable occurances
+        self.term_counts: dict[Term, dict[tuple, int]] = {}
         # NOTE: variables and consts are stored separately from tree - abstract shapes x * x + c * x + c 
         #       in this approach we have a problem with caching semantics of intermediate terms, as for different c and x, the results are different
         #       solution: make term_output as dictionary with keys (root, term). Root should be a part of all keys to identify concrete selection of c, x
         #       alternative: create subclasses of Term for Vars and Values - this is more explicit approach and better 
         #                    Vars = Term + var id, Values = Term + value Any.
         #                    Do we need (term, occur) in this case? Seems yes.
-        self.count_constraints = defaultdict(lambda: math.inf)
-        if self.max_consts > 0:
-            const_signature = TermSignature("c", 0, "c")
-            self.leaf_signatures.append(const_signature)
-            self.count_constraints["c"] = self.max_consts
+        self.count_constraints = {}
+        if self.max_consts > 0:            
+            const_signature = (UNTYPED, Value)
+            self.count_constraints[const_signature] = self.max_consts
+            self.default_leaves.append(self._alloc_const)
         if self.max_vars > 0:
-            var_signature = TermSignature("x", 0, "x")
-            self.leaf_signatures.append(var_signature)
-            self.count_constraints["x"] = self.max_vars
-        self.free_vars = []
-        self.ops_map = {sign: self.ops[i] for i, sign in enumerate(all_signatures)} 
+            var_signature = (UNTYPED, Variable)
+            self.count_constraints[var_signature] = self.max_vars
+            # self.leaves.append(self._alloc_var)
         self.fitness_fn = fitness_fn
         self.init_fn = timed(self, init_fn, "init_fn")
         self.eval_fn = timed(self, eval_fn, "eval_fn")
@@ -260,7 +270,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.depth_cache: dict[Term, int] = {}
         self.forest = [] # by default == popoulation, but in archive methods it is an archive
 
-        self._reset_state()
+        self.best_term: Optional[Term] = None
+        self.gen: int = 0
+        self.evals: int = 0
+        self.root_evals: int = 0
+        self.metrics: dict[str, int | float | list[int|float]] = {}
+        self.leaves = list(self.default_leaves)
+
+        # self._reset_state()
         # self.sem_store: SpatialIndex = sem_store_class(capacity = max_evals, dims = target.shape[0], dtype=target.dtype, 
         #                                  device = target.device, rtol=rtol, atol=atol, target = target)
 
@@ -284,26 +301,58 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         # self.forest: list[int] = [*leaves] # initial forest are leaves
 
-    def _build_free_vars(self, free_vars: Sequence) -> list[torch.Tensor]:
-        new_free_vars = []
+    def _get_name(self, term_type: TermType, tp: Type, term_id: Any) -> Optional[str]:
+        if tp is Op:
+            return self.ops_names[term_id]
+        if tp is Value: 
+            return self.consts[term_id].item()
+        if tp is Variable:
+            return self.var_names[term_id]
+
+    def _alloc_const(self) -> Value: 
+        ''' Should we random sample of try some grid? Anyway we tune '''
+        value = self.const_range[0] + torch.rand((1,), device=self.device, dtype=self.dtype) * self.const_range[1]
+        const_id = len(self.consts)
+        self.consts.append(value)
+        return Value(const_id)
+
+    def _add_free_vars(self, free_vars: Sequence) -> list[torch.Tensor]:
         for i, xi in enumerate(free_vars):
             if not torch.is_tensor(xi):
                 fv = torch.tensor(xi, dtype=self.dtype, device=self.device)
             else:
                 fv = xi.to(device = self.device, dtype = self.dtype)
-            new_free_vars.append(fv)
-        return new_free_vars
+            self.vars.append(fv)
+            self.var_names.append(f"x{i}")
+            self.leaves.append((UNTYPED, Variable, i), lambda i=i: Variable(i))
 
     def _reset_state(self, free_vars: Optional[Sequence] = None, target: Optional[Sequence] = None):
         ''' Called before each fit '''
+
+        # reset caches 
+        self.vars: list[torch.Tensor] = []
+        self.var_names: list[str] = []
+        self.consts: list[torch.Tensor] = []
+        self.term_consts: dict[Term, list[int]] = {} # for each term stores all present cocnstants
+        self.term_vars: dict[Term, list[int]] = {}            # tree root to variable occurances
+        self.term_counts: dict[Term, dict[tuple, int]] = {}
+
+        self.target = None 
+        self.syntax: dict[tuple[str, ...], Term] = {}
+        self.term_outputs: dict[Term, torch.Tensor] = {}
+        self.term_fitness: dict[Term, torch.Tensor] = {}
+        self.depth_cache: dict[Term, int] = {}
+        self.forest = [] # by default == popoulation, but in archive methods it is an archive
+
         self.best_term: Optional[Term] = None
         self.gen: int = 0
         self.evals: int = 0
         self.root_evals: int = 0
         self.metrics: dict[str, int | float | list[int|float]] = {}
-        self.leaf_signatures = []
+        self.leaves = list(self.default_leaves) 
+
         if free_vars is not None:
-            self.free_vars = self._build_free_vars(free_vars)
+            self._add_free_vars(free_vars)
         if target is None:
             self.target = None
         else:
@@ -311,41 +360,42 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 self.target = torch.tensor(target, device = self.device, dtype = self.dtype)
             else:
                 self.target = target.to(device = self.device, dtype = self.dtype)
+            
+            min_value = self.target.min()
+            max_value = self.target.max()
+            if torch.isclose(min_value, max_value, rtol=self.rtol, atol=self.atol):
+                min_value = min_value - 0.1
+                max_value = max_value + 0.1
+            dist = max_value - min_value
+            min_value = min_value - 0.1 * dist
+            max_value = max_value + 0.1 * dist
+            self.const_range = (min_value, dist)
 
-    def term_builder(self, signature: TermSignature, args: list[Term]) -> Term:
-        # if signature.category == "c": # building constant 
-        #     # TODO
-        #     pass 
-        # elif signature.category == "x": # building variable
-        #     # TODO 
-        #     pass 
+    def _cache_term(self, term: Term) -> Term:
         def cache_cb(term: Term, cache_hit: bool):
             key = "syntax_hit" if cache_hit else "syntax_miss"
             self.metrics[key] = self.metrics.get(key, 0) + 1
-        if self.with_caches or (len(args) == 0):
-            term = build_term(self.syntax, signature, args, cache_cb)
+        if self.with_caches:
+            term = cache_term(self.syntax, term, cache_cb)
         else:
-            term = Term(signature, args)
             cache_cb(term, False)
         return term        
     
-    def _get_binding(self, root: Term, term_with_pos: tuple[Term, int]) -> Optional[torch.Tensor]:        
-        term = term_with_pos[0] # in this implementation we ignore position 
-        # if term.signature.category == "c": # constant
+    def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:        
+        if isinstance(term, Variable):
+            return self.vars[term.var_id]
+        if isinstance(term, Value):
+            return self.consts[term.value_id]
 
         if term in self.term_outputs:
             return self.term_outputs[term]
-        # semantic_id = self.term_to_sid.get(term, None)
-        # if semantic_id is None:
-        #     return None
-        # res = self.sem_store.get_vectors(semantic_id)
+
         return None 
 
-    def _set_binding(self, term_with_pos: tuple[Term, int], value: torch.Tensor):
+    def _set_binding(self, term: Term, value: torch.Tensor):
         self.evals += 1
         if not self.with_caches:
             return
-        term = term_with_pos[0] # ignoring position currently
         self.term_outputs[term] = value
 
     # def process_delayed_semantics(self):
@@ -368,7 +418,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
     def eval(self, terms: list[Term]) -> bool:
         terms_for_fitness = []
         for term in terms:
-            self.eval_fn(term, self.ops_map, self._get_binding, self._set_binding)
+            self.eval_fn(term, self.ops, self._get_binding, self._set_binding)
             # sids_set = context.process_delayed_semantics() # semantics of tree term
             # sids.update(sids_set)
             if term not in self.term_fitness:
@@ -437,7 +487,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if not self.is_fitted_ or self.best_term is None:
             raise RuntimeError("Solver is not fitted yet")
         
-        term_outputs = self._build_free_vars(free_vars)
+        term_outputs = self._add_free_vars(free_vars)
         
         def get_binding(term_with_pos: tuple[Term, int]) -> Optional[torch.Tensor]:
             return term_outputs.get(term_with_pos[0], None)
