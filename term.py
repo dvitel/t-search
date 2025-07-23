@@ -301,12 +301,13 @@ def get_counts(term: Term, constraints: dict[tuple, int] | None = None,
             return TRAVERSAL_EXIT_NODE # skip args    
     
     def _exit_term(term: Term, term_i, parent: Term):
-        counts = {k:arg_count for k in constraints.keys()
-                      for arg_count in [sum(count_cache[a].get(k, 0) for a in term.args)]
+        arg_counts = {k:arg_count for k in constraints.keys()
+                      for arg_count in [sum(count_cache[a].get(k, 0) for a in term.get_args())]
                       if arg_count > 0}
         cur_signatures = [s for s in term.get_signatures() if s in constraints]
         for s in cur_signatures:
-            counts[s] = counts.get(s, 0) + 1
+            arg_counts[s] = arg_counts.get(s, 0) + 1
+        count_cache[term] = arg_counts
         pass
 
     postorder_traversal(term, _enter_args, _exit_term)     
@@ -536,18 +537,15 @@ def parse_term(term_cache, alloc_id: Callable[[TermType, Type, Any], int],
             branches[0].append(leaf)
     return branches[0][0], i
 
-def replacement_counts(pos: TermPos, with_term: Term, root: Term,
-                            count_cache: dict[Term, dict[tuple, int]]):
-    root_keys = count_cache[root].keys()
-    res = {k:count_cache[root][k] - count_cache[pos.term].get(k, 0) + count_cache[with_term].get(k, 0) for k in root_keys}
-    return res
-
 def replacement_counts_sat(pos: TermPos, with_term: Term, root: Term,
                             count_cache: dict[Term, dict[tuple, int]],
                             count_constraints: dict[tuple, int] | None = None) -> bool:
     if count_constraints is None:
         return True
-    replace_counts = replacement_counts(pos, with_term, root, count_cache)
+    count_keys = count_constraints.keys()
+    replace_counts = {k:count_cache[root].get(k, 0) - count_cache[pos.term].get(k, 0) 
+                            + count_cache[with_term].get(k, 0) for k in count_keys}
+
     res = all(replace_counts.get(k, 0) <= v for k, v in count_constraints.items())
     return res
 
@@ -561,7 +559,7 @@ def replace(term_cacher: Callable,
 
         cur_args = cur_parent.term.get_args()
 
-        new_parent_term_args = tuple(*cur_args[:cur_pos.pos], new_term, *cur_args[cur_pos.pos + 1:])
+        new_parent_term_args = tuple((*cur_args[:cur_pos.pos], new_term, *cur_args[cur_pos.pos + 1:]))
         # assert isinstance(cur_parent.term, Op), f"Expected Op term"
         new_op = Op(cur_parent.term.op_id, new_parent_term_args)
         new_term = term_cacher(new_op)
@@ -776,17 +774,17 @@ def get_pos_scores(term: Term, positions: list[TermPos],
     if select_node_leaf_prob is not None:
         proba_mod = np.array([select_node_leaf_prob if pos.term.arity() == 0 else (1 - select_node_leaf_prob) for pos in positions ])
         pos_proba *= proba_mod
-    return pos_proba
+    return 1 - pos_proba
 
 def select_positions(term: Term, positions: list[TermPos], num_positions: int,
                         select_node_leaf_prob: Optional[float] = 0.1,
                         rnd: np.random.RandomState = np.random) -> list[int]:
     # selecting poss for given number of mutants 
     pos_proba = get_pos_scores(term, positions, select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
-    if pos_proba is None:
-        return []
-    ordered_pos_ids = np.argsort(pos_proba)[-1:-num_positions-1:-1].tolist()
-    if len(ordered_pos_ids) < num_positions:
+    ordered_pos_ids = np.argsort(pos_proba).tolist()
+    if len(ordered_pos_ids) > num_positions:
+        ordered_pos_ids = ordered_pos_ids[:num_positions]
+    elif len(ordered_pos_ids) < num_positions:
         repeat_cnt = math.ceil(num_positions / len(ordered_pos_ids))
         ordered_pos_ids = (ordered_pos_ids * repeat_cnt)[:num_positions]
     return ordered_pos_ids
@@ -796,24 +794,20 @@ def one_point_rand_mutation(term_cacher, term: Term, positions: dict[TermPos, Te
                             leaves: list[tuple[tuple, Callable]],
                             ops: list[tuple[TermType, Type, int]],
                             count_constraints: dict[tuple, int] | None = None,
-                            depth_cache: dict[Term, int] | None = None,
                             count_cache: dict[Term, dict[tuple, int]] | None = None,
                             rnd: np.random.RandomState = np.random,
                             select_node_leaf_prob: Optional[float] = 0.1,
-                            # include_root = True, 
-                            tree_max_depth = 17,
+                            tree_max_depth = 17, max_grow_depth = 5,
                             num_children = 1) -> list[Term]:
     
-    depth_cache = get_depths(term, depth_cache)
     count_cache = get_counts(term, count_constraints, count_cache)  
 
-    # if include_root:
-    pos_list = [TermPos(term), *positions.keys()] # we always include root to avoid checks after selection
-    # else:
-    #     pos_list = list(positions.keys())
+    if len(positions) == 0:
+        pos_list = [TermPos(term)] # allow root mutation 
+    else:
+        pos_list = list(positions.keys())
+
     selected_pos = select_positions(term, pos_list, num_children, select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
-    # if len(selected_pos) == 0:
-    #     return [term] * num_children # noop
 
     mutants = []
     for pos_id in selected_pos:
@@ -821,7 +815,7 @@ def one_point_rand_mutation(term_cacher, term: Term, positions: dict[TermPos, Te
         cur_count_constraints = None if count_constraints is None else dict(count_constraints)
         new_child = grow(term_cacher, leaves, ops, 
                             count_constraints=cur_count_constraints,
-                            grow_depth = min(5, tree_max_depth - position.at_depth), 
+                            grow_depth = min(max_grow_depth, tree_max_depth - position.at_depth), 
                             grow_leaf_prob = None, rnd = rnd)
         if new_child is None:
             mutants.append(term) # noop
@@ -838,7 +832,7 @@ def one_point_rand_crossover(term_cacher, term1: Term, term2: Term,
                                 count_cache: dict[Term, dict[tuple, int]] | None = None,
                                 rnd: np.random.RandomState = np.random,
                                 select_node_leaf_prob: Optional[float] = 0.1,
-                                include_root = True, tree_max_depth = 17,
+                                tree_max_depth = 17,
                                 num_children = 1):
     
     depth_cache = get_depths(term1, depth_cache)
@@ -846,34 +840,41 @@ def one_point_rand_crossover(term_cacher, term1: Term, term2: Term,
     count_cache = get_counts(term1, count_constraints, count_cache)
     count_cache = get_counts(term2, count_constraints, count_cache)
 
-    pos_list1 = [TermPos(term1), *positions1.keys() ]
-    pos_proba1 = get_pos_scores(term1, pos_list1, include_root = include_root,
-                                select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
-    
+    if len(positions1) == 0:
+        pos_list1 = [TermPos(term1)]
+    else:
+        pos_list1 = list(positions1.keys())
+    pos_proba1 = get_pos_scores(term1, pos_list1,
+                                select_node_leaf_prob = select_node_leaf_prob, 
+                                rnd = rnd)    
     pos_ids1 = np.argsort(pos_proba1)
             
-    pos_list2 = [TermPos(term2), *positions2.keys()]
-    pos_proba2 = get_pos_scores(term2, pos_list2, include_root = include_root,
-                                select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
+    if len(positions2) == 0:
+        pos_list2 = [TermPos(term2)]
+    else:
+        pos_list2 = list(positions2.keys())
+    pos_proba2 = get_pos_scores(term2, pos_list2,
+                                select_node_leaf_prob = select_node_leaf_prob, 
+                                rnd = rnd)
     
     pos_ids2 = np.argsort(pos_proba2)
     
     selected_pairs = []
 
     while len(selected_pairs) < num_children:
-        for pos_id1, pos_id2 in product(reversed(pos_ids1), reversed(pos_ids2)):
+        for pos_id1, pos_id2 in product(pos_ids1, pos_ids2):
             pos1 = pos_list1[pos_id1]
             pos2 = pos_list2[pos_id2]
             if (pos1.at_depth + depth_cache[pos2.term] <= tree_max_depth) and \
                 replacement_counts_sat(pos1, pos2.term, term1, count_cache, count_constraints):
                 selected_pairs.append((pos1, positions1, pos2.term))
-            if len(selected_pairs) >= num_children:
-                break
+                if len(selected_pairs) >= num_children:
+                    break
             if (pos2.at_depth + depth_cache[pos1.term] <= tree_max_depth) and \
                 replacement_counts_sat(pos2, pos1.term, term2, count_cache, count_constraints):
                 selected_pairs.append((pos2, positions2, pos1.term))
-            if len(selected_pairs) >= num_children:
-                break
+                if len(selected_pairs) >= num_children:
+                    break
 
     children = []
     for pos, poss, term in selected_pairs:

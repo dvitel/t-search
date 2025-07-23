@@ -19,6 +19,22 @@ alg_ops = {
     "cos": lambda a: torch.cos(a),
 }
 
+def lexsort(tensor: torch.Tensor) -> torch.Tensor:
+    assert tensor.dim() == 2, "Input tensor must be 2D"
+    k, n = tensor.shape
+
+    sorted_indices = torch.argsort(tensor[-1, :])
+
+    for row in range(k - 2, -1, -1):
+        sorted_tensor = tensor[:, sorted_indices]
+        sorted_indices = sorted_indices[torch.argsort(sorted_tensor[row, :])]
+
+    return sorted_indices
+
+# tensor = torch.tensor([[2, 2, 1, 2], [2, 1, 2, 1], [1, 2, 4, 3]], dtype=torch.float32)
+# sorted_indices = lexsort(tensor)
+# pass 
+
 # tests1 = torch.meshgrid([torch.tensor([1, 2, 3]), torch.tensor([4, 5, 6]), torch.tensor([7, 8, 9]), torch.tensor([10, 11, 12])], indexing='ij')
 # test1 = torch.stack(tests1, dim=-1)
 # pass 
@@ -284,7 +300,8 @@ class Benchmark:
 
     def sample_set(self, set_name: Literal["train", "test"], 
                             device = "cpu", dtype = torch.float32,
-                            generator: torch.Generator | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+                            generator: torch.Generator | None = None,
+                            sorted = False) -> tuple[torch.Tensor, torch.Tensor]:
         if set_name in self.sampled:
             return self.sampled[set_name]
         if set_name == "test" and self.test_sampling is None:
@@ -297,6 +314,13 @@ class Benchmark:
             prepared_args['generator'] = generator
         free_vars = sample_fn(**prepared_args) 
         gold_outputs = self.fn(*free_vars)
+        if sorted:
+            indices = lexsort(free_vars)
+            new_free_vars = free_vars[:, indices]
+            new_gold_outputs = gold_outputs[indices]
+            del free_vars, gold_outputs
+            free_vars = new_free_vars
+            gold_outputs = new_gold_outputs
         self.sampled[set_name] = (free_vars, gold_outputs)
         return free_vars, gold_outputs
 
