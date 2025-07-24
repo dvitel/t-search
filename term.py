@@ -269,26 +269,35 @@ class TermPos:
     # def __hash__(self):
     #     return hash((self.term, self.occur))    
 
-def get_depths(term: Term, depth_cache: Optional[dict[Term, int]] = None) -> dict[Term, int]:
+def get_depth(term: Term, depth_cache: Optional[dict[Term, int]] = None) -> int:
     
     depth_cache = depth_cache or {}
-
-    def update_parent(term: Term, parent: Term):
-        if parent is not None: 
-            depth_cache[parent] = max(depth_cache.get(parent, -1), depth_cache.get(term, 0))        
     
-    def _enter_args(term: Term, term_i, parent: Term):
-        if term in depth_cache:
-            update_parent(term, parent)
-            return TRAVERSAL_EXIT_NODE # skip args    
+    def _enter_args(term: Term, *_):
+        if term in depth_cache or term.arity() == 0:
+            return TRAVERSAL_EXIT_NODE
 
-    def _exit_term(term: Term, term_i, parent: Term):
-        depth_cache[term] = depth_cache.get(term, -1) + 1
-        update_parent(term, parent)
+    def _exit_term(term: Term, *_):
+        depth_cache[term] = 1 + max(depth_cache.get(a, 0) for a in term.get_args())
 
     postorder_traversal(term, _enter_args, _exit_term) 
 
-    return depth_cache   
+    return depth_cache.get(term, 0)
+
+def get_size(term: Term, size_cache: Optional[dict[Term, int]] = None) -> int:
+
+    size_cache = size_cache or {}
+
+    def _enter_args(term: Term, *_):
+        if term in size_cache or term.arity() == 0:
+            return TRAVERSAL_EXIT_NODE 
+
+    def _exit_term(term: Term, *_):
+        size_cache[term] = 1 + sum(size_cache.get(a, 1) for a in term.get_args())
+
+    postorder_traversal(term, _enter_args, _exit_term)
+
+    return size_cache.get(term, 1)
 
 def get_counts(term: Term, constraints: dict[tuple, int] | None = None, 
                count_cache: Optional[dict[Term, dict[tuple, int]]] = None) -> dict[Term, dict[tuple, int]]:
@@ -298,7 +307,7 @@ def get_counts(term: Term, constraints: dict[tuple, int] | None = None,
 
     def _enter_args(term: Term, term_i, parent: Term):
         if term in count_cache:
-            return TRAVERSAL_EXIT_NODE # skip args    
+            return TRAVERSAL_EXIT_NODE    
     
     def _exit_term(term: Term, term_i, parent: Term):
         arg_counts = {k:arg_count for k in constraints.keys()
@@ -592,6 +601,8 @@ def evaluate(root: Term, ops: list[Callable],
             res = op_fn(*args)
         if res is not None:            
             set_binding(root, term, res)
+        # else:
+        #     pass
         args_stack[-1].append(res)
 
     postorder_traversal(root, _enter_args, _exit_term)
@@ -812,7 +823,10 @@ def one_point_rand_mutation(term_cacher, term: Term, positions: dict[TermPos, Te
     mutants = []
     for pos_id in selected_pos:
         position: TermPos = pos_list[pos_id]
-        cur_count_constraints = None if count_constraints is None else dict(count_constraints)
+        cur_count_constraints = None 
+        if count_constraints is not None:
+            cur_count_constraints = {k: cnt - count_cache[term].get(k, 0) + count_cache[position.term].get(k, 0) 
+                                        for k, cnt in count_constraints.items()}
         new_child = grow(term_cacher, leaves, ops, 
                             count_constraints=cur_count_constraints,
                             grow_depth = min(max_grow_depth, tree_max_depth - position.at_depth), 
@@ -835,8 +849,8 @@ def one_point_rand_crossover(term_cacher, term1: Term, term2: Term,
                                 tree_max_depth = 17,
                                 num_children = 1):
     
-    depth_cache = get_depths(term1, depth_cache)
-    depth_cache = get_depths(term2, depth_cache)
+    term1_depth = get_depth(term1, depth_cache)
+    term2_depth = get_depth(term2, depth_cache)
     count_cache = get_counts(term1, count_constraints, count_cache)
     count_cache = get_counts(term2, count_constraints, count_cache)
 
@@ -865,12 +879,12 @@ def one_point_rand_crossover(term_cacher, term1: Term, term2: Term,
         for pos_id1, pos_id2 in product(pos_ids1, pos_ids2):
             pos1 = pos_list1[pos_id1]
             pos2 = pos_list2[pos_id2]
-            if (pos1.at_depth + depth_cache[pos2.term] <= tree_max_depth) and \
+            if (pos1.at_depth + depth_cache.get(pos2.term, 0) <= tree_max_depth) and \
                 replacement_counts_sat(pos1, pos2.term, term1, count_cache, count_constraints):
                 selected_pairs.append((pos1, positions1, pos2.term))
                 if len(selected_pairs) >= num_children:
                     break
-            if (pos2.at_depth + depth_cache[pos1.term] <= tree_max_depth) and \
+            if (pos2.at_depth + depth_cache.get(pos1.term, 0) <= tree_max_depth) and \
                 replacement_counts_sat(pos2, pos1.term, term2, count_cache, count_constraints):
                 selected_pairs.append((pos2, positions2, pos1.term))
                 if len(selected_pairs) >= num_children:
@@ -924,7 +938,7 @@ if __name__ == "__main__":
     # t1_str = "(f x x 1.43 1.42)"
     t1, _ = parse_term(term_cache, alloc_id, t1_str)
 
-    depth = get_depths(t1)
+    depth = get_depth(t1)
     print(depth)
     pass    
 
