@@ -96,7 +96,8 @@ def get_interval_points(steps: torch.Tensor | float, ranges: torch.Tensor,
     if not torch.is_tensor(steps): 
         steps = torch.full_like(ranges[:, 0], steps)
     if rand_deltas:
-        deltas = deltas or steps
+        if deltas is None:
+            deltas = steps
         deltas *= torch.rand(ranges.shape[0], device=ranges.device, generator = generator)
     if deltas is None:
         deltas = torch.zeros_like(steps)
@@ -283,20 +284,22 @@ class Benchmark:
                  train_args: dict[str, Any] = None,
                  test_sampling: Optional[Callable] = None, 
                  test_args: Optional[dict[str, Any]] = None):
-        self.name = name or fn.__name__
+        self.name = name
+        if name is None:
+            self.name = fn.__name__
         self.fn = fn
         self.train_sampling: Callable = train_sampling
-        self.train_args: dict[str, Any] = train_args or {}
+        self.train_args: dict[str, Any] = {} if train_args is None else train_args
         self.test_sampling: Optional[Callable] = test_sampling
         self.test_args: Optional[dict[str, Any]] = test_args
         self.sampled = {}
 
     def with_train_sampling(self, train_sampling = None, **kwargs):
-        return Benchmark(self.name, self.fn, train_sampling or self.train_sampling, kwargs)
+        return Benchmark(self.name, self.fn, (train_sampling if train_sampling is not None else self.train_sampling), kwargs)
     
     def with_test_sampling(self, test_sampling = None, **kwargs):
         return Benchmark(self.name, self.fn, self.train_sampling, self.train_args,
-                         test_sampling or self.test_sampling, kwargs)
+                         (test_sampling if test_sampling is not None else self.test_sampling), kwargs)
 
     def sample_set(self, set_name: Literal["train", "test"], 
                             device = "cpu", dtype = torch.float32,

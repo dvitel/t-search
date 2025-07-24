@@ -229,10 +229,12 @@ def term_to_str(term: Term, name_getter: Callable[[tuple], str | None]) -> str:
     ''' LISP style string '''
     def t_to_s(term: Term, args: list[str]):
         sign = term.get_signature(up_to="term_id")
-        name = str(name_getter(sign) or term.get_term_id()[0])
+        name = name_getter(sign)
+        if name is None:
+            name = str(term.get_term_id()[0])
         if isinstance(term, Op):
             return "(" + " ".join([name, *args]) + ")"    
-        return name
+        return str(name)
     res = postorder_map(term, t_to_s, with_cache=True)
     return res 
 
@@ -271,10 +273,11 @@ class TermPos:
 
 def get_depth(term: Term, depth_cache: Optional[dict[Term, int]] = None) -> int:
     
-    depth_cache = depth_cache or {}
+    if depth_cache is None:
+        depth_cache = {}
     
     def _enter_args(term: Term, *_):
-        if term in depth_cache or term.arity() == 0:
+        if (term in depth_cache) or (term.arity() == 0):
             return TRAVERSAL_EXIT_NODE
 
     def _exit_term(term: Term, *_):
@@ -286,10 +289,11 @@ def get_depth(term: Term, depth_cache: Optional[dict[Term, int]] = None) -> int:
 
 def get_size(term: Term, size_cache: Optional[dict[Term, int]] = None) -> int:
 
-    size_cache = size_cache or {}
+    if size_cache is None:
+        size_cache = size_cache
 
     def _enter_args(term: Term, *_):
-        if term in size_cache or term.arity() == 0:
+        if (term in size_cache) or (term.arity() == 0):
             return TRAVERSAL_EXIT_NODE 
 
     def _exit_term(term: Term, *_):
@@ -301,7 +305,10 @@ def get_size(term: Term, size_cache: Optional[dict[Term, int]] = None) -> int:
 
 def get_counts(term: Term, constraints: dict[tuple, int] | None = None, 
                count_cache: Optional[dict[Term, dict[tuple, int]]] = None) -> dict[Term, dict[tuple, int]]:
-    count_cache = count_cache or {} 
+
+    if count_cache is None:    
+        count_cache = {}
+
     if constraints is None:
         return count_cache
 
@@ -634,9 +641,10 @@ def grow(term_cacher: Callable,
          grow_depth = 5, grow_leaf_prob: Optional[float] = None,
          rnd: np.random.RandomState = np.random) -> Optional[Term]:
     ''' Grow a tree with a given depth '''
+    # print(f"grow: {grow_depth}")
     allowed_leaves = [t for t in leaves if (count_constraints is None) or (count_constraints.get(t[0], 1) > 0) ]
     allowed_branches = [t for t in ops if (count_constraints is None) or (count_constraints.get(t, 1) > 0)]    
-    if (grow_depth == 0) or len(allowed_branches) == 0:
+    if (grow_depth <= 0) or len(allowed_branches) == 0:
         if len(allowed_leaves) == 0:
             return None 
         leaf_index = rnd.choice(len(allowed_leaves))
@@ -698,7 +706,7 @@ def full(term_cacher: Callable,
     ''' Grow a tree with a given depth '''
     allowed_leaves = [t for t in leaves if (count_constraints is None) or (count_constraints.get(t[0], 1) > 0) ]
     allowed_branches = [t for t in ops if (count_constraints is None) or (count_constraints.get(t, 1) > 0)]    
-    if full_depth == 0 or len(allowed_branches) == 0:
+    if (full_depth <= 0) or len(allowed_branches) == 0:
         if len(allowed_leaves) == 0:
             return None         
         leaf_id = rnd.choice(len(allowed_leaves))
@@ -835,6 +843,8 @@ def one_point_rand_mutation(term_cacher, term: Term, positions: dict[TermPos, Te
             mutants.append(term) # noop
         else:
             mutated_term = replace(term_cacher, position, new_child, positions)
+            # child_depth = get_depth(mutated_term)
+            # assert child_depth <= tree_max_depth
             mutants.append(mutated_term)
         
     return mutants
@@ -851,6 +861,8 @@ def one_point_rand_crossover(term_cacher, term1: Term, term2: Term,
     
     term1_depth = get_depth(term1, depth_cache)
     term2_depth = get_depth(term2, depth_cache)
+    # assert term1_depth <= tree_max_depth
+    # assert term2_depth <= tree_max_depth
     count_cache = get_counts(term1, count_constraints, count_cache)
     count_cache = get_counts(term2, count_constraints, count_cache)
 
@@ -879,12 +891,12 @@ def one_point_rand_crossover(term_cacher, term1: Term, term2: Term,
         for pos_id1, pos_id2 in product(pos_ids1, pos_ids2):
             pos1 = pos_list1[pos_id1]
             pos2 = pos_list2[pos_id2]
-            if (pos1.at_depth + depth_cache.get(pos2.term, 0) <= tree_max_depth) and \
+            if (pos1.at_depth + get_depth(pos2.term, depth_cache) <= tree_max_depth) and \
                 replacement_counts_sat(pos1, pos2.term, term1, count_cache, count_constraints):
                 selected_pairs.append((pos1, positions1, pos2.term))
                 if len(selected_pairs) >= num_children:
                     break
-            if (pos2.at_depth + depth_cache.get(pos1.term, 0) <= tree_max_depth) and \
+            if (pos2.at_depth + get_depth(pos1.term, depth_cache) <= tree_max_depth) and \
                 replacement_counts_sat(pos2, pos1.term, term2, count_cache, count_constraints):
                 selected_pairs.append((pos2, positions2, pos1.term))
                 if len(selected_pairs) >= num_children:
@@ -893,6 +905,8 @@ def one_point_rand_crossover(term_cacher, term1: Term, term2: Term,
     children = []
     for pos, poss, term in selected_pairs:
         new_child = replace(term_cacher, pos, term, poss)
+        # child_depth = get_depth(new_child, depth_cache)
+        # assert child_depth <= tree_max_depth
         children.append(new_child)
 
     return children

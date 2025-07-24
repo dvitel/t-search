@@ -48,40 +48,46 @@ def tournament_selection(population: list[Term], size: int, *,
     return best_ids
 
 def lexicase_selection(population: list[Term], size: int, *, 
+                       nan_error = torch.inf,
                        outputs: torch.Tensor, target: torch.Tensor, 
                        gen: torch.Generator, **_):
-    """ Based on Lee Spector's team: Solving Uncompromising Problems With Lexicase Selection """
-    # test_ids = np.arange(interactions.shape[1]) # direction is hardcoded 0 - bad, 1 - good
-    # default_rnd.shuffle(test_ids)
+    """ Based on Lee Spector's team: Solving Uncompromising Problems With Lexicase Selection 
+        This is iterative version.
+    """
 
-    # rands = torch.rand((size, interactions.shape[-1]), device=interactions.device)
-    # rand_ranks = torch.argsort(rands, dim=-1)
 
     should_free = False
-    if not torch.is_tensor(outputs):        
+    if not torch.is_tensor(outputs):
         outputs = stack_rows(outputs)
         should_free = True    
 
-    interactions = torch.abs(outputs - target)
+    nan_interactions = torch.abs(outputs - target)
 
-    shuffled_test_ids = torch.randperm(interactions.shape[-1], device=interactions.device,
-                                        generator=gen)
-    # candidate_ids = torch.arange(interactions.shape[0], device=interactions.device) # all candidates
-    for test_id in shuffled_test_ids:
-        test_min_diff = torch.min(interactions[candidate_ids, test_id])
-        candidate_id_ids, = torch.where(interactions[candidate_ids, test_id] == test_min_diff)
-        candidate_ids = candidate_ids[candidate_id_ids]
+    interactions = torch.nan_to_num(nan_interactions, nan=nan_error)
+    del nan_interactions
+    
+    selected_ids = torch.zeros(size, dtype=torch.int, device=outputs.device)
+
+    for pos_i in range(size):
+        shuffled_test_ids = torch.randperm(interactions.shape[-1], device=interactions.device,
+                                            generator=gen)
+        candidate_ids = torch.arange(interactions.shape[0], device=interactions.device) # all candidates
+        for test_id in shuffled_test_ids:
+            test_min_diff = torch.min(interactions[candidate_ids, test_id])
+            candidate_id_ids, = torch.where(interactions[candidate_ids, test_id] == test_min_diff)
+            candidate_ids = candidate_ids[candidate_id_ids]
+            if len(candidate_ids) == 1:
+                break
         if len(candidate_ids) == 1:
-            break
-    if len(candidate_ids) == 1:
-        return candidate_ids[0]
-    best_id_id = torch.randint(len(candidate_ids), (1,), device=interactions.device,
-                                generator=gen)
-    best_id = candidate_ids[best_id_id]
+            selected_ids[pos_i] = candidate_ids[0]
+            continue
+        best_id_id = torch.randint(len(candidate_ids), (1,), device=interactions.device,
+                                    generator=gen)
+        selected_ids[pos_i] = candidate_ids[best_id_id]
     del interactions, shuffled_test_ids
     if should_free:
         del outputs
-    return best_id
+    return selected_ids
 
 
 # fitness = torch.tensor([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
@@ -662,7 +668,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
 # TODO: 
 #       DONE 1. Testing with caches, probably separate cache enablance. 
-#       2. Lexicase selection and its advanced forms 
+#       CURRENT 2. Lexicase selection and its advanced forms 
 #       3. Unification with discrete domains? Can this work with discrete domains?
 #       4. Unification with other evo processes in cde-search: NSGA and coevolution.
 #       5. Tuning of constants 
@@ -671,13 +677,18 @@ class GPSolver(BaseEstimator, RegressorMixin):
 #       8. Towards semantic GP (add operators) + propose tuned point operator, using indices
 #       9. Math properties and dynamic constraint sets.
 
-#      10. Gen math expr instead of lisp expr 
 
-#      11. Other metrics???
+#       [BAD IDEA] 10. Gen math expr instead of lisp expr 
 
-# NOTE: we should probably go with const identities: 10 constant - so we allocate 10 identities but have different their bindings ??
+#      11. Other metrics??? Add when caches are enabled - syntactic diversity (is there convergance to same syntax)
+#      12. Elitism??? Aging??? 
+
+# NOTE [BAD IDEA]: we should probably go with const identities: 10 constant - so we allocate 10 identities but have different their bindings ??
 # PROBLEM: 1. const identity should have max of 1 presence in the term, it seems that it should be this way, or small number???
 #          2. On crossover of const identities, bindings should be transfered to children - should or not??? should
+# NOTE: this is bad idea (attempted) - no benefit to move from consts list to dict[Term, dict[int, Tensor]] for consts 
+#           - it complicates logic and requires additional mandatory binding step. 
+#       in current implementation we can collect term consts with one traversal if necessary.
 
 if __name__ == "__main__":
 
@@ -692,6 +703,9 @@ if __name__ == "__main__":
                         rnd_seed = rnd_seed, torch_rnd_seed = rnd_seed,
                         cache_terms=True, cache_term_props=True,
                         cache_evals = True, cache_inner_evals=True)
+                        # breed_args= dict(
+                        #     selection_fn = lexicase_selection,
+                        # ))
 
     free_vars, target = koza_1.sample_set("train", device = device, dtype = dtype,
                                             generator=solver.torch_gen,
