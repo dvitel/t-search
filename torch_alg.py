@@ -5,7 +5,7 @@ import inspect
 from typing import Any, Callable, Literal, Optional
 import torch
 
-from term import Term, cache_term, dict_alloc_id, evaluate, get_leaves, parse_term
+from term import Term, Value, Variable, cache_term, collect_terms, dict_alloc_id, evaluate, parse_term
 
 alg_ops = {
     "add": lambda a, b: a + b,
@@ -232,7 +232,7 @@ def lbfgs_optimize(term: Term, gold_outputs: torch.Tensor, semantics: torch.Tens
         Initial bindings should be already created
     '''
 
-    leaves = get_leaves(term, leaves_cache=leaves_cache) # all adjustable leaves 
+    leaves = collect_terms(term, lambda t: isinstance(t, (Variable, Value))) # all adjustable leaves 
     Ws_ops = [value_builder(leaf, semantics, leaf_semantic_ids, branch_semantic_ids,
                         const_ranges, num_points, sample_strategy) for leaf in leaves[-2:]]
 
