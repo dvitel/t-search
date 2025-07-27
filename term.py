@@ -74,10 +74,18 @@ class Value(Term):
     
 @dataclass(frozen=True)
 class Wildcard(Term):
-    name: Literal["?", "*"] = "?"
+    name: str
     
-StarWildcard = Wildcard("*")
-QuestionWildcard = Wildcard("?")    
+AnyOneWildard = Wildcard(".")    
+RepeatWildcard = Wildcard("*")
+Wildcards = [AnyOneWildard, RepeatWildcard]
+
+@dataclass(frozen=True, eq=False, unsafe_hash=False, repr=False)
+class OpWildcard(Op):
+    pass 
+
+def is_ellipsis(term: Term) -> bool:
+    return isinstance(term, OpWildcard) and term.op_id == "..."
 
 @dataclass(frozen=True)
 class MetaVariable(Term):
@@ -98,56 +106,46 @@ class LeafStructure(TermStructure):
 
 Leaf = LeafStructure()
 
-def parse_float(s:str) -> Optional[float]:
+def parse_float_value(s:str, *_) -> Optional[Term]:
     try:
-        value = float(s)
+        return Value(float(s))
     except ValueError:
-        value = None
-    return value        
+        return None
+    
+def parse_meta(s: str, *args) -> Optional[Term]:
+    wildcard = next((w for w in Wildcards if w.name == s), None)
+    if wildcard is not None:
+        return wildcard
+    if s.isupper():
+        return MetaVariable(s)    
+    if s == "...":
+        return OpWildcard(s, args)
+    return None
+
+def parse_op_or_var(s: str, *args) -> Optional[Term]:
+    if len(args) > 0:
+        return Op(s, args)
+    return Variable(s)
+
+default_parsers = [
+    parse_float_value,
+    parse_meta,
+    parse_op_or_var
+]
 
 def name_to_term(name: str, args: Sequence[Term],
-                    parsers: dict = {
-                        Value: parse_float
-                    }) -> Term:
+                    parsers = default_parsers) -> Term:
     ''' Attempts parsing of a name for creating either var or const. 
         Resorts to func signature at the end.
         op_cache maps arity to name to allocated term_id.
         This is untyped approach where we only consider arity, more complex approach should 
         replace int key of op_cache to TermType dataclass
     '''    
-    if len(args) == 0:
-        if name == "?":
-            return QuestionWildcard
-        if name == "*":
-            return StarWildcard
-        if name.isupper():
-            return MetaVariable(name)        
-        for term_type, parser in parsers.items():
-            value = parser(name)
-            if value is not None:
-                return term_type(value)
-        return Variable(name)
-    return Op(name, tuple(args))
-
-# def cache_term(term_cache: dict[tuple, Term], term: Term,
-#                 cache_cb: Callable = lambda t,s:()) -> Term:
-#     '''  Check if term is already present and if so, returns cached version for given term.
-#          Untyped approach, more complex method should define signature preciselly. 
-         
-#          Returns cached instance of term and hit/miss flag
-#     '''
-    
-#     # 3 parts, term type as general category, term_id, 
-#     #          uniquelly identifies Node among possible nodes,
-#     #          arg refs should be previously cached
-#     signature = term.get_signature(up_to="all")
-#     if signature in term_cache:
-#         term = term_cache[signature]
-#         cache_cb(term, True)
-#     else:
-#         term_cache[signature] = term
-#         cache_cb(term, False)
-#     return term
+    for parser in parsers:
+        term = parser(name, *args)
+        if term is not None:
+            return term
+    return None
 
 TRAVERSAL_EXIT_NODE = 1 
 TRAVERSAL_EXIT = 2
@@ -208,9 +206,14 @@ def float_formatter(x: Value, *_) -> str:
     return f"{x.value:.2f}"
 
 default_formatters = {
+    Op: lambda t, *args: f"({t.op_id} {' '.join(args)})",
+    Variable: lambda t, *_: t.var_id,
     Value: float_formatter,
     NonLeafStructure: lambda t, *args: f"(B{t.arity()} {' '.join(args)})",
-    LeafStructure: lambda *_: "L"
+    LeafStructure: lambda *_: "L",
+    OpWildcard: lambda t, *_: f"({t.op_id} {' '.join([str(a) for a in t.args])})",
+    Wildcard: lambda t, *_: t.name,
+    MetaVariable: lambda t, *_: t.name,    
 }
     
 def term_to_str(term: Term, formatters: dict = default_formatters) -> str: 
@@ -221,14 +224,7 @@ def term_to_str(term: Term, formatters: dict = default_formatters) -> str:
         term_type = type(term)
         if term_type in formatters:
             return formatters[term_type](term, *args)
-        if isinstance(term, Wildcard) or isinstance(term, MetaVariable):
-            return term.name
-        if isinstance(term, Variable):
-            return term.var_id
-        if isinstance(term, Op):
-            name = term.op_id
-        else:
-            name = term_type.__name__        
+        name = term_type.__name__        
         return "(" + " ".join([name, *args]) + ")"
     res = postorder_map(term, t_to_s, with_cache=True)
     return res 
@@ -365,6 +361,16 @@ class UnifyBindings:
     bindings: dict[str, Term] = field(default_factory=dict)
     renames: dict[str, str] = field(default_factory=dict)
 
+    def copy(self) -> 'UnifyBindings':
+        res = UnifyBindings()
+        res.bindings = self.bindings.copy()
+        res.renames = self.renames.copy()
+        return res
+    
+    def update_with(self, other: 'UnifyBindings'):
+        self.bindings.update(other.bindings)
+        self.renames.update(other.renames)
+
     def get(self, *keys) -> tuple[Term, ...]:
         res = tuple(self.bindings.get(self.renames.get(k, k), None) for k in keys)
         return res
@@ -377,19 +383,16 @@ class UnifyBindings:
         for k in keys:
             if k != to_key and k not in self.renames:
                 self.renames[k] = to_key
-
-def points_are_equiv(*ts: Term) -> bool:
-    if len(ts) == 0:
-        return True
-    def rstrip(args: tuple[Term]):
-        filtered = tuple(reversed([args[i] for i in range(len(args) - 1, -1, -1) if not (isinstance(args[i], Wildcard) and args[i].name == "*")]))
-        return filtered
-    arg_counts = [(len(sf), len(s) > 0 and (isinstance(s[-1], Wildcard) and s[-1].name == "*"))
-                  for t in ts 
-                  for s in [t.get_args()] 
-                  for sf in [rstrip(s)]]
-    max_count = max(ac for ac, _ in arg_counts)
-    def are_same(term1: Term , term2: Term) -> bool:
+    
+def _points_are_equiv(ts: Sequence[Term], args: Sequence[Sequence[Term]]) -> bool:
+    # arg_counts = [(len(sf), len(s) > 0 and takes_many_args(s[-1]))
+    #               for t in ts 
+    #               for s in [t.get_args()] 
+    #               for sf in [rstrip(s)]]
+    # max_count = max(ac for ac, _ in arg_counts)
+    first_term = ts[0]
+    first_args = args[0]
+    def are_same(term1: Term, term2: Term) -> bool:
         if type(term1) != type(term2):
             return False
         if isinstance(term1, Op):
@@ -397,29 +400,82 @@ def points_are_equiv(*ts: Term) -> bool:
                 return False
             return True 
         return term1 == term2  # assuming impl of _eq or ref eq     
-    res = all(are_same(t, ts[0]) and (has_wildcard or (not has_wildcard and (ac == max_count))) for t, (ac, has_wildcard) in zip(ts, arg_counts))
+    res = all(are_same(t, first_term) and \
+              (len(a) == len(first_args))
+              for t, a in zip(ts, args))
     return res
 
-def unify(b: UnifyBindings, *terms: Term, is_equiv: Callable = points_are_equiv) -> bool:
+def set_prev_match(prev_matches: dict[tuple, UnifyBindings | None], 
+                   b: UnifyBindings, terms: tuple[Term, ...], match: bool) -> bool:
+    prev_matches[terms] = b.copy() if match else None
+    return match 
+
+def unify(b: UnifyBindings, *terms: Term,
+            prev_matches: dict[tuple, UnifyBindings | None]) -> bool:
     ''' Unification of terms. Uppercase leaves are meta-variables, 
-        ? is wildcard leaf - should not be used as operation
-        * is wildcard args - 0 or more
 
         Note: we do not check here that bound meta-variables recursivelly resolve to concrete terms.
         This should be done by the caller.
     '''
-    filtered_terms = [t for t in terms if not isinstance(t, Wildcard)]
+    # if len(terms) == 2 and \
+    #     (terms[0].arity() > 0) and (terms[1].arity() > 0) and \
+    #     terms[0].op_id == terms[1]/op: # UnderWildcard check 
+    #     args1 = terms[0].get_args()
+    #     args2 = terms[1].get_args()
+    #     if len(args1) > 1 and args1[0] == UnderWildcard:
+    #         new_term = terms[1]
+    #         new_pat = args[]
+
+    if terms in prev_matches:
+        m = prev_matches[terms]
+        if m is not None:
+            b.update_with(m)
+            return True
+        return False
+    filtered_terms = [t for t in terms if t != AnyOneWildard]    
     if len(filtered_terms) < 2:
-        return True
+        return set_prev_match(prev_matches, b, terms, True)
+    if any(t == RepeatWildcard for t in terms):
+        return set_prev_match(prev_matches, b, terms, False)
+    if len(filtered_terms) == 2:
+        el_i = next((i for i, t in enumerate(filtered_terms) if is_ellipsis(t)), -1)
+        if el_i >= 0:
+            el_term = filtered_terms[el_i]
+            if len(el_term.args) == 0:
+                return set_prev_match(prev_matches, b, terms, False)
+            other_term = filtered_terms[1 - el_i]
+            exclude_root = False
+            if len(el_term.args) > 1:
+                name_var = el_term.args[0]
+                if not(isinstance(name_var, Variable) and \
+                    isinstance(other_term, Op) and \
+                    (other_term.op_id == name_var.var_id)):
+                    return set_prev_match(prev_matches, b, terms, False)
+                exclude_root = True
+            new_pattern = el_term.args[-1]
+            matches = match_terms(other_term, new_pattern, 
+                                  with_bindings=b, first_match=True, 
+                                  traversal="top_down",
+                                  prev_matches=prev_matches, exclude_root = exclude_root)
+            return set_prev_match(prev_matches, b, terms, len(matches) > 0)
     t_is_meta = [isinstance(t, MetaVariable) for t in filtered_terms]
     meta_operators = set([t.name for t, is_meta in zip(filtered_terms, t_is_meta) if is_meta])
     meta_terms = b.get(*meta_operators)
     bound_meta_terms = [bx for bx in meta_terms if bx is not None]
     concrete_terms = [t for t, is_meta in zip(filtered_terms, t_is_meta) if not is_meta]
     all_concrete_terms = bound_meta_terms + concrete_terms
+
+    # expanding * wildcards
+    all_concrete_terms_args = [t.get_args() for t in all_concrete_terms]
+    max_len = max(len(args) for args in all_concrete_terms_args)
+    first_repeats = [next((i for i, a in enumerate(args) if a == RepeatWildcard), -1)
+                      for args in all_concrete_terms_args]
+    expanded_args = [args if ri <= 0 else (args[:ri-1] + (args[ri-1],) * (max_len - len(args) + 2) + args[ri+1:])
+                     for args, ri in zip(all_concrete_terms_args, first_repeats)]
+    
     if len(all_concrete_terms) > 1:
-        if not is_equiv(*all_concrete_terms):
-            return False
+        if not _points_are_equiv(all_concrete_terms, expanded_args):
+            return set_prev_match(prev_matches, b, terms, False)
     unbound_meta_operators = [op for op, bx in zip(meta_operators, meta_terms) if bx is None]
     bound_meta_operators = [op for op, bx in zip(meta_operators, meta_terms) if bx is not None]
     if len(unbound_meta_operators) > 0:
@@ -433,23 +489,58 @@ def unify(b: UnifyBindings, *terms: Term, is_equiv: Callable = points_are_equiv)
                 b.set(to_key, term)
             b.set_same(unbound_meta_operators, to_key)
     if len(all_concrete_terms) >= 2:
-        for arg_tuple in zip(*(t.get_args() for t in all_concrete_terms)):
-            if not unify(b, *arg_tuple, is_equiv = is_equiv):
-                return False
-    return True
+        for arg_tuple in zip(*expanded_args):
+            if not unify(b, *arg_tuple, prev_matches=prev_matches):
+                return set_prev_match(prev_matches, b, terms, False)
+    return set_prev_match(prev_matches, b, terms, True)
 
-def match_term(term: Term, pattern: Term, is_equiv: Callable = points_are_equiv):
+MatchTraversal = Literal["bottom_up", "top_down"]
+
+def match_terms(root: Term, pattern: Term,
+                prev_matches: Optional[dict[tuple, UnifyBindings]] = None,
+                exclude_root = False,
+                with_bindings: UnifyBindings | None = None,
+                first_match: bool = False,
+                traversal: MatchTraversal = "bottom_up") -> list[tuple[Term, UnifyBindings]]:
     ''' Search for all occurances of pattern in term. 
         * is wildcard leaf. X, Y, Z are meta-variables for non-linear matrching
     '''
+    if prev_matches is None:
+        prev_matches = {}
     eq_terms = []
-    def _exit_term(t: Term, *_):
-        bindings = UnifyBindings()
-        if unify(bindings, t, pattern, is_equiv = is_equiv):
+    def _match_node(t: Term, *_):
+        if exclude_root and t == root:
+            return
+        if with_bindings is not None:
+            bindings = with_bindings.copy()
+        else:
+            bindings = UnifyBindings()
+        if unify(bindings, t, pattern, prev_matches = prev_matches):
             eq_terms.append((t, bindings))
+            if first_match:
+                if with_bindings is not None:
+                    with_bindings.update_with(bindings)
+                return TRAVERSAL_EXIT
         pass
-    postorder_traversal(term, lambda *_: (), _exit_term)
+    if traversal == "top_down":
+        postorder_traversal(root, _match_node, lambda *_: ())
+    elif traversal == "bottom_up":
+        postorder_traversal(root, lambda *_: (), _match_node)
+    else:
+        raise ValueError(f"Unknown match traversal: {traversal}")
     return eq_terms
+
+def match_root(root: Term, pattern: Term,
+                prev_matches: Optional[dict[tuple, UnifyBindings]] = None) -> Optional[UnifyBindings]:
+    ''' Search for all occurances of pattern in term. 
+        * is wildcard leaf. X, Y, Z are meta-variables for non-linear matrching
+    '''
+    if prev_matches is None:
+        prev_matches = {}
+    bindings = UnifyBindings()
+    if unify(bindings, root, pattern, prev_matches = prev_matches):
+        return bindings
+    return None
 
 def skip_spaces(term_str: str, i: int) -> int:
     while i < len(term_str) and term_str[i].isspace():
@@ -477,7 +568,7 @@ def parse_literal(term_str: str, i: int = 0):
     assert literal, f"Literal cannot be empty at position {i}:{j} in term string: {term_str}"
     return literal, j
 
-def parse_term(term_str: str, i: int = 0, parsers = { Value: parse_float }) -> tuple[Term, int]:
+def parse_term(term_str: str, i: int = 0, parsers = default_parsers) -> tuple[Term, int]:
     ''' Read term from string, return term and end of term after i '''
     branches = deque([[]])
     while True:
@@ -1124,6 +1215,24 @@ def one_point_rand_crossover(term1: Term, term2: Term,
 
     return children
 
+def unique_term(root: Term, term_cache: dict[tuple, Term] | None = None) -> Term:
+    ''' Remaps term to unique terms '''
+    if term_cache is None:
+        term_cache = {}
+
+    def _map(term, args):
+        if isinstance(term, Op):
+            signature = (term.op_id, *args)
+            if signature not in term_cache:
+                term_cache[signature] = term
+            return term_cache[signature]
+        return term
+
+    res = postorder_map(root, _map, with_cache = False)
+
+    return res
+
+
 if __name__ == "__main__":
 
     # tests
@@ -1148,10 +1257,19 @@ if __name__ == "__main__":
     print(str(t1))
     assert str(t1) == t1_str, f"Expected {t1_str}, got {str(t1)}"
     pass
-    # t1, _ = parse_term("(f x y)")
-    p1, _ = parse_term("(f (f X X) Y Y)")
-    # p1, _ = parse_term("(f *)")
-    matches = match_term(t1, p1)
+    # t1, _ = parse_term("(f x y x x x x x)")
+    t1, _ = parse_term("(inv (exp (mul x (cos (sin (exp (add 0.134 (exp (pow x x)))))))))")
+    # p1, _ = parse_term("(f (f X X) Y Y)")
+    # p1, _ = parse_term("(... (f 1.42 X))")
+    p1, _ = parse_term("(exp (... (exp (... (exp .)))))")
+    # p1, _ = parse_term("(... exp (exp X))")
+    # p1, _ = parse_term("(f x X *)")
+
+    p1_str = term_to_str(p1)
+    term_cache = {}
+    ut1 = unique_term(t1, term_cache)
+    up1 = unique_term(p1, term_cache)
+    matches = match_terms(ut1, up1, traversal="bottom_up", first_match=True)
     matches = [(str(m[0]), {k:str(v) for k, v in m[1].bindings.items()}) for m in matches]
     pass
 
