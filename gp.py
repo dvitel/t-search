@@ -14,7 +14,7 @@ import numpy as np
 import torch
 from spatial import InteractionIndex, RTreeIndex, SpatialIndex
 from term import UNBOUND, Builder, Builders, Op, Term, Value, Variable, evaluate, \
-                    get_depth, get_size, get_term_pos, \
+                    get_depth, get_fn_arity, get_size, get_term_pos, \
                     one_point_rand_crossover, one_point_rand_mutation, \
                     ramped_half_and_half
 from sklearn.base import BaseEstimator, RegressorMixin
@@ -171,7 +171,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                     mutation_rate = 0.1,
                     crossover_rate = 0.9,
                 ),
-                ops_counts: dict[str, tuple[int. int]] = {},
+                ops_counts: dict[str, tuple[int, int]] = {},
                 min_consts: int = 0,
                 max_consts: int = 5, # 0 to disable consts in terms
                 min_vars: int = 1,
@@ -193,18 +193,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.ops = ops
         self.ops_counts = ops_counts
 
-        self.op_builders = []
-        for op_id in self.ops.keys():
-            op_range = self.ops_counts.get(op_id, (0, UNBOUND))
-            op_builder = Builder(self._alloc_op_builder(op_id), *op_range)
-            self.op_builders.append(op_builder)
-
         self.min_vars = min_vars 
         self.max_vars = max_vars
         self.min_consts = min_consts
         self.max_consts = max_consts
                 
-        self.const_binding: list[torch.Tensor] = []
+        # self.const_binding: list[torch.Tensor] = []
         self.const_range: tuple[torch.Tensor, torch.Tensor] | None = None # detected from y on reset
         # NOTE: variables and consts are stored separately from tree - abstract shapes x * x + c * x + c 
         #       in this approach we have a problem with caching semantics of intermediate terms, as for different c and x, the results are different
@@ -263,13 +257,20 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.status: GPSolverStatus = "INIT"
         self.start_time: float = 0
 
+        self.op_builders = {}
+        for op_id, op_fn in self.ops.items():
+            op_range = self.ops_counts.get(op_id, (0, UNBOUND))
+            op_arity = get_fn_arity(op_fn)
+            op_builder = Builder(self._alloc_op_builder(op_id), op_arity, *op_range)
+            self.op_builders[op_id] = op_builder
+
     def _reset_state(self, free_vars: Optional[Sequence] = None, target: Optional[Sequence] = None):
         ''' Called before each fit '''
 
         # reset caches 
         self.vars: list[Variable] = []
         self.var_binding: dict[str, torch.Tensor] = {}
-        self.const_binding: list[torch.Tensor] = []
+        # self.const_binding: list[torch.Tensor] = []
 
         self.target = None 
         self.syntax: dict[tuple[str, ...], Term] = {}
@@ -291,31 +292,31 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.status: GPSolverStatus = "INIT"
         self.start_time: float = perf_counter()
 
-        builders = []
+        builders = {}
 
         if self.max_consts > 0:
-            const_builder = Builder(self._alloc_const, self.min_consts, self.max_consts)
-            builders.append(const_builder)
+            const_builder = Builder(self._alloc_const, 0, self.min_consts, self.max_consts)
+            builders[Value] = const_builder
 
         if free_vars is not None and len(free_vars) > 0 and (self.max_vars > 0):
             vars, var_binding = self.get_vars(free_vars)
             self.var_binding = var_binding
             self.vars = vars
-            var_builder = Builder(self._alloc_var, self.min_vars, self.max_vars)
-            builders.append(var_builder)
+            var_builder = Builder(self._alloc_var, 0, self.min_vars, self.max_vars)
+            builders[Variable] = var_builder
 
-        builders.extend(self.op_builders)
+        builders.update(self.op_builders)
 
-        def get_builder_from_term(term: Term):
+        def get_builder_from_term(term: Term, builders = builders):
             if isinstance(term, Op):
-                return self.op_builders[term.op_id]
+                return builders[term.op_id]
             if isinstance(term, Variable):
-                return self._alloc_var
+                return builders[Variable]
             if isinstance(term, Value):
-                return self._alloc_const
+                return builders[Value]
             return None 
         
-        self.builders = Builders(builders, get_builder_from_term)
+        self.builders = Builders(list(builders.values()), get_builder_from_term)
 
         if target is not None:
             if not torch.is_tensor(target):
@@ -355,9 +356,11 @@ class GPSolver(BaseEstimator, RegressorMixin):
         ''' Should we random sample of try some grid? Anyway we tune '''
         value = self.const_range[0] + torch.rand((1,), device=self.device, dtype=self.dtype,
                                                     generator=self.torch_gen) * self.const_range[1]
-        const_id = len(self.const_binding)
-        self.const_binding.append(value)
-        return Value(const_id)
+        # const_id = len(self.const_binding)
+        # self.const_binding.append(value)
+        # return Value(const_id)
+        self.metrics["consts"] = self.metrics.get("consts", 0) + 1
+        return Value(value)
 
     def init(self, size: int, *, init_fn: Callable = ramped_half_and_half, **_) -> list[Term]:
         ''' Initialize each term in population 0 with self.init_fn '''
@@ -430,11 +433,11 @@ class GPSolver(BaseEstimator, RegressorMixin):
             best_term_size = get_size(self.best_term, self.size_cache)
             self.metrics.setdefault("best_term_size", []).append(best_term_size)
 
-        return fitness, outputs      
+        return outputs, fitness
     
     def breed(self, population: list[Term], 
-                fitness: torch.Tensor | Sequence[torch.Tensor], 
                 outputs: torch.Tensor | Sequence[torch.Tensor], 
+                fitness: torch.Tensor | Sequence[torch.Tensor], 
                 size: int, *,
                 selection_fn: Callable[[list[Term], int], torch.Tensor] = tournament_selection, 
                 mutation_fn: Callable = one_point_rand_mutation, 
@@ -547,7 +550,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if isinstance(term, Variable):
             return self.var_binding[term.var_id]
         if isinstance(term, Value):
-            return self.const_binding[term.value]
+            # return self.const_binding[term.value]
+            return term.value
 
         # next is unnecessary as data never lands into term_outputs
         # if not self.cache_evals:
@@ -591,9 +595,19 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.metrics['root_evals'] = self.root_evals
         self.metrics["final_time"] = round((perf_counter() - self.start_time) * 1000)
         self.metrics["status"] = self.status
-        self.metrics["consts"] = len(self.consts) 
         if self.best_term is not None:
             self.metrics["solution"] = self.best_term
+
+    def check_trivial(self):
+        if torch.allclose(self.target, self.target[0], rtol = self.rtol, atol = self.atol):
+            self.best_term = Value(self.target[0]) #len(self.const_binding))
+            self.best_fitness = torch.tensor(0, device=self.device, dtype=self.dtype)
+            self.best_outputs = self.target
+            # self.const_binding.append(self.target[0])
+            self.status = "SOLVED"
+            self.has_solution = True
+            return True 
+        return False 
 
     def fit(self, X: np.ndarray | torch.Tensor, y: np.ndarray | torch.Tensor) -> 'GPSolver':
         """
@@ -607,6 +621,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
             self: Returns the instance itself.
         """
         self._reset_state(free_vars=X, target=y)
+        if self.check_trivial():
+            return self
         init_fn = timed(partial(self.init, **self.init_args), 'init_time', self.metrics)
         eval_fn = timed(partial(self.eval, eval_fn = self.eval_fn), 'eval_time', self.metrics)
         breed_fn = timed(partial(self.breed, **self.breed_args), 'breed_time', self.metrics)
@@ -639,7 +655,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
             if isinstance(term, Variable):
                 return var_binding[term.var_id]
             if isinstance(term, Value):
-                return self.const_binding[term.value]
+                # return self.const_binding[term.value]
+                return term.value
             return None
         
         def set_binding(*_):

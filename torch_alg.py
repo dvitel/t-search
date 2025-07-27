@@ -5,7 +5,7 @@ import inspect
 from typing import Any, Callable, Literal, Optional
 import torch
 
-from term import Term, Value, Variable, cache_term, collect_terms, dict_alloc_id, evaluate, parse_term
+from term import Term, Value, Variable, collect_terms, evaluate, parse_term
 
 alg_ops = {
     "add": lambda a, b: a + b,
@@ -516,11 +516,6 @@ if __name__ == "__main__":
 
     device = "cpu"
 
-    names_to_ids_cache = {}
-    ids_to_names_cache = {}
-    alloc_id = partial(dict_alloc_id, names_to_ids_cache=names_to_ids_cache,
-                       ids_to_names_cache=ids_to_names_cache)
-
     def f1(x:torch.Tensor) -> torch.Tensor:
         # return 3.13 * x + 1.42 #
         return x * x + 3.131 * x + 1.42
@@ -529,14 +524,12 @@ if __name__ == "__main__":
     grid = get_interval_grid(1, const_ranges[torch.newaxis, :], rand_deltas=False)
     gold_outputs = f1(grid[:, 0])
 
-    c_term = cache_term(term_cache, "c")
-    term, _ = parse_term(term_cache, alloc_id, "(add (mul x x) x)")
+    term, _ = parse_term("(add (mul x x) x)")
 
     max_num_syntaxes = 10000
     semantics = torch.zeros((max_num_syntaxes, gold_outputs.shape[0]), dtype=torch.float32, device=device)
     semantics[0] = 1 # 0 is constant 1
     semantics[1] = grid[:, 0]
-    x_term = cache_term(term_cache, "x")
     leaf_semantic_ids = {c_term: 0, x_term: 1}  # x is at index 1 in semantics
     branch_semantic_ids = {}
     

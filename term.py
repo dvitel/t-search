@@ -57,12 +57,20 @@ class Variable(Term):
     ''' Stores reference to concrete variable '''
     var_id: str
     
-@dataclass(frozen=False)
+@dataclass(frozen=False, eq=False, unsafe_hash=False, repr=False)
 class Value(Term):
     ''' Represents constants of target domain 
         Note that constant ref is used, the values are stored separately.
     '''
     value: Any
+
+    def __eq__(self, value):
+        if isinstance(value, Value):
+            return self.value == value.value
+        return False 
+    
+    def __hash__(self):
+        return hash(self.value)
     
 @dataclass(frozen=True)
 class Wildcard(Term):
@@ -276,7 +284,7 @@ def get_depth(term: Term, depth_cache: Optional[dict[Term, int]] = None) -> int:
 def get_size(term: Term, size_cache: Optional[dict[Term, int]] = None) -> int:
 
     if size_cache is None:
-        size_cache = size_cache
+        size_cache = {}
 
     def _enter_args(term: Term, *_):
         if (term in size_cache) or (term.arity() == 0):
@@ -602,8 +610,11 @@ def gen_skeleton(arities: np.ndarray,
     def get_tape_values(pos_id: int) -> int:   
         nonlocal tape     
         if pos_id >= tape.shape[0]:
-            tape.resize((tape.shape[0] + buf_n, *tape[1:]))
-            tape[tape.shape[0] - buf_n:] = alloc_tape()            
+            new_tape = np.zeros((tape.shape[0] + buf_n, *tape.shape[1:]), dtype=tape.dtype)
+            new_tape[:tape.shape[0]] = tape
+            new_part = alloc_tape()
+            new_tape[new_tape.shape[0] - buf_n:] = new_part
+            tape = new_tape
         return np.copy(tape[pos_id])
     
     def _iter_rec(pos_id: int, min_noleaf_count: int, min_counts: np.ndarray, 
@@ -617,7 +628,7 @@ def gen_skeleton(arities: np.ndarray,
                 return 1
             max_counts[0] -= 1 # no need of min_counts[0] -= 1 as each child has its own min reqs
             new_tree = Leaf
-            print(str(new_tree))
+            # print(str(new_tree))
             return new_tree, pos_id + 1
         else:
             inf = 100
@@ -645,7 +656,7 @@ def gen_skeleton(arities: np.ndarray,
                         continue
                     max_counts[0] -= 1
                     new_tree = Leaf
-                    print(str(new_tree))
+                    # print(str(new_tree))
                     return new_tree, next_pos_id
                 backtrack = None
 
@@ -675,13 +686,13 @@ def gen_skeleton(arities: np.ndarray,
                 # new_min_counts[op_id] -= 1
                 # new_min_noleaf_count = min_noleaf_count - 1
                 arg_op_ids = []
-                print(f"\tB{op_arity}? {at_depth} {min_counts}:{max_counts}")
+                # print(f"\tB{op_arity}? {at_depth} {min_counts}:{max_counts}")
                 for arg_i in range(op_arity):
                     arg_min_nonleaf_count, arg_min_counts = get_min_counts(arg_i)
                     child_opt = _iter_rec(next_pos_id, arg_min_nonleaf_count, 
                                           arg_min_counts, new_max_counts, at_depth + 1)
                     if isinstance(child_opt, int):
-                        print(f"\t<<< {at_depth} {arg_min_counts}:{new_max_counts}")
+                        # print(f"\t<<< {at_depth} {arg_min_counts}:{new_max_counts}")
                         backtrack = child_opt
                         break
                     else:
@@ -702,9 +713,9 @@ def gen_skeleton(arities: np.ndarray,
                     continue
                 max_counts[:] = new_max_counts
                 new_tree = NonLeafStructure(arg_op_ids)
-                print(str(new_tree))
+                # print(str(new_tree))
                 return new_tree, next_pos_id
-            print(f"\tfail {op_status}")
+            # print(f"\tfail {op_status}")
             if all(op_status == -1):
                 return -1 
             elif all(op_status == 1):
@@ -741,28 +752,32 @@ def _add_factorize(total: int, min_counts: np.ndarray, max_counts: np.ndarray,
     # min_counts = min_counts[permutation]
     # max_counts = max_counts[permutation]
 
-    total_mins = np.cumsum(min_counts)
-    total_maxs = np.cumsum(max_counts)
-    min_totals = total - total_maxs + max_counts
-    max_totals = total - total_mins + min_counts
-    total_mins = total_mins[::-1]
-    total_maxs = total_maxs[::-1]
+    # total_mins = np.array([0, *np.cumsum(min_counts)])
+    # total_maxs = np.array([0, *np.cumsum(max_counts)])
+    total_mins = np.sum(min_counts)
+    total_maxs = np.sum(max_counts)
 
-    final_mins = np.maximum(total_mins, min_totals)
-    final_maxs = np.minimum(total_maxs, max_totals)
+    res = [0 for _ in range(len(min_counts))] 
 
-    if np.any(final_maxs < final_mins):
-        return None
-    
-    summed_counts = rnd.randint(final_mins, final_maxs + 1)
+    for i in rnd.permutation(len(min_counts)):
+        cur_min = min_counts[i]
+        cur_max = max_counts[i]
+        total_mins -= cur_min
+        total_maxs -= cur_max
+        real_min = max(cur_min, total - total_maxs)
+        real_max = min(cur_max, total - total_mins)
+        if real_min > real_max:
+            return None
+        new_count = rnd.randint(real_min, real_max + 1)
+        total -= new_count
+        res[i] = new_count
 
-    sum_shifted = np.zeros_like(summed_counts)
-    sum_shifted[:-1] = summed_counts[1:]
-    counts = summed_counts - sum_shifted
+    counts = np.array(res)
 
     return counts
 
-# test3 = _add_factorize(5, np.array([2, 1, 2]), np.array([3, 3, 3]))
+# test3 = _add_factorize(1, np.array([1,1,1]), np.array([5, 5, 5]))
+# test3 = _add_factorize(3, np.array([0, 1]), np.array([5, 10]))
 # test1 = _add_factorize(10, np.array([1, 1, 0]), np.array([3, 3, 1]))
 # test2 = _add_factorize(5, np.array([2, 1, 3]), np.array([3, 3, 3]))
 # test4 = _add_factorize(5, np.array([0, 0, 0]), np.array([3, 3, 3]))
@@ -770,7 +785,7 @@ def _add_factorize(total: int, min_counts: np.ndarray, max_counts: np.ndarray,
 
 def get_fn_arity(fn: Callable) -> int:
     signature = inspect.signature(fn)
-    params = [p for p in signature.parameters.values() if p.kind == inspect.Parameter.POSITIONAL_ONLY]
+    params = [p for p in signature.parameters.values() if p.kind != inspect.Parameter.KEYWORD_ONLY]
     return len(params)
 
 @dataclass(frozen=False, eq=False, unsafe_hash=False)
@@ -789,7 +804,7 @@ class ArityBuilders:
     def get_max_counts(self) -> np.ndarray:
         if self._max_counts is None:
             self._max_counts = np.array([b.max_count for b in self.builders])
-        return self._max_countss
+        return self._max_counts
 
 @dataclass(frozen=False, eq=False, unsafe_hash=False)
 class BuilderAritites:
@@ -802,17 +817,18 @@ UNBOUND = 1000000
 @dataclass(frozen=False, eq=False, unsafe_hash=False)
 class Builder:
     fn: Callable
+    term_arity: int
     min_count: int = 0
     max_count: int = UNBOUND 
 
     def __post_init__(self):
-        self._arity: int | None = None
         self.bound_id: int | None = None
 
     def arity(self) -> int:
-        if self._arity is None:
-            self._arity = get_fn_arity(self.fn)
-        return self._arity
+        return self.term_arity
+        # if self._arity is None:
+        #     self._arity = get_fn_arity(self.fn)
+        # return self._arity
 
     def is_unbound(self) -> bool:
         return self.min_count == 0 and self.max_count == UNBOUND
@@ -826,10 +842,10 @@ class Builders:
         self._unbound = []
         for b in self.builders:
             if b.is_unbound():
+                self._unbound.append(b)
+            else:
                 b.bound_id = len(self._bound)
                 self._bound.append(b)
-            else:
-                self._unbound.append(b)
         self._arity_builders: dict[int, ArityBuilders] | None = None
         self._arities: BuilderAritites | None = None
         self._min_counts: np.ndarray | None = None # only bound builders
@@ -850,9 +866,10 @@ class Builders:
         ''' Returns total min and max counts for each arity '''
         if self._arities is None:
             arity_builders = self.get_arity_builders()
-            arities = np.ndarray([a for a in arity_builders.keys()])
-            min_counts = np.ndarray([np.sum(builders.get_min_counts()) for builders in arity_builders.values()])
-            max_counts = np.ndarray([np.sum(builders.get_max_counts()) for builders in arity_builders.values()])
+            arities = np.array([a for a in arity_builders.keys()])
+            min_counts = np.array([np.sum(builders.get_min_counts()) for builders in arity_builders.values()])
+            max_counts = np.array([np.sum(builders.get_max_counts()) for builders in arity_builders.values()])
+            max_counts[max_counts > UNBOUND] = UNBOUND
             self._arities = BuilderAritites(arities, min_counts, max_counts)
         return self._arities
 
@@ -870,13 +887,15 @@ class Builders:
         ''' Sets new ranges found bound builders '''
         if len(self._bound) == 0:
             return self 
-        new_builders = [b if b.bound_id is None else Builder(b.fn, min_counts[b.bound_id], max_counts[b.bound_id]) 
+        new_builders = [b if b.bound_id is None else Builder(b.fn, b.term_arity, 
+                                                             min_counts[b.bound_id], 
+                                                             max_counts[b.bound_id]) 
                         for b in self.builders ]
         builders = Builders(new_builders, self.get_builder_for_term)
         return builders
 
     def get_zero_counts(self) -> np.ndarray:
-        return np.zeros(self._bound_count, dtype=int)
+        return np.zeros(len(self._bound), dtype=int)
 
 
 def instantiate_skeleton(skeleton: TermStructure, builders: Builders,
@@ -885,7 +904,7 @@ def instantiate_skeleton(skeleton: TermStructure, builders: Builders,
     arity_terms = {}
     postorder_map(skeleton, lambda t,*_: arity_terms.setdefault(t.arity(), []).append(t),
                   with_cache=False)
-    arity_builders = {}
+    arity_b = {}
     for arity, arity_builders in builders.get_arity_builders().items():
         terms = arity_terms.get(arity, [])
         # should we check arity count sum() of mins and maxes?? 
@@ -897,14 +916,14 @@ def instantiate_skeleton(skeleton: TermStructure, builders: Builders,
         builders = [b_inst for bi, b in enumerate(arity_builders.builders)
                     for b_inst in [b] * split[bi]]
         rnd.shuffle(builders)
-        arity_builders[arity] = builders
+        arity_b[arity] = builders
 
     occurs = {}
 
-    def _init_term(term: TermStructure, *args):
+    def _init_term(term: TermStructure, args):
         arity = term.arity()
         cur_occur = occurs.setdefault(arity, 0)
-        builder = arity_builders[arity][cur_occur]
+        builder = arity_b[arity][cur_occur]
         term = builder.fn(*args)
         occurs[arity] += 1
         return term 
@@ -926,7 +945,7 @@ def grow(builders: Builders,
     if skeleton is None:
         return None
     
-    if map_skeleton is None:
+    if map_skeleton is not None:
         skeleton = map_skeleton(skeleton)
 
     term = instantiate_skeleton(skeleton, builders, rnd = rnd)
@@ -1008,7 +1027,7 @@ def one_point_rand_mutation(term: Term, positions: dict[TermPos, TermPos],
     else:
         pos_list = list(positions.keys())
 
-    selected_pos = select_positions(term, pos_list, num_children, select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
+    selected_pos = select_positions(pos_list, num_children, select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
 
     mutants = []
     for pos_id in selected_pos:
@@ -1022,7 +1041,7 @@ def one_point_rand_mutation(term: Term, positions: dict[TermPos, TermPos],
         cur_builders = builders.set_range(pos_min_counts, pos_max_counts)
         new_child = grow(cur_builders, 
                             grow_depth = min(max_grow_depth, tree_max_depth - position.at_depth), 
-                            grow_leaf_prob = None, rnd = rnd)
+                            rnd = rnd)
         if new_child is None:
             mutants.append(term) # noop
         else:
@@ -1061,20 +1080,19 @@ def one_point_rand_crossover(term1: Term, term2: Term,
     # term1_counts = get_counts(term1, builders, count_cache)
     # term2_counts = get_counts(term2, builders, count_cache)
 
-    if len(positions1) == 0:
-        pos_list1 = [TermPos(term1)]
-    else:
-        pos_list1 = list(positions1.keys())
-    pos_proba1 = get_pos_scores(term1, pos_list1,
+    if len(positions1) == 0 or len(positions2) == 0: # no crossover
+        res = [term1] * num_children
+        for i in range(1, num_children, 2):
+            res[i] = term2
+        return res 
+    pos_list1 = list(positions1.keys())
+    pos_proba1 = get_pos_scores(pos_list1,
                                 select_node_leaf_prob = select_node_leaf_prob, 
                                 rnd = rnd)    
     pos_ids1 = np.argsort(pos_proba1)
             
-    if len(positions2) == 0:
-        pos_list2 = [TermPos(term2)]
-    else:
-        pos_list2 = list(positions2.keys())
-    pos_proba2 = get_pos_scores(term2, pos_list2,
+    pos_list2 = list(positions2.keys())
+    pos_proba2 = get_pos_scores(pos_list2,
                                 select_node_leaf_prob = select_node_leaf_prob, 
                                 rnd = rnd)
     
