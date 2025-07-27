@@ -14,8 +14,8 @@ import numpy as np
 import torch
 from spatial import InteractionIndex, RTreeIndex, SpatialIndex
 from term import UNBOUND, Builder, Builders, Op, Term, Value, Variable, evaluate, \
-                    get_depth, get_fn_arity, get_size, get_term_pos, \
-                    one_point_rand_crossover, one_point_rand_mutation, \
+                    get_depth, get_fn_arity, get_size, get_term_pos, match_root, \
+                    one_point_rand_crossover, one_point_rand_mutation, parse_term, \
                     ramped_half_and_half
 from sklearn.base import BaseEstimator, RegressorMixin
 
@@ -162,7 +162,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 ops: dict[str, Callable],
                 fitness_fn: Callable = mse_loss_nan_v,
                 fit_condition = partial(fit_0, rtol = 1e-04, atol = 1e-03),
-                init_args: dict = dict(init_fn = ramped_half_and_half),
+                init_args: dict = dict(init_fn = ramped_half_and_half,
+                                       init_from_cache = False, # Warn: if True, cache_terms should nbe enabled, violates min constraints
+                                       ),
                 eval_fn = evaluate,
                 breed_args: dict = dict(
                     selection_fn = tournament_selection,
@@ -172,6 +174,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                     crossover_rate = 0.9,
                 ),
                 ops_counts: dict[str, tuple[int, int]] = {},
+                forbid_patterns: list[str] = [],
                 min_consts: int = 0,
                 max_consts: int = 5, # 0 to disable consts in terms
                 min_vars: int = 1,
@@ -197,6 +200,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.max_vars = max_vars
         self.min_consts = min_consts
         self.max_consts = max_consts
+        self.forbid_patterns = forbid_patterns
+        self.fpatterns = []
+        if len(self.forbid_patterns) > 0:
+            self.match_cache = {}
+            for p in self.forbid_patterns:
+                t, i = parse_term(p)
+                assert len(p) == i, f"Invalid pattern: {p}"
+                self.fpatterns.append(t)
                 
         # self.const_binding: list[torch.Tensor] = []
         self.const_range: tuple[torch.Tensor, torch.Tensor] | None = None # detected from y on reset
@@ -362,15 +373,28 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.metrics["consts"] = self.metrics.get("consts", 0) + 1
         return Value(value)
 
-    def init(self, size: int, *, init_fn: Callable = ramped_half_and_half, **_) -> list[Term]:
+    def init(self, size: int, *, init_fn: Callable = ramped_half_and_half, init_from_cache = False, **_) -> list[Term]:
         ''' Initialize each term in population 0 with self.init_fn '''
-        res = []
-        for _ in range(size):
-            term = init_fn(self.builders, rnd=self.rnd)
-            # print(str(term))
-            if term is not None:
-                res.append(term)
-        return res
+        if self.cache_terms and init_from_cache:
+            none_count = 0
+            sz = size - len(self.vars)
+            while len(self.syntax) < sz:
+                term = init_fn(self.builders, rnd=self.rnd)
+                if term is None:
+                    none_count += 1
+                if none_count == size:
+                    break 
+            res = list(self.syntax.values())[:sz]
+            res.extend(self.vars)
+            return res
+        else:
+            res = []
+            for _ in range(size):
+                term = init_fn(self.builders, rnd=self.rnd)
+                # print(str(term))
+                if term is not None:
+                    res.append(term)
+            return res 
     
     def eval(self, terms: list[Term], *, eval_fn: Callable = evaluate, **_) -> Optional[Term]:
         output_list = []
@@ -506,7 +530,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 children[2 * ii + 1] = new_children[2 * i + 1]
 
         return children
-
+    
+    def _validate_term(self, term: Term) -> bool:
+        for fpattern in self.fpatterns:
+            match = match_root(term, fpattern, prev_matches=self.match_cache)
+            if match is not None:
+                return False
+        return True
+            
     def _alloc_op_builder(self, op_id: int) -> Callable:
 
         hit_key = "syntax_hit"
@@ -522,12 +553,18 @@ class GPSolver(BaseEstimator, RegressorMixin):
                     key = miss_key
                     term = Op(op_id, args)
                     self.syntax[signature] = term 
+                if not self._validate_term(term):
+                    self.syntax.pop(signature, None)
+                    return None
                 self.metrics[key] = self.metrics.get(key, 0) + 1
                 return term 
         else:
             def _alloc_op(*args):
                 self.metrics[miss_key] = self.metrics.get(miss_key, 0) + 1
-                return Op(op_id, args)
+                term = Op(op_id, args)
+                if self._validate_term(term):
+                    return term
+                return None
             
         return _alloc_op
 
@@ -717,10 +754,21 @@ if __name__ == "__main__":
     solver = GPSolver(ops = alg_ops, device = device, dtype = dtype,
                         rnd_seed = rnd_seed, torch_rnd_seed = rnd_seed,
                         cache_terms=True, cache_term_props=True,
-                        cache_evals = True, cache_inner_evals=True)
+                        cache_evals = True, cache_inner_evals=True,
+                        init_args = dict(init_from_cache = False),
+                        forbid_patterns = [
+                            # "(inv (inv .))",
+                            # "(neg (neg .))",
+                            # "(sin (... (sin .)))",
+                            # "(cos (... (cos .)))",
+                            # "(exp (... (exp .)))",
+                            # "(log (... (log .)))",
+                            # "(... pow (pow . .))",
+                            ],
                         # breed_args= dict(
                         #     selection_fn = lexicase_selection,
-                        # ))
+                        # ),
+                        )
 
     free_vars, target = koza_1.sample_set("train", device = device, dtype = dtype,
                                             generator=solver.torch_gen,

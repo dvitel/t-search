@@ -16,7 +16,7 @@
 from collections import deque
 from dataclasses import dataclass, field
 import inspect
-from itertools import product
+from itertools import cycle, product
 import math
 from typing import Any, Callable, Literal, Optional, Sequence
 
@@ -177,7 +177,8 @@ def postorder_traversal(term: Term, enter_args: Callable, exit_term: Callable):
             q.appendleft((0, cur_arg, cur_arg_i, cur_term))
 
 
-def postorder_map(term: Term, fn: Callable, with_cache = False) -> Any:  
+def postorder_map(term: Term, fn: Callable, with_cache = False,
+                    none_terminate = False) -> Any:  
     args_stack = [[]]
     term_cache = {}
     if with_cache:
@@ -197,8 +198,10 @@ def postorder_map(term: Term, fn: Callable, with_cache = False) -> Any:
         processed_t = fn(t, term_processed_args)
         add_res(t, processed_t)
         args_stack[-1].append(processed_t) #add to parent args
+        if processed_t is None and none_terminate:
+            return TRAVERSAL_EXIT
     postorder_traversal(term, _enter_args, _exit_term)
-    return args_stack[0][0]
+    return args_stack[-1][-1]
 
 def float_formatter(x: Value, *_) -> str:   
     if torch.is_tensor(x.value):
@@ -444,20 +447,28 @@ def unify(b: UnifyBindings, *terms: Term,
             if len(el_term.args) == 0:
                 return set_prev_match(prev_matches, b, terms, False)
             other_term = filtered_terms[1 - el_i]
-            exclude_root = False
+            new_pattern = el_term.args[-1]
             if len(el_term.args) > 1:
                 name_var = el_term.args[0]
                 if not(isinstance(name_var, Variable) and \
                     isinstance(other_term, Op) and \
                     (other_term.op_id == name_var.var_id)):
                     return set_prev_match(prev_matches, b, terms, False)
-                exclude_root = True
-            new_pattern = el_term.args[-1]
-            matches = match_terms(other_term, new_pattern, 
-                                  with_bindings=b, first_match=True, 
-                                  traversal="top_down",
-                                  prev_matches=prev_matches, exclude_root = exclude_root)
-            return set_prev_match(prev_matches, b, terms, len(matches) > 0)
+                matches = []
+                for arg in other_term.get_args():
+                    matches = match_terms(arg, new_pattern,
+                                        with_bindings=b, first_match=True, 
+                                        traversal="top_down",
+                                        prev_matches=prev_matches)
+                    if len(matches) > 0:
+                        break 
+                return set_prev_match(prev_matches, b, terms, len(matches) > 0)
+            else:
+                matches = match_terms(other_term, new_pattern, 
+                                    with_bindings=b, first_match=True, 
+                                    traversal="top_down",
+                                    prev_matches=prev_matches)
+                return set_prev_match(prev_matches, b, terms, len(matches) > 0)
     t_is_meta = [isinstance(t, MetaVariable) for t in filtered_terms]
     meta_operators = set([t.name for t, is_meta in zip(filtered_terms, t_is_meta) if is_meta])
     meta_terms = b.get(*meta_operators)
@@ -472,6 +483,8 @@ def unify(b: UnifyBindings, *terms: Term,
                       for args in all_concrete_terms_args]
     expanded_args = [args if ri <= 0 else (args[:ri-1] + (args[ri-1],) * (max_len - len(args) + 2) + args[ri+1:])
                      for args, ri in zip(all_concrete_terms_args, first_repeats)]
+    
+    expanded_args = [[a for a in args if a != RepeatWildcard] for args in expanded_args]
     
     if len(all_concrete_terms) > 1:
         if not _points_are_equiv(all_concrete_terms, expanded_args):
@@ -498,7 +511,6 @@ MatchTraversal = Literal["bottom_up", "top_down"]
 
 def match_terms(root: Term, pattern: Term,
                 prev_matches: Optional[dict[tuple, UnifyBindings]] = None,
-                exclude_root = False,
                 with_bindings: UnifyBindings | None = None,
                 first_match: bool = False,
                 traversal: MatchTraversal = "bottom_up") -> list[tuple[Term, UnifyBindings]]:
@@ -509,8 +521,8 @@ def match_terms(root: Term, pattern: Term,
         prev_matches = {}
     eq_terms = []
     def _match_node(t: Term, *_):
-        if exclude_root and t == root:
-            return
+        # if exclude_root and t == root:
+        #     return
         if with_bindings is not None:
             bindings = with_bindings.copy()
         else:
@@ -621,6 +633,8 @@ def replace(builders: 'Builders',
         cur_builder = builders.get_builder_for_term(cur_parent.term)
         # assert isinstance(cur_parent.term, Op), f"Expected Op term"
         new_term = cur_builder.fn(*new_parent_term_args) #op_id = cur_parent.term.op_id)
+        if new_term is None:
+            return None
         cur_pos = cur_parent
         
     return new_term
@@ -990,36 +1004,53 @@ class Builders:
 
 
 def instantiate_skeleton(skeleton: TermStructure, builders: Builders,
-                    rnd: np.random.RandomState = np.random) -> Optional[Any]:
+                         retry_count: int = 2,
+                         rnd: np.random.RandomState = np.random) -> Optional[Any]:
     # first we collect list of nodes for each arity 
     arity_terms = {}
     postorder_map(skeleton, lambda t,*_: arity_terms.setdefault(t.arity(), []).append(t),
                   with_cache=False)
-    arity_b = {}
-    for arity, arity_builders in builders.get_arity_builders().items():
-        terms = arity_terms.get(arity, [])
-        # should we check arity count sum() of mins and maxes?? 
-        split = _add_factorize(len(terms),
-                               min_counts=arity_builders.get_min_counts(),
-                               max_counts=arity_builders.get_max_counts(), rnd = rnd)
-        if split is None:
-            return None
-        builders = [b_inst for bi, b in enumerate(arity_builders.builders)
-                    for b_inst in [b] * split[bi]]
-        rnd.shuffle(builders)
-        arity_b[arity] = builders
+    for _ in range(retry_count):
+        arity_b = {}
+        for arity, arity_builders in builders.get_arity_builders().items():
+            terms = arity_terms.get(arity, [])
+            # should we check arity count sum() of mins and maxes?? 
+            split = _add_factorize(len(terms),
+                                min_counts=arity_builders.get_min_counts(),
+                                max_counts=arity_builders.get_max_counts(), rnd = rnd)
+            if split is None:
+                return None
+            arity_b_builders = [b_inst for bi, b in enumerate(arity_builders.builders)
+                        for b_inst in [b] * split[bi]]
+            rnd.shuffle(arity_b_builders)
+            arity_b[arity] = arity_b_builders
 
-    occurs = {}
+        occurs = {}
 
-    def _init_term(term: TermStructure, args):
-        arity = term.arity()
-        cur_occur = occurs.setdefault(arity, 0)
-        builder = arity_b[arity][cur_occur]
-        term = builder.fn(*args)
-        occurs[arity] += 1
-        return term 
-    
-    instance = postorder_map(skeleton, _init_term, with_cache=False)
+        def _init_term(term: TermStructure, args):
+            arity = term.arity()
+            cur_occur = occurs.setdefault(arity, 0)
+            arity_b_builders = arity_b[arity]
+            attempted_builders = set()
+            for i in range(cur_occur, len(arity_b_builders)):
+                builder = arity_b_builders[i]
+                if builder in attempted_builders:
+                    continue
+                term = builder.fn(*args)
+                if term is not None:
+                    break
+                attempted_builders.add(builder)
+            if term is None:
+                return None
+            if i != cur_occur:
+                arity_b_builders[i], arity_b_builders[cur_occur] = arity_b_builders[cur_occur], arity_b_builders[i]
+            occurs[arity] += 1
+            return term 
+        
+        instance = postorder_map(skeleton, _init_term, with_cache=False, none_terminate=True)
+
+        if instance is not None:
+            break
 
     return instance
 
@@ -1065,17 +1096,17 @@ def get_pos_scores(positions: list[TermPos],
         pos_proba *= proba_mod
     return 1 - pos_proba
 
-def select_positions(positions: list[TermPos], num_positions: int,
+def order_positions(positions: list[TermPos],
                         select_node_leaf_prob: Optional[float] = 0.1,
                         rnd: np.random.RandomState = np.random) -> list[int]:
     # selecting poss for given number of mutants 
     pos_proba = get_pos_scores(positions, select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
     ordered_pos_ids = np.argsort(pos_proba).tolist()
-    if len(ordered_pos_ids) > num_positions:
-        ordered_pos_ids = ordered_pos_ids[:num_positions]
-    elif len(ordered_pos_ids) < num_positions:
-        repeat_cnt = math.ceil(num_positions / len(ordered_pos_ids))
-        ordered_pos_ids = (ordered_pos_ids * repeat_cnt)[:num_positions]
+    # if len(ordered_pos_ids) > num_positions:
+    #     ordered_pos_ids = ordered_pos_ids[:num_positions]
+    # elif len(ordered_pos_ids) < num_positions:
+    #     repeat_cnt = math.ceil(num_positions / len(ordered_pos_ids))
+    #     ordered_pos_ids = (ordered_pos_ids * repeat_cnt)[:num_positions]
     return ordered_pos_ids
 
 def get_counts(root: Term, builders: Builders,
@@ -1118,10 +1149,21 @@ def one_point_rand_mutation(term: Term, positions: dict[TermPos, TermPos],
     else:
         pos_list = list(positions.keys())
 
-    selected_pos = select_positions(pos_list, num_children, select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
+    ordered_pos_ids = order_positions(pos_list, select_node_leaf_prob = select_node_leaf_prob, rnd = rnd)
 
     mutants = []
-    for pos_id in selected_pos:
+    prev_same_count = 0
+    prev_len = -1
+    for pos_id in cycle(ordered_pos_ids):
+        if len(mutants) >= num_children:
+            break
+        if prev_len == len(mutants):
+            prev_same_count += 1
+            if prev_same_count > len(ordered_pos_ids):
+                break
+        else:
+            prev_same_count = 0
+            prev_len = len(mutants)
         position: TermPos = pos_list[pos_id]
         pos_counts = get_counts(position.term, builders, count_cache)
         term_left_counts = term_counts - pos_counts
@@ -1133,13 +1175,13 @@ def one_point_rand_mutation(term: Term, positions: dict[TermPos, TermPos],
         new_child = grow(cur_builders, 
                             grow_depth = min(max_grow_depth, tree_max_depth - position.at_depth), 
                             rnd = rnd)
-        if new_child is None:
-            mutants.append(term) # noop
-        else:
+        if new_child is not None:
             mutated_term = replace(builders, position, new_child, positions)
-            # child_depth = get_depth(mutated_term)
-            # assert child_depth <= tree_max_depth
-            mutants.append(mutated_term)
+            if mutated_term is not None:
+                mutants.append(mutated_term)
+    
+    if len(mutants) < num_children:
+        mutants += [term] * (num_children - len(mutants))
         
     return mutants
 
@@ -1188,30 +1230,42 @@ def one_point_rand_crossover(term1: Term, term2: Term,
                                 rnd = rnd)
     
     pos_ids2 = np.argsort(pos_proba2)
-    
-    selected_pairs = []
-
-    while len(selected_pairs) < num_children:
-        for pos_id1, pos_id2 in product(pos_ids1, pos_ids2):
-            pos1 = pos_list1[pos_id1]
-            pos2 = pos_list2[pos_id2]
-            if (pos1.at_depth + get_depth(pos2.term, depth_cache) <= tree_max_depth) and \
-                replacement_counts_sat(pos1, pos2.term, term1, builders, count_cache):
-                selected_pairs.append((pos1, positions1, pos2.term))
-                if len(selected_pairs) >= num_children:
-                    break
-            if (pos2.at_depth + get_depth(pos1.term, depth_cache) <= tree_max_depth) and \
-                replacement_counts_sat(pos2, pos1.term, term2, builders, count_cache):
-                selected_pairs.append((pos2, positions2, pos1.term))
-                if len(selected_pairs) >= num_children:
-                    break
 
     children = []
-    for pos, poss, term in selected_pairs:
-        new_child = replace(builders, pos, term, poss)
-        # child_depth = get_depth(new_child, depth_cache)
-        # assert child_depth <= tree_max_depth
-        children.append(new_child)
+
+    prev_same_count = 0
+    prev_len = -1
+    max_same_len = min(len(pos_ids1)*len(pos_ids2), 20)
+    for pos_id1, pos_id2 in cycle(product(pos_ids1, pos_ids2)):
+        if prev_len == len(children):
+            prev_same_count += 1
+            if prev_same_count > max_same_len:
+                break
+        else:
+            prev_same_count = 0
+            prev_len = len(children)
+        pos1 = pos_list1[pos_id1]
+        pos2 = pos_list2[pos_id2]
+        if (pos1.at_depth + get_depth(pos2.term, depth_cache) <= tree_max_depth) and \
+            replacement_counts_sat(pos1, pos2.term, term1, builders, count_cache):
+            new_child = replace(builders, pos1, pos2.term, positions1)
+            if new_child is not None:
+                children.append(new_child)
+                if len(children) >= num_children:
+                    break
+        if (pos2.at_depth + get_depth(pos1.term, depth_cache) <= tree_max_depth) and \
+            replacement_counts_sat(pos2, pos1.term, term2, builders, count_cache):
+            new_child = replace(builders, pos2, pos1.term, positions2)
+            if new_child is not None:
+                children.append(new_child)
+                if len(children) >= num_children:
+                    break
+
+    if len(children) < num_children:
+        left_children = [term1] * (num_children - len(children))
+        for i in range(1, len(left_children), 2):
+            left_children[i] = term2
+        children += left_children
 
     return children
 
@@ -1258,10 +1312,12 @@ if __name__ == "__main__":
     assert str(t1) == t1_str, f"Expected {t1_str}, got {str(t1)}"
     pass
     # t1, _ = parse_term("(f x y x x x x x)")
-    t1, _ = parse_term("(inv (exp (mul x (cos (sin (exp (add 0.134 (exp (pow x x)))))))))")
+    # t1, _ = parse_term("(inv (exp (mul x (cos (sin (exp (add 0.134 (exp (pow x x)))))))))")
+    t1, _ = parse_term("(pow (pow x0 1.81) (log 1.02))")
     # p1, _ = parse_term("(f (f X X) Y Y)")
     # p1, _ = parse_term("(... (f 1.42 X))")
-    p1, _ = parse_term("(exp (... (exp (... (exp .)))))")
+    # p1, _ = parse_term("(exp (... (exp (... (exp .)))))")
+    p1, _ = parse_term("(... pow (pow . .))")
     # p1, _ = parse_term("(... exp (exp X))")
     # p1, _ = parse_term("(f x X *)")
 
@@ -1272,7 +1328,6 @@ if __name__ == "__main__":
     matches = match_terms(ut1, up1, traversal="bottom_up", first_match=True)
     matches = [(str(m[0]), {k:str(v) for k, v in m[1].bindings.items()}) for m in matches]
     pass
-
 
     # res, _ = parse_term("  \n(   f   (g    x :0:1)  (h \nx) :0:12)  \n", 0)
     t1, _ = parse_term("  \n(   f   (g    x)  (h \nx))  \n", 0)
