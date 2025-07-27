@@ -6,8 +6,6 @@
         4. Mutation: one-point subtree
 '''
 
-from collections import defaultdict
-from dataclasses import dataclass, field
 from functools import partial
 import math
 from typing import Any, Callable, Literal, Optional, Sequence, Type
@@ -15,7 +13,10 @@ from time import perf_counter
 import numpy as np
 import torch
 from spatial import InteractionIndex, RTreeIndex, SpatialIndex
-from term import UNTYPED, Op, Term, TermType, Value, Variable, cache_term, evaluate, get_callable_signature, get_depth, get_size, get_term_pos, one_point_rand_crossover, one_point_rand_mutation, ramped_half_and_half, term_to_str
+from term import UNBOUND, Builder, Builders, Op, Term, Value, Variable, evaluate, \
+                    get_depth, get_size, get_term_pos, \
+                    one_point_rand_crossover, one_point_rand_mutation, \
+                    ramped_half_and_half
 from sklearn.base import BaseEstimator, RegressorMixin
 
 #utils
@@ -29,7 +30,7 @@ def stack_rows(tensors: Sequence[torch.Tensor]) -> torch.Tensor:
     return res
 
 # selections
-def tournament_selection(population: list[Term], size: int, *, 
+def tournament_selection(size: int, *, 
                          fitness: torch.Tensor | Sequence[torch.Tensor],
                          gen: torch.Generator, tournament_selection_size = 7, **_):
     ''' Fitness is 1d tensor of fitness selected for tournament '''
@@ -47,7 +48,7 @@ def tournament_selection(population: list[Term], size: int, *,
         del fitness
     return best_ids
 
-def lexicase_selection(population: list[Term], size: int, *, 
+def lexicase_selection(size: int, *, 
                        nan_error = torch.inf,
                        outputs: torch.Tensor, target: torch.Tensor, 
                        gen: torch.Generator, **_):
@@ -116,7 +117,7 @@ def fit_0(fitness: torch.Tensor,
         best_found = True
     return best_id, best_found
     
-def mse_loss(predictions, target, *, nan_error = torch.inf):
+def mse_loss(predictions, target):
     return torch.mean((predictions - target) ** 2, dim=-1)
     
 def mse_loss_nan_v(predictions, target, *, nan_error = torch.inf):
@@ -158,12 +159,11 @@ def timed(fn: Callable, key: str, metrics: dict) -> Callable:
 class GPSolver(BaseEstimator, RegressorMixin):
 
     def __init__(self, 
-                ops: list[Callable] | dict[str, Callable], # we refer to each func by its position in the list 
-                # fitness_fn: Callable = partial(mse_loss_nan_vf, nan_frac=0.1), 
+                ops: dict[str, Callable],
                 fitness_fn: Callable = mse_loss_nan_v,
                 fit_condition = partial(fit_0, rtol = 1e-04, atol = 1e-03),
                 init_args: dict = dict(init_fn = ramped_half_and_half),
-                eval_args: dict = dict(eval_fn = evaluate),
+                eval_fn = evaluate,
                 breed_args: dict = dict(
                     selection_fn = tournament_selection,
                     mutation_fn = one_point_rand_mutation,
@@ -171,7 +171,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
                     mutation_rate = 0.1,
                     crossover_rate = 0.9,
                 ),
+                ops_counts: dict[str, tuple[int. int]] = {},
+                min_consts: int = 0,
                 max_consts: int = 5, # 0 to disable consts in terms
+                min_vars: int = 1,
                 max_vars: int = 10, # max number of free variables
                 max_gen: int = 100,
                 max_root_evals: int = 100_000, 
@@ -185,60 +188,34 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 rnd_seed: Optional[int] = None,
                 torch_rnd_seed: Optional[int] = None,
                 device = "cpu", dtype = torch.float32,
-                debug = True, # flag will rewrite Term str and repr 
                 ):
         
-        if type(ops) is dict:
-            self.ops = list(ops.values())
-            self.ops_names = list(ops.keys())
-        else:
-            self.ops = ops
-            self.ops_names = [ f"f{opi}" if op.__name__ == "<lambda>" else op.__name__ for opi, op in enumerate(ops) ]
-        self.all_signatures = [get_callable_signature(op) for op in self.ops]
-        self.default_leaves = [((sign, Op, op_id), lambda op_id = op_id:Op(op_id, ())) 
-                          for op_id, sign in enumerate(self.all_signatures) if sign.arity() == 0]        
-        self.branches = [(sign, Op, op_id) for op_id, sign in enumerate(self.all_signatures) if sign.arity() > 0]
-        self.max_consts = max_consts
+        self.ops = ops
+        self.ops_counts = ops_counts
+
+        self.op_builders = []
+        for op_id in self.ops.keys():
+            op_range = self.ops_counts.get(op_id, (0, UNBOUND))
+            op_builder = Builder(self._alloc_op_builder(op_id), *op_range)
+            self.op_builders.append(op_builder)
+
+        self.min_vars = min_vars 
         self.max_vars = max_vars
-        self.debug = debug
-
-        if self.debug:
-
-            solver = self
-
-            def _term_to_str(self: Term):
-                return term_to_str(self, name_getter=lambda x: solver._get_name(*x))
-            
-            Term.__str__ = _term_to_str
-            Term.__repr__ = _term_to_str
-
-        self.vars: list[torch.Tensor] = []
-        self.var_names: list[str] = []
-        self.var_var: list[Variable] = []
-        self.consts: list[torch.Tensor] = []
+        self.min_consts = min_consts
+        self.max_consts = max_consts
+                
+        self.const_binding: list[torch.Tensor] = []
         self.const_range: tuple[torch.Tensor, torch.Tensor] | None = None # detected from y on reset
-        self.term_consts: dict[Term, list[int]] = {} # for each term stores all present cocnstants
-        self.term_vars: dict[Term, list[int]] = {}            # tree root to variable occurances
-        self.term_counts: dict[Term, dict[tuple, int]] = {}
         # NOTE: variables and consts are stored separately from tree - abstract shapes x * x + c * x + c 
         #       in this approach we have a problem with caching semantics of intermediate terms, as for different c and x, the results are different
         #       solution: make term_output as dictionary with keys (root, term). Root should be a part of all keys to identify concrete selection of c, x
         #       alternative: create subclasses of Term for Vars and Values - this is more explicit approach and better 
         #                    Vars = Term + var id, Values = Term + value Any.
         #                    Do we need (term, occur) in this case? Seems yes.
-        self.count_constraints = {}
-        if self.max_consts > 0:            
-            const_signature = (UNTYPED, Value)
-            self.count_constraints[const_signature] = self.max_consts
-            self.default_leaves.append((const_signature, self._alloc_const))
-        if self.max_vars > 0:
-            var_signature = (UNTYPED, Variable)
-            self.count_constraints[var_signature] = self.max_vars
-            # self.leaves.append(self._alloc_var)
         self.fitness_fn = fitness_fn
         self.fit_condition = fit_condition
         self.init_args = init_args
-        self.eval_args = eval_args
+        self.eval_fn = eval_fn
         self.breed_args = breed_args
         self.max_gen = max_gen
         self.max_root_evals = max_root_evals
@@ -273,6 +250,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.term_fitness: dict[Term, torch.Tensor] = {}
         self.depth_cache: dict[Term, int] = {}
         self.size_cache: dict[Term, int] = {}
+        self.term_counts: dict[Term, np.ndarray] = {}
 
         self.best_term: Optional[Term] = None
         self.best_outputs: Optional[torch.Tensor] = None
@@ -282,52 +260,115 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.evals: int = 0
         self.root_evals: int = 0
         self.metrics: dict[str, int | float | list[int|float]] = {}
-        self.leaves = list(self.default_leaves)
         self.status: GPSolverStatus = "INIT"
         self.start_time: float = 0
 
-    def _get_name(self, term_type: TermType, tp: Type, term_id: Any) -> Optional[str]:
-        if tp is Op:
-            return self.ops_names[term_id]
-        if tp is Value: 
-            return self.consts[term_id].item()
-        if tp is Variable:
-            return self.var_names[term_id]
+    def _reset_state(self, free_vars: Optional[Sequence] = None, target: Optional[Sequence] = None):
+        ''' Called before each fit '''
 
-    def _alloc_const(self) -> Value: 
-        ''' Should we random sample of try some grid? Anyway we tune '''
-        value = self.const_range[0] + torch.rand((1,), device=self.device, dtype=self.dtype,
-                                                    generator=self.torch_gen) * self.const_range[1]
-        const_id = len(self.consts)
-        self.consts.append(value)
-        return Value(const_id)
+        # reset caches 
+        self.vars: list[Variable] = []
+        self.var_binding: dict[str, torch.Tensor] = {}
+        self.const_binding: list[torch.Tensor] = []
 
-    def _add_free_vars(self, free_vars: Sequence):
-        if self.max_vars == 0:
-            return
+        self.target = None 
+        self.syntax: dict[tuple[str, ...], Term] = {}
+        self.term_outputs: dict[Term, torch.Tensor] = {}
+        self.inner_semantics: dict[Term, dict[Term, torch.Tensor]] = {}
+        self.term_fitness: dict[Term, torch.Tensor] = {}
+        self.depth_cache: dict[Term, int] = {}
+        self.size_cache: dict[Term, int] = {}
+        self.term_counts: dict[Term, np.ndarray] = {}
+
+        self.best_term: Optional[Term] = None
+        self.best_outputs: Optional[torch.Tensor] = None
+        self.best_fitness: Optional[torch.Tensor] = None
+        self.has_solution = False
+        self.gen: int = 0
+        self.evals: int = 0
+        self.root_evals: int = 0
+        self.metrics: dict[str, int | float | list[int|float]] = {}
+        self.status: GPSolverStatus = "INIT"
+        self.start_time: float = perf_counter()
+
+        builders = []
+
+        if self.max_consts > 0:
+            const_builder = Builder(self._alloc_const, self.min_consts, self.max_consts)
+            builders.append(const_builder)
+
+        if free_vars is not None and len(free_vars) > 0 and (self.max_vars > 0):
+            vars, var_binding = self.get_vars(free_vars)
+            self.var_binding = var_binding
+            self.vars = vars
+            var_builder = Builder(self._alloc_var, self.min_vars, self.max_vars)
+            builders.append(var_builder)
+
+        builders.extend(self.op_builders)
+
+        def get_builder_from_term(term: Term):
+            if isinstance(term, Op):
+                return self.op_builders[term.op_id]
+            if isinstance(term, Variable):
+                return self._alloc_var
+            if isinstance(term, Value):
+                return self._alloc_const
+            return None 
+        
+        self.builders = Builders(builders, get_builder_from_term)
+
+        if target is not None:
+            if not torch.is_tensor(target):
+                self.target = torch.tensor(target, device = self.device, dtype = self.dtype)
+            else:
+                self.target = target.to(device = self.device, dtype = self.dtype)
+            
+            min_value = self.target.min()
+            max_value = self.target.max()
+            if torch.isclose(min_value, max_value, rtol=self.rtol, atol=self.atol):
+                min_value = min_value - 0.1
+                max_value = max_value + 0.1
+            dist = max_value - min_value
+            min_value = min_value - 0.1 * dist
+            max_value = max_value + 0.1 * dist
+            self.const_range = (min_value, max_value - min_value)
+        
+    def get_vars(self, free_vars):
+        vars = []
+        var_binding = {}
         for i, xi in enumerate(free_vars):
+            v = Variable(f"x{i}")
             if not torch.is_tensor(xi):
                 fv = torch.tensor(xi, dtype=self.dtype, device=self.device)
             else:
-                fv = xi.to(device = self.device, dtype = self.dtype)
-            self.vars.append(fv)
-            self.var_names.append(f"x{i}")
-            v = Variable(i)
-            self.var_var.append(v)
-            self.leaves.append(((UNTYPED, Variable), lambda v=v: v))
+                fv = xi.to(device = self.device, dtype = self.dtype)        
+            vars.append(v)
+            var_binding[v.var_id] = fv 
+        return vars, var_binding
+            
+    # NOTE: there could be different approach - one builder per variable to control var counts
+    def _alloc_var(self, *_) -> Variable:
+        var = self.rnd.choice(self.vars)
+        return var
 
-    def init(self, size: int, *, init_fn: Callable = ramped_half_and_half, **kwargs) -> list[Term]:
+    def _alloc_const(self, *_) -> Value: 
+        ''' Should we random sample of try some grid? Anyway we tune '''
+        value = self.const_range[0] + torch.rand((1,), device=self.device, dtype=self.dtype,
+                                                    generator=self.torch_gen) * self.const_range[1]
+        const_id = len(self.const_binding)
+        self.const_binding.append(value)
+        return Value(const_id)
+
+    def init(self, size: int, *, init_fn: Callable = ramped_half_and_half, **_) -> list[Term]:
         ''' Initialize each term in population 0 with self.init_fn '''
         res = []
         for _ in range(size):
-            term = init_fn(self._cache_term, self.leaves, self.branches, 
-                            count_constraints = self.get_count_constraints(),
-                            rnd=self.rnd)
+            term = init_fn(self.builders, rnd=self.rnd)
             # print(str(term))
             if term is not None:
                 res.append(term)
         return res
-
+    
     def eval(self, terms: list[Term], *, eval_fn: Callable = evaluate, **_) -> Optional[Term]:
         output_list = []
         for term in terms:
@@ -401,10 +442,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 mutation_rate = 0.1, crossover_rate = 0.9, **_) -> list[Term]:
         ''' Pipeline that mutates parents and then applies crossover on pairs. One-point operations '''
 
-        new_population = []
-        all_parents = []
-
-        selected_ids = selection_fn(population, size, 
+        selected_ids = selection_fn(size, population = population,
                                     fitness=fitness, outputs=outputs,
                                     target = self.target, gen=self.torch_gen)
 
@@ -432,10 +470,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         for term, term_p in mutation_pos.items():
             term_poss = get_term_pos(term)
             term_pos_cache[term] = term_poss
-            mutated_terms = mutation_fn(self._cache_term,
-                                term = term, positions = term_poss,
-                                leaves = self.leaves, ops = self.branches,
-                                count_constraints = self.get_count_constraints(),
+            mutated_terms = mutation_fn(term = term, positions = term_poss,
+                                builders = self.builders,
                                 count_cache = count_cache,
                                 rnd=self.rnd, num_children=len(term_p))
             for i, mterm in zip(term_p, mutated_terms):
@@ -457,10 +493,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 term_pos_cache[parent2] = get_term_pos(parent2)
             pos1 = term_pos_cache[parent1]
             pos2 = term_pos_cache[parent2]
-            new_children = crossover_fn(self._cache_term,
-                                term1 = parent1, term2 = parent2, 
+            new_children = crossover_fn(term1 = parent1, term2 = parent2, 
+                                builders = self.builders,
                                 positions1 = pos1, positions2 = pos2,
-                                count_constraints = self.get_count_constraints(),
                                 depth_cache = depth_cache, count_cache = count_cache,
                                 rnd = self.rnd, num_children=2 * len(pair_ids))
             for i, ii in enumerate(pair_ids):
@@ -469,67 +504,29 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         return children
 
-    def _reset_state(self, free_vars: Optional[Sequence] = None, target: Optional[Sequence] = None):
-        ''' Called before each fit '''
+    def _alloc_op_builder(self, op_id: int) -> Callable:
 
-        # reset caches 
-        self.vars: list[torch.Tensor] = []
-        self.var_names: list[str] = []
-        self.var_var: list[Variable] = []
-        self.consts: list[torch.Tensor] = []
-        self.term_consts: dict[Term, list[int]] = {} # for each term stores all present cocnstants
-        self.term_vars: dict[Term, list[int]] = {}            # tree root to variable occurances
-        self.term_counts: dict[Term, dict[tuple, int]] = {}
+        hit_key = "syntax_hit"
+        miss_key = "syntax_miss"
 
-        self.target = None 
-        self.syntax: dict[tuple[str, ...], Term] = {}
-        self.term_outputs: dict[Term, torch.Tensor] = {}
-        self.inner_semantics: dict[Term, dict[Term, torch.Tensor]] = {}
-        self.term_fitness: dict[Term, torch.Tensor] = {}
-        self.depth_cache: dict[Term, int] = {}
-        self.size_cache: dict[Term, int] = {}
-
-        self.best_term: Optional[Term] = None
-        self.best_outputs: Optional[torch.Tensor] = None
-        self.best_fitness: Optional[torch.Tensor] = None
-        self.has_solution = False
-        self.gen: int = 0
-        self.evals: int = 0
-        self.root_evals: int = 0
-        self.metrics: dict[str, int | float | list[int|float]] = {}
-        self.leaves = list(self.default_leaves) 
-        self.status: GPSolverStatus = "INIT"
-        self.start_time: float = perf_counter()
-
-        if free_vars is not None:
-            self._add_free_vars(free_vars)
-        if target is None:
-            self.target = None
-        else:
-            if not torch.is_tensor(target):
-                self.target = torch.tensor(target, device = self.device, dtype = self.dtype)
-            else:
-                self.target = target.to(device = self.device, dtype = self.dtype)
-            
-            min_value = self.target.min()
-            max_value = self.target.max()
-            if torch.isclose(min_value, max_value, rtol=self.rtol, atol=self.atol):
-                min_value = min_value - 0.1
-                max_value = max_value + 0.1
-            dist = max_value - min_value
-            min_value = min_value - 0.1 * dist
-            max_value = max_value + 0.1 * dist
-            self.const_range = (min_value, max_value - min_value)
-
-    def _cache_term(self, term: Term) -> Term:
-        def cache_cb(term: Term, cache_hit: bool):
-            key = "syntax_hit" if cache_hit else "syntax_miss"
-            self.metrics[key] = self.metrics.get(key, 0) + 1
         if self.cache_terms:
-            term = cache_term(self.syntax, term, cache_cb)
+            def _alloc_op(*args):
+                signature = (op_id, *args) 
+                if signature in self.syntax:
+                    key = hit_key
+                    term = self.syntax[signature]
+                else:
+                    key = miss_key
+                    term = Op(op_id, args)
+                    self.syntax[signature] = term 
+                self.metrics[key] = self.metrics.get(key, 0) + 1
+                return term 
         else:
-            cache_cb(term, False)
-        return term     
+            def _alloc_op(*args):
+                self.metrics[miss_key] = self.metrics.get(miss_key, 0) + 1
+                return Op(op_id, args)
+            
+        return _alloc_op
 
     def get_count_cache(self):
         if self.cache_term_props:
@@ -545,15 +542,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if self.cache_term_props:
             return self.size_cache
         return {} 
-
-    def get_count_constraints(self) -> dict[tuple, int]:
-        return dict(self.count_constraints)   
     
     def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:        
         if isinstance(term, Variable):
-            return self.vars[term.var_id]
+            return self.var_binding[term.var_id]
         if isinstance(term, Value):
-            return self.consts[term.value_id]
+            return self.const_binding[term.value]
 
         # next is unnecessary as data never lands into term_outputs
         # if not self.cache_evals:
@@ -614,7 +608,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         """
         self._reset_state(free_vars=X, target=y)
         init_fn = timed(partial(self.init, **self.init_args), 'init_time', self.metrics)
-        eval_fn = timed(partial(self.eval, **self.eval_args), 'eval_time', self.metrics)
+        eval_fn = timed(partial(self.eval, eval_fn = self.eval_fn), 'eval_time', self.metrics)
         breed_fn = timed(partial(self.breed, **self.breed_args), 'breed_time', self.metrics)
         try:
             self._fit_inner(init_fn, eval_fn, breed_fn)
@@ -639,15 +633,19 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if not self.is_fitted_ or self.best_term is None:
             raise RuntimeError("Solver is not fitted yet")
         
-        term_outputs = self._add_free_vars(free_vars)
+        _, var_binding = self.get_vars(X)
         
-        def get_binding(term_with_pos: tuple[Term, int]) -> Optional[torch.Tensor]:
-            return term_outputs.get(term_with_pos[0], None)
+        def get_binding(root: Term, term: Term, *_) -> Optional[torch.Tensor]:
+            if isinstance(term, Variable):
+                return var_binding[term.var_id]
+            if isinstance(term, Value):
+                return self.const_binding[term.value]
+            return None
         
-        def set_binding(term_with_pos: tuple[Term, int], value: torch.Tensor):
+        def set_binding(*_):
             pass 
         
-        output = self.eval_fn(self.best_term, self.ops_map, get_binding, set_binding)
+        output = self.eval_fn(self.best_term, self.ops, get_binding, set_binding)
         if output is None:
             raise RuntimeError("Evaluation of the best term returned None, not all terminals may be bound")
         output_numpy = output.cpu().numpy()
