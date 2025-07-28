@@ -670,27 +670,7 @@ def evaluate(root: Term, ops: dict[str, Callable],
 
     postorder_traversal(root, _enter_args, _exit_term)
 
-    return args_stack[0][0]
-    
-# inf_count_constraints: dict[tuple, int] = defaultdict(lambda: math.inf)
-
-# def signature_match(from_sig: tuple, to_sig: tuple) -> bool:
-#     if len(from_sig) > len(to_sig):
-#         return False
-#     for x, y in zip(from_sig, to_sig):
-#         if x != y:
-#             return False
-#     return True
-
-# def check_signature_constraints(constraints: dict, signature: tuple) -> bool:
-#     keys_to_check = [sig for sig in constraints.keys() if signature_match(sig, signature) ]
-#     for i in range(len(signature)):
-#         subsign = signature[:i+1]
-#         if subsign in constraints and constraints[subsign] <= 0:
-#             return False
-#     return True
-
-# error reasons of skeleton generation
+    return args_stack[0][0]    
 
 def gen_skeleton(arities: np.ndarray, 
             min_counts: np.ndarray, max_counts: np.ndarray,
@@ -821,9 +801,9 @@ def gen_skeleton(arities: np.ndarray,
                 # print(str(new_tree))
                 return new_tree, next_pos_id
             # print(f"\tfail {op_status}")
-            if all(op_status == -1):
+            if np.all(op_status == -1):
                 return -1 
-            elif all(op_status == 1):
+            elif np.all(op_status == 1):
                 return 1
             return 0
 
@@ -831,6 +811,194 @@ def gen_skeleton(arities: np.ndarray,
     skeleton, _ = _iter_rec(0, min_nonleaf_count, min_counts.copy(), max_counts.copy())
 
     return skeleton
+
+def alloc_tape(width: int, penalties: list[tuple[list[int] | int, float]] = [],
+                buf_n:int = 100, rnd: np.random.RandomState = np.random) -> np.ndarray:
+    weights = rnd.random((buf_n, width))
+    for ids, p in penalties:
+        weights[:,ids] = np.where(weights[:,ids] < p, 1, 0)
+    return 1 - weights # now smaller is better
+
+def get_tape_values(pos_id: int, tape, 
+                    penalties: list[tuple[list[int] | int, float]] = [],
+                    buf_n:int = 100, rnd: np.random.RandomState = np.random) -> int:    
+    if pos_id >= tape.shape[0]:
+        new_tape = np.zeros((tape.shape[0] + buf_n, tape.shape[1]), dtype=tape.dtype)
+        new_tape[:tape.shape[0]] = tape
+        new_part = alloc_tape(tape.shape[1], penalties=penalties, buf_n=buf_n, rnd=rnd)
+        new_tape[new_tape.shape[0] - buf_n:] = new_part
+        tape = new_tape
+    return np.copy(tape[pos_id])
+
+def gen_term(builders: 'Builders',            
+            max_depth = 5, leaf_proba: float | None = 0.1,
+            rnd: np.random.RandomState = np.random, buf_n = 100, inf = 100,
+         ) -> Optional[Term]:
+    ''' Arities should be unique and provided in sorted order.
+        Counts should correspond to arities 
+    '''
+
+    arity_builders = builders.get_arity_builder_ids()
+    if 0 not in arity_builders:
+        return None
+    leaf_ids = arity_builders[0]
+
+    penalties = [] if leaf_proba is None else [(leaf_ids, leaf_proba)]
+
+    tape = alloc_tape(rnd, penalties=penalties, buf_n=buf_n, rnd=rnd) # tape is 2d ndarray: (t, score)
+
+    def _iter_rec(pos_id: int,
+                  min_noleaf_count: int, min_counts: np.ndarray, max_counts: np.ndarray, 
+                  context_count: np.ndarray, context_limits: np.ndarray,
+                  at_depth: iter = 0) -> tuple[TermStructure, int] | Literal[-1, 0, 1]:
+        if at_depth == max_depth: # attempt only leaves
+            if min_noleaf_count > 0: # cannot satisfy min constraints for non-leaf
+                return 0
+            req_id_ids, = np.where(min_counts[leaf_ids] > 0)
+            if len(req_id_ids) == 0: # pick any leaf, no leaf min req
+                cur_leaf_ids = leaf_ids            
+            elif len(req_id_ids) == 1: # need to sat one min 
+                cur_leaf_ids = leaf_ids[req_id_ids]
+            else: # cannot sat all mins 
+                return -1
+            selected_id_ids,  = np.where(max_counts[cur_leaf_ids] > 0)
+            if len(selected_id_ids) == 0: # cannot have another leaf due to max counts 
+                return 1            
+            selected_ids = cur_leaf_ids[selected_id_ids]
+            context_selected_id_ids, = np.where(context_count[selected_ids] <= context_limits[selected_ids])
+            if len(context_selected_id_ids) == 0: # context forbids operators
+                return 0
+            selected_ids = selected_ids[context_selected_id_ids]
+            tape_values = get_tape_values(pos_id, tape, penalties=penalties, buf_n=buf_n, rnd=rnd)
+            leaf_tape_values = tape_values[selected_ids]
+            while True:
+                op_id_id = np.argmin(leaf_tape_values)
+                cur_val = tape_values[op_id_id]
+                if cur_val >= inf: # no more valid ops
+                    break
+                selected_id = selected_ids[op_id_id]
+                new_term = builders.builders[selected_id].fn() # leaf term
+                if new_term is None: # validation failed
+                    leaf_tape_values[op_id_id] = inf
+                    continue
+                context_count[selected_id] += 1
+                max_counts[selected_id] -= 1 # no need of min_counts[0] -= 1 as each child has its own min reqs
+                print(str(new_term))
+                return new_term, pos_id + 1
+            return 0 # all validations failed
+        else:
+            tape_values = get_tape_values(pos_id, tape, penalties=penalties, buf_n=buf_n, rnd=rnd)
+            op_status = np.zeros_like(len(builders.builders))
+            max_count_mask = max_counts <= 0
+            tape_values[max_count_mask] = inf # filter out max count violations
+            op_status[max_count_mask] = 1 # overflow
+            if min_noleaf_count > 0:
+                tape_values[leaf_ids] = inf # cannot have leaves, op should be selected
+                op_status[leaf_ids] = -1 # underflow
+            # ordered_ids = np.argsort(tape_values)
+            while True:
+                op_id = np.argmin(tape_values)
+                cur_val = tape_values[op_id]
+                if cur_val >= inf: # no more valid ops
+                    break
+                builder = builders.builders[op_id]
+                op_arity = builder.arity()
+                next_pos_id = pos_id + 1
+                if op_arity == 0: # leaf selected 
+                    req_id_ids, = np.where(min_counts[leaf_ids] > 0)
+                    if len(req_id_ids) == 0:
+                        cur_leaf_ids = leaf_ids
+                    elif len(req_id_ids) == 1:
+                        cur_leaf_ids = leaf_ids[req_id_ids]
+                    else:
+                        op_status[op_id] = -1 
+                        tape_values[op_id] = inf
+                        continue
+                    new_term = builder.fn() # leaf term
+                    if new_term is None: # validation failed
+                        op_status[op_id] = 0
+                        tape_values[op_id] = inf
+                        continue
+                    max_counts[selected_id] -= 1
+                    print(str(new_term))
+                    return new_term, next_pos_id
+                backtrack = None
+
+                new_max_counts = max_counts.copy()
+                new_max_counts[op_id] -= 1
+                if np.all(min_counts[leaf_ids] == 0) and min_noleaf_count == 0: 
+                    def get_min_counts(arg_i):
+                        return 0, min_counts 
+                else:
+                    # left_counts = min_counts.copy()
+                    # if left_counts[op_id] > 0:
+                    #     left_counts[op_id] -= 1
+                    def get_min_counts(arg_i):                        
+                        # nonlocal left_counts
+                        left_counts = min_counts - (max_counts - new_max_counts)
+                        left_counts[left_counts < 0] = 0
+                        if arg_i == op_arity - 1:
+                            arg_min_nonleaf_count = np.sum(left_counts) - np.sum(left_counts[leaf_ids])
+                            return arg_min_nonleaf_count, left_counts
+                        # new_max_min_counts = np.ceil(left_counts / op_arity)
+                        new_max_min_counts = left_counts // (op_arity - arg_i) # left args
+                        alloc_counts = rnd.randint(0, new_max_min_counts + 1)
+                        arg_min_nonleaf_count = np.sum(alloc_counts) - np.sum(alloc_counts[leaf_ids])
+                        return arg_min_nonleaf_count, alloc_counts
+                # we need to spread min counts between children 
+                # new_min_counts = min_counts.copy()
+                # new_min_counts[op_id] -= 1
+                # new_min_noleaf_count = min_noleaf_count - 1
+                arg_ops = []
+                print(f"\tB{op_arity}? {at_depth} {min_counts}:{max_counts}")
+                for arg_i in range(op_arity):
+                    arg_min_nonleaf_count, arg_min_counts = get_min_counts(arg_i)
+                    child_opt = _iter_rec(next_pos_id, arg_min_nonleaf_count, 
+                                          arg_min_counts, new_max_counts, at_depth + 1)
+                    if isinstance(child_opt, int):
+                        print(f"\t<<< {at_depth} {arg_min_counts}:{new_max_counts}")
+                        backtrack = child_opt
+                        break
+                    else:
+                        child_op_id, next_pos_id = child_opt
+                        arg_ops.append(child_op_id)
+                if backtrack is not None:
+                    if backtrack == -1: # on underflow we can skip all smaller arities
+                        for arity, builder_ids in arity_builders.items():
+                            if arity <= op_arity:
+                                tape_values[builder_ids] = inf
+                                op_status[builder_ids] = backtrack
+                    elif backtrack == 1: # on overflow we can skip all larger arities
+                        for arity, builder_ids in arity_builders.items():
+                            if arity >= op_arity:
+                                tape_values[builder_ids] = inf
+                                op_status[builder_ids] = backtrack
+                    elif backtrack == 0:
+                        tape_values[op_id] = inf
+                        op_status[op_id] = backtrack
+                    continue
+                new_tree = builder.fn(*arg_ops)
+                if new_tree is None:
+                    tape_values[op_id] = inf
+                    op_status[op_id] = 0
+                    continue
+                max_counts[:] = new_max_counts
+                print(str(new_tree))
+                return new_tree, next_pos_id
+            print(f"\tfail {op_status}")
+            if np.all(op_status == -1):
+                return -1 
+            elif np.all(op_status == 1):
+                return 1
+            return 0
+
+    min_counts = builders.get_min_counts()
+    max_counts = builders.get_max_counts()
+
+    min_nonleaf_count = np.sum(min_counts) - np.sum(min_counts[leaf_ids])
+    term, _ = _iter_rec(0, min_nonleaf_count, min_counts.copy(), max_counts.copy())
+
+    return term
 
 # arities = np.array([0, 1, 2])
 # min_counts = np.array([1, 1, 0])
@@ -951,10 +1119,11 @@ class Builders:
             else:
                 b.bound_id = len(self._bound)
                 self._bound.append(b)
-        self._arity_builders: dict[int, ArityBuilders] | None = None
         self._arities: BuilderAritites | None = None
         self._min_counts: np.ndarray | None = None # only bound builders
         self._max_counts: np.ndarray | None = None # only bound builders
+        self._arity_builders: dict[int, ArityBuilders] | None = None
+        self._arity_builder_ids: dict[int, np.ndarray] | None = None
 
     def get_arity_builders(self) -> dict[int, ArityBuilders]:    
         if self._arity_builders is None:
@@ -966,6 +1135,17 @@ class Builders:
             
             pass 
         return self._arity_builders
+    
+    def get_arity_builder_ids(self) -> dict[int, np.ndarray]:    
+        if self._arity_builder_ids is None:
+            arity_builders_ids = {}
+            for bi, b in enumerate(self.builders):
+                arity_builders_ids.setdefault(b.arity(), []).append(bi)
+
+            self._arity_builders_ids = {a: np.array(arity_builders_ids[a]) for a in sorted(arity_builders_ids.keys())}
+            
+            pass 
+        return self._arity_builder_ids    
     
     def get_arities(self) -> BuilderAritites:
         ''' Returns total min and max counts for each arity '''
