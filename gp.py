@@ -8,13 +8,13 @@
 
 from functools import partial
 import math
-from typing import Any, Callable, Literal, Optional, Sequence, Type
+from typing import Callable, Literal, Optional, Sequence
 from time import perf_counter
 import numpy as np
 import torch
 from spatial import InteractionIndex, RTreeIndex, SpatialIndex
-from term import UNBOUND, Builder, Builders, Op, Term, Value, Variable, evaluate, \
-                    get_depth, get_fn_arity, get_size, get_term_pos, match_root, \
+from term import UNBOUND, Builder, Builders, Op, Term, TermModificationContext, Value, Variable, evaluate, \
+                    get_fn_arity, match_root, \
                     one_point_rand_crossover, one_point_rand_mutation, parse_term, \
                     ramped_half_and_half
 from sklearn.base import BaseEstimator, RegressorMixin
@@ -256,13 +256,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # next are runtime fields and caches that works across fit calls
         self.target = None 
         # self.free_vars: Optional[Sequence] = None
-        self.syntax: dict[tuple[str, ...], Term] = {}
+        self.sign_syntax: dict[tuple[str, ...], Term] = {}
+        self.term_repr: dict[Term, Term] = {} # unifies terms to same instance - to use in other caches
         self.term_outputs: dict[Term, torch.Tensor] = {}
         self.inner_semantics: dict[Term, dict[Term, torch.Tensor]] = {} # not yet in term_fitness and are not roots
         self.term_fitness: dict[Term, torch.Tensor] = {}
-        self.depth_cache: dict[Term, int] = {}
-        self.size_cache: dict[Term, int] = {}
-        self.term_counts: dict[Term, np.ndarray] = {}
+        # self.term_counts: dict[Term, np.ndarray] = {}
+        self.term_mod_context: dict[Term, TermModificationContext] = {}
 
         self.best_term: Optional[Term] = None
         self.best_outputs: Optional[torch.Tensor] = None
@@ -295,9 +295,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.term_outputs: dict[Term, torch.Tensor] = {}
         self.inner_semantics: dict[Term, dict[Term, torch.Tensor]] = {}
         self.term_fitness: dict[Term, torch.Tensor] = {}
-        self.depth_cache: dict[Term, int] = {}
-        self.size_cache: dict[Term, int] = {}
-        self.term_counts: dict[Term, np.ndarray] = {}
+        self.term_mod_context = {}
 
         self.best_term: Optional[Term] = None
         self.best_outputs: Optional[torch.Tensor] = None
@@ -384,13 +382,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 fv = xi.to(device = self.device, dtype = self.dtype)        
             vars.append(v)
             var_binding[v.var_id] = fv 
-        return vars, var_binding
-            
-    # NOTE: there could be different approach - one builder per variable to control var counts
+        return vars, var_binding            
+
     def _alloc_var(self, *_) -> Variable:
         var = self.rnd.choice(self.vars)
         return var
-
+    
     def _alloc_const(self, *_) -> Value: 
         ''' Should we random sample of try some grid? Anyway we tune '''
         value = self.const_range[0] + torch.rand((1,), device=self.device, dtype=self.dtype,
@@ -403,26 +400,28 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
     def init(self, size: int, *, init_fn: Callable = ramped_half_and_half, init_from_cache = False, **_) -> list[Term]:
         ''' Initialize each term in population 0 with self.init_fn '''
+        gen_context_cache = {}
         if self.cache_terms and init_from_cache:
             none_count = 0
             sz = size - len(self.vars)
-            while len(self.syntax) < sz:
-                term = init_fn(self.builders, rnd=self.rnd)
+            while len(gen_context_cache) < sz:
+                term = init_fn(self.builders, rnd=self.rnd, gen_context_cache = gen_context_cache)
                 if term is None:
                     none_count += 1
                 if none_count == size:
                     break 
-            res = list(self.syntax.values())[:sz]
+            res = list(gen_context_cache.keys())[:sz]
             res.extend(self.vars)
-            return res
         else:
             res = []
             for _ in range(size):
-                term = init_fn(self.builders, rnd=self.rnd)
+                term = init_fn(self.builders, rnd=self.rnd,
+                                gen_context_cache = gen_context_cache)
                 # print(str(term))
                 if term is not None:
                     res.append(term)
-            return res 
+        self.term_mod_context = {t: TermModificationContext(t, tg) for t, tg in gen_context_cache.items()}
+        return res 
     
     def eval(self, terms: list[Term], *, eval_fn: Callable = evaluate, **_) -> Optional[Term]:
         output_list = []
@@ -480,10 +479,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 self.metrics.setdefault(fk, []).append(fv.item())
 
         if self.best_term is not None: # best term stats 
-            best_term_depth = get_depth(self.best_term, self.depth_cache)
-            self.metrics.setdefault("best_term_depth", []).append(best_term_depth)
-            best_term_size = get_size(self.best_term, self.size_cache)
-            self.metrics.setdefault("best_term_size", []).append(best_term_size)
+            best_term_pos = self.term_mod_context[self.best_term].get_term_positions()
+            best_term_root_pos = best_term_pos[-1]
+            self.metrics.setdefault("best_term_depth", []).append(best_term_root_pos.depth)
+            self.metrics.setdefault("best_term_size", []).append(best_term_root_pos.size)
 
         return outputs, fitness
     
@@ -520,14 +519,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         mutated_parents = list(parents)
 
-        term_pos_cache = {}
-        count_cache = self.get_count_cache()
         for term, term_p in mutation_pos.items():
-            term_poss = get_term_pos(term)
-            term_pos_cache[term] = term_poss
-            mutated_terms = mutation_fn(term = term, positions = term_poss,
+            mutated_terms = mutation_fn(term = term,
                                 builders = self.builders,
-                                count_cache = count_cache,
+                                context = self.term_mod_context,
                                 rnd=self.rnd, num_children=len(term_p))
             for i, mterm in zip(term_p, mutated_terms):
                 mutated_parents[i] = mterm
@@ -540,18 +535,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 parent2 = mutated_parents[2 * i + 1]
                 crossover_pairs.setdefault((parent1, parent2), []).append(i)
 
-        depth_cache = self.get_depth_cache()
         for (parent1, parent2), pair_ids in crossover_pairs.items():
-            if parent1 not in term_pos_cache:
-                term_pos_cache[parent1] = get_term_pos(parent1)
-            if parent2 not in term_pos_cache:
-                term_pos_cache[parent2] = get_term_pos(parent2)
-            pos1 = term_pos_cache[parent1]
-            pos2 = term_pos_cache[parent2]
             new_children = crossover_fn(term1 = parent1, term2 = parent2, 
                                 builders = self.builders,
-                                positions1 = pos1, positions2 = pos2,
-                                depth_cache = depth_cache, count_cache = count_cache,
+                                context = self.term_mod_context,
                                 rnd = self.rnd, num_children=2 * len(pair_ids))
             for i, ii in enumerate(pair_ids):
                 children[2 * ii] = new_children[2 * i]
@@ -596,21 +583,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
             
         return _alloc_op
 
-    def get_count_cache(self):
-        if self.cache_term_props:
-            return self.term_counts
-        return {} 
-
-    def get_depth_cache(self):
-        if self.cache_term_props:
-            return self.depth_cache
-        return {} 
-
-    def get_size_cache(self):
-        if self.cache_term_props:
-            return self.size_cache
-        return {} 
-    
     def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:        
         if isinstance(term, Variable):
             return self.var_binding[term.var_id]
