@@ -845,30 +845,41 @@ def gen_term(builders: 'Builders',
 
     penalties = [] if leaf_proba is None else [(leaf_ids, leaf_proba)]
 
-    tape = alloc_tape(rnd, penalties=penalties, buf_n=buf_n, rnd=rnd) # tape is 2d ndarray: (t, score)
+    tape = alloc_tape(len(builders.builders), penalties=penalties, buf_n=buf_n, rnd=rnd) # tape is 2d ndarray: (t, score)
+
+    # default_immediate_enablence_mask = np.ones(len(builders.builders), dtype=bool)
 
     def _iter_rec(pos_id: int,
-                  min_noleaf_count: int, min_counts: np.ndarray, max_counts: np.ndarray, 
-                  context_count: np.ndarray, context_limits: np.ndarray,
+                  min_noleaf_count: int, 
+                #   counts: np.ndarray, 
+                  min_counts: np.ndarray, max_counts: np.ndarray, 
+                  immediate_enablence_mask: np.ndarray = None,
                   at_depth: iter = 0) -> tuple[TermStructure, int] | Literal[-1, 0, 1]:
         if at_depth == max_depth: # attempt only leaves
             if min_noleaf_count > 0: # cannot satisfy min constraints for non-leaf
                 return 0
-            req_id_ids, = np.where(min_counts[leaf_ids] > 0)
+            if immediate_enablence_mask is not None:
+                enabled_id_ids, = np.where(immediate_enablence_mask[leaf_ids])
+                if len(enabled_id_ids) == 0: # leafs are disabled
+                    return 0
+                enabled_ids = leaf_ids[enabled_id_ids]
+            else:
+                enabled_ids = leaf_ids
+            # leaf_counts = counts[leaf_ids]
+            req_id_ids, = np.where(min_counts[enabled_ids] > 0)
             if len(req_id_ids) == 0: # pick any leaf, no leaf min req
-                cur_leaf_ids = leaf_ids            
+                cur_leaf_ids = enabled_ids            
             elif len(req_id_ids) == 1: # need to sat one min 
-                cur_leaf_ids = leaf_ids[req_id_ids]
+                cur_leaf_ids = enabled_ids[req_id_ids]
+                left_sat = np.sum(min_counts[cur_leaf_ids])
+                if left_sat > 1:
+                    return -1
             else: # cannot sat all mins 
                 return -1
             selected_id_ids,  = np.where(max_counts[cur_leaf_ids] > 0)
             if len(selected_id_ids) == 0: # cannot have another leaf due to max counts 
                 return 1            
             selected_ids = cur_leaf_ids[selected_id_ids]
-            context_selected_id_ids, = np.where(context_count[selected_ids] <= context_limits[selected_ids])
-            if len(context_selected_id_ids) == 0: # context forbids operators
-                return 0
-            selected_ids = selected_ids[context_selected_id_ids]
             tape_values = get_tape_values(pos_id, tape, penalties=penalties, buf_n=buf_n, rnd=rnd)
             leaf_tape_values = tape_values[selected_ids]
             while True:
@@ -881,16 +892,18 @@ def gen_term(builders: 'Builders',
                 if new_term is None: # validation failed
                     leaf_tape_values[op_id_id] = inf
                     continue
-                context_count[selected_id] += 1
+                # counts[selected_id] += 1
                 max_counts[selected_id] -= 1 # no need of min_counts[0] -= 1 as each child has its own min reqs
-                print(str(new_term))
+                # print(str(new_term))
                 return new_term, pos_id + 1
             return 0 # all validations failed
         else:
             tape_values = get_tape_values(pos_id, tape, penalties=penalties, buf_n=buf_n, rnd=rnd)
-            op_status = np.zeros_like(len(builders.builders))
+            op_status = np.zeros(len(builders.builders), dtype=int)
             max_count_mask = max_counts <= 0
             tape_values[max_count_mask] = inf # filter out max count violations
+            if immediate_enablence_mask is not None:
+                tape_values[~immediate_enablence_mask] = inf # filter out disabled ops
             op_status[max_count_mask] = 1 # overflow
             if min_noleaf_count > 0:
                 tape_values[leaf_ids] = inf # cannot have leaves, op should be selected
@@ -904,28 +917,41 @@ def gen_term(builders: 'Builders',
                 builder = builders.builders[op_id]
                 op_arity = builder.arity()
                 next_pos_id = pos_id + 1
-                if op_arity == 0: # leaf selected 
+                if op_arity == 0: # leaf selected - no nonleaf mins
                     req_id_ids, = np.where(min_counts[leaf_ids] > 0)
-                    if len(req_id_ids) == 0:
-                        cur_leaf_ids = leaf_ids
-                    elif len(req_id_ids) == 1:
+                    if len(req_id_ids) == 1:
+                        op_status[leaf_ids] = -1 
+                        tape_values[leaf_ids] = inf
                         cur_leaf_ids = leaf_ids[req_id_ids]
-                    else:
-                        op_status[op_id] = -1 
-                        tape_values[op_id] = inf
+                        left_sat = np.sum(min_counts[cur_leaf_ids])
+                        if left_sat > 1:
+                            continue
+                        op_id = cur_leaf_ids[0]
+                        builder = builders.builders[op_id]
+                        op_status[op_id] = 0
+                    elif len(req_id_ids) > 1:
+                        op_status[leaf_ids] = -1 
+                        tape_values[leaf_ids] = inf
                         continue
                     new_term = builder.fn() # leaf term
                     if new_term is None: # validation failed
                         op_status[op_id] = 0
                         tape_values[op_id] = inf
                         continue
-                    max_counts[selected_id] -= 1
-                    print(str(new_term))
+                    max_counts[op_id] -= 1
+                    # print(str(new_term))
                     return new_term, next_pos_id
                 backtrack = None
 
                 new_max_counts = max_counts.copy()
                 new_max_counts[op_id] -= 1
+                if builder.context_limits is not None:
+                    new_max_counts_w_context = np.minimum(new_max_counts, builder.context_limits)
+                    new_max_counts_before = new_max_counts_w_context.copy()
+                else:
+                    new_max_counts_w_context = new_max_counts
+                    new_max_counts_before = max_counts
+
                 if np.all(min_counts[leaf_ids] == 0) and min_noleaf_count == 0: 
                     def get_min_counts(arg_i):
                         return 0, min_counts 
@@ -935,7 +961,7 @@ def gen_term(builders: 'Builders',
                     #     left_counts[op_id] -= 1
                     def get_min_counts(arg_i):                        
                         # nonlocal left_counts
-                        left_counts = min_counts - (max_counts - new_max_counts)
+                        left_counts = min_counts - (new_max_counts_before - new_max_counts_w_context)
                         left_counts[left_counts < 0] = 0
                         if arg_i == op_arity - 1:
                             arg_min_nonleaf_count = np.sum(left_counts) - np.sum(left_counts[leaf_ids])
@@ -945,18 +971,21 @@ def gen_term(builders: 'Builders',
                         alloc_counts = rnd.randint(0, new_max_min_counts + 1)
                         arg_min_nonleaf_count = np.sum(alloc_counts) - np.sum(alloc_counts[leaf_ids])
                         return arg_min_nonleaf_count, alloc_counts
+                    
+                enablence_masks = builder.get_enablence_mask(rnd = rnd)
+                    
                 # we need to spread min counts between children 
-                # new_min_counts = min_counts.copy()
-                # new_min_counts[op_id] -= 1
-                # new_min_noleaf_count = min_noleaf_count - 1
                 arg_ops = []
-                print(f"\tB{op_arity}? {at_depth} {min_counts}:{max_counts}")
+                # print(f"\t{builder.name}? {at_depth} {min_counts}:{max_counts}")
                 for arg_i in range(op_arity):
                     arg_min_nonleaf_count, arg_min_counts = get_min_counts(arg_i)
+                    enablence_mask = enablence_masks[arg_i]
                     child_opt = _iter_rec(next_pos_id, arg_min_nonleaf_count, 
-                                          arg_min_counts, new_max_counts, at_depth + 1)
+                                          arg_min_counts, new_max_counts_w_context, 
+                                          immediate_enablence_mask = enablence_mask,
+                                          at_depth = at_depth + 1)
                     if isinstance(child_opt, int):
-                        print(f"\t<<< {at_depth} {arg_min_counts}:{new_max_counts}")
+                        # print(f"\t<<< {at_depth} {arg_min_counts}:{new_max_counts_w_context}")
                         backtrack = child_opt
                         break
                     else:
@@ -982,10 +1011,13 @@ def gen_term(builders: 'Builders',
                     tape_values[op_id] = inf
                     op_status[op_id] = 0
                     continue
-                max_counts[:] = new_max_counts
-                print(str(new_tree))
+                if builder.context_limits is not None:
+                    max_counts[:] = max_counts - (new_max_counts_before - new_max_counts_w_context)
+                else:
+                    max_counts[:] = new_max_counts
+                # print(str(new_tree))
                 return new_tree, next_pos_id
-            print(f"\tfail {op_status}")
+            # print(f"\tfail {op_status}")
             if np.all(op_status == -1):
                 return -1 
             elif np.all(op_status == 1):
@@ -996,7 +1028,7 @@ def gen_term(builders: 'Builders',
     max_counts = builders.get_max_counts()
 
     min_nonleaf_count = np.sum(min_counts) - np.sum(min_counts[leaf_ids])
-    term, _ = _iter_rec(0, min_nonleaf_count, min_counts.copy(), max_counts.copy())
+    term, _ = _iter_rec(0, min_nonleaf_count, min_counts, max_counts)
 
     return term
 
@@ -1089,13 +1121,23 @@ UNBOUND = 1000000
 
 @dataclass(frozen=False, eq=False, unsafe_hash=False)
 class Builder:
+    name: str
     fn: Callable
     term_arity: int
     min_count: int = 0
     max_count: int = UNBOUND 
+    context_limits: np.ndarray | None = None
+    ''' Specifies maximum number of builder occurances under this builder,
+        int 1d array of size (num_builders,), combines with max_counts eventually 
+    '''
+    arg_enablence_mask: np.ndarray | None = None
+    ''' For each argumemt specifies allowed builders 0/1 bool mask of size (arity, num_builders) '''
+    commutative: bool = False
 
     def __post_init__(self):
         self.bound_id: int | None = None
+        if self.term_arity == 1:
+            self.commutative = True 
 
     def arity(self) -> int:
         return self.term_arity
@@ -1105,6 +1147,16 @@ class Builder:
 
     def is_unbound(self) -> bool:
         return self.min_count == 0 and self.max_count == UNBOUND
+    
+    def get_enablence_mask(self, rnd: np.random.RandomState = np.random) -> list[np.ndarray | None]:
+        if self.arg_enablence_mask is None:
+            return [None] * self.arity()
+        if self.commutative:
+            res = self.arg_enablence_mask
+        else:
+            res = self.arg_enablence_mask.copy()
+            rnd.shuffle(res)
+        return res
 
 class Builders:
 
@@ -1125,6 +1177,25 @@ class Builders:
         self._arity_builders: dict[int, ArityBuilders] | None = None
         self._arity_builder_ids: dict[int, np.ndarray] | None = None
 
+    def with_context_limits(self, cl: dict[Builder, dict[Builder, int]]) -> 'Builders':
+        for context_builder, limits in cl.items():
+            context_limits = np.full(len(self.builders), UNBOUND, dtype=int)
+            for bi, b in enumerate(self.builders):
+                if b in limits:
+                    context_limits[bi] = limits[b]
+            context_builder.context_limits = context_limits
+
+    def disable_arg_builders(self, disabled: dict[Builder, list[list[Builder]]]) -> 'Builders':
+        for b, disabled_per_arg in disabled.items():
+            mask = np.ones((b.arity(), len(self.builders)), dtype=bool)
+            for arg_i in range(b.arity()):
+                if arg_i < len(disabled_per_arg):
+                    disabled_builders = disabled_per_arg[arg_i]
+                    for bi, db in enumerate(self.builders):
+                        if db in disabled_builders:
+                            mask[arg_i, bi] = False
+            b.arg_enablence_mask = mask
+
     def get_arity_builders(self) -> dict[int, ArityBuilders]:    
         if self._arity_builders is None:
             arity_builders = {}
@@ -1142,7 +1213,7 @@ class Builders:
             for bi, b in enumerate(self.builders):
                 arity_builders_ids.setdefault(b.arity(), []).append(bi)
 
-            self._arity_builders_ids = {a: np.array(arity_builders_ids[a]) for a in sorted(arity_builders_ids.keys())}
+            self._arity_builder_ids = {a: np.array(arity_builders_ids[a]) for a in sorted(arity_builders_ids.keys())}
             
             pass 
         return self._arity_builder_ids    
@@ -1158,21 +1229,27 @@ class Builders:
             self._arities = BuilderAritites(arities, min_counts, max_counts)
         return self._arities
 
-    def get_min_counts(self) -> np.ndarray: # NOTE: we return only bound builder min counts
+    def get_bound_min_counts(self) -> np.ndarray: # NOTE: we return only bound builder min counts
         if self._min_counts is None:
             self._min_counts = np.array([b.min_count for b in self._bound])
         return self._min_counts
     
-    def get_max_counts(self) -> np.ndarray:
+    def get_bound_max_counts(self) -> np.ndarray:
         if self._max_counts is None:
             self._max_counts = np.array([b.max_count for b in self._bound])
         return self._max_counts   
+
+    def get_min_counts(self) -> np.ndarray: # NOTE: we return only bound builder min counts
+        return np.array([b.min_count for b in self.builders])
     
+    def get_max_counts(self) -> np.ndarray:
+        return np.array([b.max_count for b in self.builders])
+
     def set_range(self, min_counts: np.ndarray, max_counts: np.ndarray) -> 'Builders':
         ''' Sets new ranges found bound builders '''
         if len(self._bound) == 0:
             return self 
-        new_builders = [b if b.bound_id is None else Builder(b.fn, b.term_arity, 
+        new_builders = [b if b.bound_id is None else Builder(b.name, b.fn, b.term_arity, 
                                                              min_counts[b.bound_id], 
                                                              max_counts[b.bound_id]) 
                         for b in self.builders ]
@@ -1234,7 +1311,7 @@ def instantiate_skeleton(skeleton: TermStructure, builders: Builders,
 
     return instance
 
-def grow(builders: Builders,
+def grow_with_skeleton(builders: Builders,
          grow_depth = 5, grow_leaf_prob: Optional[float] = 0.1,
          map_skeleton: Optional[Callable[[TermStructure], TermStructure]] = None,
          rnd: np.random.RandomState = np.random) -> Optional[Term]:
@@ -1254,15 +1331,23 @@ def grow(builders: Builders,
 
     return term
 
+def grow(builders: Builders,
+         grow_depth = 5, grow_leaf_prob: Optional[float] = 0.1,
+         rnd: np.random.RandomState = np.random) -> Optional[Term]:
+    ''' Grow a tree with a given depth '''
+
+    # arity_args = get_arity_args(builders, constraints, default_counts = default_counts)
+    term = gen_term(builders, max_depth = grow_depth, leaf_proba = grow_leaf_prob, rnd = rnd)
+    return term
+
 def ramped_half_and_half(builders: Builders,
                         rhh_min_depth = 1, rhh_max_depth = 5, rhh_grow_prob = 0.5,
                         grow_leaf_prob: Optional[float] = 0.1, 
-                        map_skeleton: Optional[Callable[[TermStructure], TermStructure]] = None,                     
                         rnd: np.random.RandomState = np.random) -> Optional[Term]:
     ''' Generate a population of half full and half grow trees '''
     depth = rnd.randint(rhh_min_depth, rhh_max_depth+1)
     leaf_prob = grow_leaf_prob if rnd.rand() < rhh_grow_prob else 0
-    term = grow(builders, grow_depth = depth, grow_leaf_prob = leaf_prob, map_skeleton = map_skeleton, rnd = rnd)
+    term = grow(builders, grow_depth = depth, grow_leaf_prob = leaf_prob, rnd = rnd)
     return term
 
 # IDEA: dropout in GP, frozen tree positions which cannot be mutated or crossovered - for later
@@ -1347,9 +1432,9 @@ def one_point_rand_mutation(term: Term, positions: dict[TermPos, TermPos],
         position: TermPos = pos_list[pos_id]
         pos_counts = get_counts(position.term, builders, count_cache)
         term_left_counts = term_counts - pos_counts
-        pos_min_counts = builders.get_min_counts() - term_left_counts
+        pos_min_counts = builders.get_bound_min_counts() - term_left_counts
         pos_min_counts[pos_min_counts < 0] = 0
-        pos_max_counts = builders.get_max_counts() - term_left_counts
+        pos_max_counts = builders.get_bound_max_counts() - term_left_counts
         pos_max_counts[pos_max_counts < 0] = 0
         cur_builders = builders.set_range(pos_min_counts, pos_max_counts)
         new_child = grow(cur_builders, 
@@ -1373,7 +1458,7 @@ def replacement_counts_sat(pos: TermPos, with_term: Term, root: Term,
     with_counts = get_counts(with_term, builders, count_cache)
     new_counts = root_counts - pos_counts + with_counts    
 
-    res = np.all(new_counts >= builders.get_min_counts()) and np.all(new_counts <= builders.get_max_counts())
+    res = np.all(new_counts >= builders.get_bound_min_counts()) and np.all(new_counts <= builders.get_bound_max_counts())
     return res
 
 def one_point_rand_crossover(term1: Term, term2: Term,

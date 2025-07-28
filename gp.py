@@ -175,6 +175,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 ),
                 ops_counts: dict[str, tuple[int, int]] = {},
                 forbid_patterns: list[str] = [],
+                # next is more optimized
+                inner_ops_max_counts: dict[str, dict[str, int]] = {},
+                disable_immediate_ops: dict[str, list[str]] = {},
+                prohibit_ops_on_consts_only: bool = True,
                 min_consts: int = 0,
                 max_consts: int = 5, # 0 to disable consts in terms
                 min_vars: int = 1,
@@ -234,6 +238,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.atol = atol
         self.device = device
         self.dtype = dtype
+        self.prohibit_ops_on_consts_only = prohibit_ops_on_consts_only
+        self.inner_ops_max_counts = inner_ops_max_counts
+        self.disable_immediate_ops = disable_immediate_ops
 
         if rnd_seed is None:
             self.rnd = np.random
@@ -272,7 +279,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         for op_id, op_fn in self.ops.items():
             op_range = self.ops_counts.get(op_id, (0, UNBOUND))
             op_arity = get_fn_arity(op_fn)
-            op_builder = Builder(self._alloc_op_builder(op_id), op_arity, *op_range)
+            op_builder = Builder(op_id, self._alloc_op_builder(op_id), op_arity, *op_range)
             self.op_builders[op_id] = op_builder
 
     def _reset_state(self, free_vars: Optional[Sequence] = None, target: Optional[Sequence] = None):
@@ -306,14 +313,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
         builders = {}
 
         if self.max_consts > 0:
-            const_builder = Builder(self._alloc_const, 0, self.min_consts, self.max_consts)
+            const_builder = Builder("C", self._alloc_const, 0, self.min_consts, self.max_consts)
             builders[Value] = const_builder
 
         if free_vars is not None and len(free_vars) > 0 and (self.max_vars > 0):
             vars, var_binding = self.get_vars(free_vars)
             self.var_binding = var_binding
             self.vars = vars
-            var_builder = Builder(self._alloc_var, 0, self.min_vars, self.max_vars)
+            var_builder = Builder("X", self._alloc_var, 0, self.min_vars, self.max_vars)
             builders[Variable] = var_builder
 
         builders.update(self.op_builders)
@@ -328,6 +335,27 @@ class GPSolver(BaseEstimator, RegressorMixin):
             return None 
         
         self.builders = Builders(list(builders.values()), get_builder_from_term)
+
+        disabled = {}
+        if self.prohibit_ops_on_consts_only:
+            for b in self.op_builders.values():
+                disabled[b] = [[] for _ in range(b.arity())]
+                disabled[b][0].append(builders[Value])
+
+        for op_id, op_ids in self.disable_immediate_ops.items():
+            b = self.op_builders[op_id]
+            if b not in disabled:
+                disabled[b] = [[] for _ in range(b.arity())]
+            for arg_i in range(b.arity()):
+                disabled[b][arg_i].extend(self.op_builders[inner_op_id] for inner_op_id in op_ids)
+
+        self.builders.disable_arg_builders(disabled)
+
+        context_limits = {}
+        for op_id, op_limits in self.inner_ops_max_counts.items():
+            context_limits[self.op_builders[op_id]] = {self.op_builders[inner_op_id]:cnt for inner_op_id, cnt in op_limits.items()}
+
+        self.builders.with_context_limits(context_limits)
 
         if target is not None:
             if not torch.is_tensor(target):
@@ -765,6 +793,17 @@ if __name__ == "__main__":
                             # "(log (... (log .)))",
                             # "(... pow (pow . .))",
                             ],
+                        inner_ops_max_counts={
+                            "sin": {"sin": 0},
+                            "cos": {"cos": 0},
+                            "exp": {"exp": 0},
+                            "log": {"log": 0},                        
+                            "pow": {"pow": 1},
+                        },
+                        disable_immediate_ops={
+                            "inv": ["inv"],
+                            "neg": ["neg"]
+                        }
                         # breed_args= dict(
                         #     selection_fn = lexicase_selection,
                         # ),
