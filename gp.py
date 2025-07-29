@@ -13,8 +13,8 @@ from time import perf_counter
 import numpy as np
 import torch
 from spatial import InteractionIndex, RTreeIndex, SpatialIndex
-from term import UNBOUND, Builder, Builders, Op, Term, TermModificationContext, Value, Variable, evaluate, \
-                    get_fn_arity, match_root, \
+from term import UNBOUND, Builder, Builders, Op, Term, Value, Variable, evaluate, \
+                    get_fn_arity, get_positions, match_root, \
                     one_point_rand_crossover, one_point_rand_mutation, parse_term, \
                     ramped_half_and_half
 from sklearn.base import BaseEstimator, RegressorMixin
@@ -262,7 +262,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.inner_semantics: dict[Term, dict[Term, torch.Tensor]] = {} # not yet in term_fitness and are not roots
         self.term_fitness: dict[Term, torch.Tensor] = {}
         # self.term_counts: dict[Term, np.ndarray] = {}
-        self.term_mod_context: dict[Term, TermModificationContext] = {}
+        self.pos_cache = {}
+        self.gen_contexts = {}
 
         self.best_term: Optional[Term] = None
         self.best_outputs: Optional[torch.Tensor] = None
@@ -295,7 +296,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.term_outputs: dict[Term, torch.Tensor] = {}
         self.inner_semantics: dict[Term, dict[Term, torch.Tensor]] = {}
         self.term_fitness: dict[Term, torch.Tensor] = {}
-        self.term_mod_context = {}
+        self.pos_cache = {}
+        self.gen_contexts = {}
 
         self.best_term: Optional[Term] = None
         self.best_outputs: Optional[torch.Tensor] = None
@@ -323,16 +325,16 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         builders.update(self.op_builders)
 
-        def get_builder_from_term(term: Term, builders = builders):
+        def copy_term(term: Term, args):
             if isinstance(term, Op):
-                return builders[term.op_id]
+                builder = builders[term.op_id]
             if isinstance(term, Variable):
-                return builders[Variable]
+                builder = builders[Variable]
             if isinstance(term, Value):
-                return builders[Value]
-            return None 
+                builder = builders[Value]
+            return builder.fn(term, *args) 
         
-        self.builders = Builders(list(builders.values()), get_builder_from_term)
+        self.builders = Builders(list(builders.values()), copy_term)
 
         disabled = {}
         if self.prohibit_ops_on_consts_only:
@@ -400,27 +402,30 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
     def init(self, size: int, *, init_fn: Callable = ramped_half_and_half, init_from_cache = False, **_) -> list[Term]:
         ''' Initialize each term in population 0 with self.init_fn '''
-        gen_context_cache = {}
         if self.cache_terms and init_from_cache:
             none_count = 0
             sz = size - len(self.vars)
-            while len(gen_context_cache) < sz:
-                term = init_fn(self.builders, rnd=self.rnd, gen_context_cache = gen_context_cache)
+            while len(self.syntax) < sz:
+                new_gen_contexts = {}
+                term = init_fn(self.builders, rnd=self.rnd, gen_contexts = new_gen_contexts)
                 if term is None:
                     none_count += 1
+                else:
+                    self.gen_contexts[term] = new_gen_contexts
                 if none_count == size:
                     break 
-            res = list(gen_context_cache.keys())[:sz]
+            res = list(self.syntax.values())[:sz]
             res.extend(self.vars)
         else:
             res = []
             for _ in range(size):
+                new_gen_contexts = {}
                 term = init_fn(self.builders, rnd=self.rnd,
-                                gen_context_cache = gen_context_cache)
+                                gen_contexts = new_gen_contexts)
                 # print(str(term))
                 if term is not None:
                     res.append(term)
-        self.term_mod_context = {t: TermModificationContext(t, tg) for t, tg in gen_context_cache.items()}
+                    self.gen_contexts[term] = new_gen_contexts
         return res 
     
     def eval(self, terms: list[Term], *, eval_fn: Callable = evaluate, **_) -> Optional[Term]:
@@ -479,8 +484,11 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 self.metrics.setdefault(fk, []).append(fv.item())
 
         if self.best_term is not None: # best term stats 
-            best_term_pos = self.term_mod_context[self.best_term].get_term_positions()
-            best_term_root_pos = best_term_pos[-1]
+            if self.best_term not in self.pos_cache:
+                best_term_poss = get_positions(self.best_term)
+            else:
+                best_term_poss = self.pos_cache[self.best_term]
+            best_term_root_pos = best_term_poss[-1]
             self.metrics.setdefault("best_term_depth", []).append(best_term_root_pos.depth)
             self.metrics.setdefault("best_term_size", []).append(best_term_root_pos.size)
 
@@ -522,7 +530,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         for term, term_p in mutation_pos.items():
             mutated_terms = mutation_fn(term = term,
                                 builders = self.builders,
-                                context = self.term_mod_context,
+                                pos_cache = self.pos_cache,
+                                gen_contexts = self.gen_contexts,
                                 rnd=self.rnd, num_children=len(term_p))
             for i, mterm in zip(term_p, mutated_terms):
                 mutated_parents[i] = mterm
@@ -538,12 +547,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
         for (parent1, parent2), pair_ids in crossover_pairs.items():
             new_children = crossover_fn(term1 = parent1, term2 = parent2, 
                                 builders = self.builders,
-                                context = self.term_mod_context,
+                                pos_cache = self.pos_cache,
+                                gen_contexts = self.gen_contexts,
                                 rnd = self.rnd, num_children=2 * len(pair_ids))
             for i, ii in enumerate(pair_ids):
                 children[2 * ii] = new_children[2 * i]
                 children[2 * ii + 1] = new_children[2 * i + 1]
 
+        self.gen_contexts = {ch:self.gen_contexts[ch] for ch in children }
         return children
     
     def _validate_term(self, term: Term) -> bool:
@@ -582,6 +593,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 return None
             
         return _alloc_op
+    
+    def _get_pos_cache(self):
+        if self.cache_term_props:
+            return self.pos_cache
+        else:
+            return {}
 
     def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:        
         if isinstance(term, Variable):
@@ -644,6 +661,15 @@ class GPSolver(BaseEstimator, RegressorMixin):
             self.status = "SOLVED"
             self.has_solution = True
             return True 
+        for x in self.vars:
+            x_binding = self.var_binding[x.var_id]
+            if torch.allclose(self.target, x_binding, rtol = self.rtol, atol = self.atol):
+                self.best_term = x
+                self.best_fitness = torch.tensor(0, device=self.device, dtype=self.dtype)
+                self.best_outputs = x_binding
+                self.status = "SOLVED"
+                self.has_solution = True
+                return True
         return False 
 
     def fit(self, X: np.ndarray | torch.Tensor, y: np.ndarray | torch.Tensor) -> 'GPSolver':

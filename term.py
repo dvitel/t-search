@@ -538,13 +538,13 @@ def parse_term(term_str: str, i: int = 0, parsers = default_parsers) -> tuple[Te
     return branches[0][0], i
 
 
-def get_term_repr(term: Term, term_reprs: dict[Term, Term]) -> Term:
+# def get_term_repr(term: Term, term_reprs: dict[Term, Term]) -> Term:
 
-    repr_stack = [[]]
-    def _find_reprs(t, *_):
-        if t in term_reprs:
-            repr_stack[-1].append(term_reprs[t])
-            return TRAVERSAL_EXIT_NODE
+#     repr_stack = [[]]
+#     def _find_reprs(t, *_):
+#         if t in term_reprs:
+#             repr_stack[-1].append(term_reprs[t])
+#             return TRAVERSAL_EXIT_NODE
         
 
 def evaluate(root: Term, ops: dict[str, Callable],
@@ -676,7 +676,8 @@ class Builder:
 
 class Builders:
 
-    def __init__(self, builders: list[Builder], copy_term: Callable[[Term], Term]):
+    def __init__(self, builders: list[Builder], copy_term: Callable[[Term], Term],
+                    disallow_initial_leaves: bool = True):
         self.builders: list[Builder] = builders
         self.copy_term: Callable[[Term], Builder] = copy_term
         self.leaf_ids = []
@@ -698,6 +699,10 @@ class Builders:
         self.arity_builder_ids = {a: np.array(self.arity_builder_ids[a]) for a in sorted(self.arity_builder_ids.keys())}
 
         self.has_context_limits = False
+        self.initial_mask = None
+        if disallow_initial_leaves:
+            self.initial_mask = np.ones((len(self.builders),), dtype=bool)
+            self.initial_mask[self.leaf_ids] = False
 
     def __len__(self):
         return len(self.builders)
@@ -742,35 +747,37 @@ class TermGenContext:
                               self.enablance_mask if self.enablance_mask is not None else None)
 
 # @dataclass(eq=False, unsafe_hash=False)
-@dataclass(frozen=True, eq=False, unsafe_hash=False)
+@dataclass(frozen=False, eq=False, unsafe_hash=False)
 class TermPos:
     term: Term
+    occur: int = 0
     pos: int = 0 # pos in parent args
     at_depth: int = 0
     depth: int = 0
     size: int = 0
 
-    parent: 'TermPos' | None = None  
-
-@dataclass 
-class TermGen:    
-    term: Term
 
 def gen_term(builders: Builders, 
             max_depth = 5, leaf_proba: float | None = 0.1,
             rnd: np.random.RandomState = np.random, buf_n = 100, inf = 100,
-            start_gen_context: TermGenContext | None = None,
-            gen_context_cache: Optional[dict[Term, TermGenContext]] = None
+            start_point: tuple[Term, int] | None = None,
+            occurs: dict[Term, int] | None = None,
+            gen_contexts: Optional[dict[tuple[Term, int], TermGenContext]] = None,
          ) -> Optional[Term]:
     ''' Arities should be unique and provided in sorted order.
         Counts should correspond to arities 
     '''
 
-    if gen_context_cache is not None:
-        def record_gen(term: Term, gen_context: TermGenContext):
-            gen_context_cache[term] = gen_context.copy()
+    if gen_contexts is not None:
+        if occurs is None:
+            occurs = {}
+        def register_term(term: Term, gen_context: TermGenContext):
+            cur_occur = occurs.setdefault(term, 0)
+            gen_contexts[(term, cur_occur)] = gen_context
+            occurs[term] += 1
+        
     else:
-        def record_gen(term: Term, gen_context: TermGenContext):
+        def register_term(term: Term, gen_context: TermGenContext):
             pass
 
     penalties = [] if leaf_proba is None else [(builders.leaf_ids, leaf_proba)]
@@ -790,20 +797,34 @@ def gen_term(builders: Builders,
                 enabled_ids = builders.leaf_ids[enabled_id_ids]
             else:
                 enabled_ids = builders.leaf_ids
-            # leaf_counts = counts[leaf_ids]
             if gen_context.min_leaf_count > 1: # cannot sat mins
                 return -1
             req_id_ids, = np.where(gen_context.min_counts[enabled_ids] > 0)
-            selected_id = enabled_ids[req_id_ids][0]
-            if gen_context.max_counts[selected_id] == 0: # cannot have another leaf due to max counts 
+            if len(req_id_ids) == 1:
+                selected_ids = enabled_ids[req_id_ids]
+            else:
+                selected_ids = enabled_ids        
+            req_id_ids, = np.where(gen_context.max_counts[selected_ids] > 0)
+            if len(req_id_ids) == 0: # no leaves available
                 return 1            
-            new_term = builders.builders[selected_id].fn() # leaf term
-            if new_term is None: # validation failed
-                return 0
-            record_gen(new_term, gen_context)
-            gen_context.max_counts[selected_id] -= 1 # no need of min_counts[0] -= 1 as each child has its own min reqs
-            # print(str(new_term))
-            return new_term, pos_id + 1
+            selected_ids = selected_ids[req_id_ids]
+            tape_values = get_tape_values(pos_id, tape, penalties=penalties, buf_n=buf_n, rnd=rnd)
+            leaf_values = tape_values[selected_ids]
+            while True:
+                op_id_id = np.argmin(leaf_values)
+                cur_val = leaf_values[op_id_id]
+                if cur_val >= inf: # no more valid ops
+                    break
+                op_id = selected_ids[op_id_id]
+                new_term = builders.builders[op_id].fn() # leaf term
+                if new_term is None: # validation failed
+                    leaf_values[op_id_id] = inf
+                    continue
+                register_term(new_term, gen_context)
+                gen_context.max_counts[op_id] -= 1 # no need of min_counts[0] -= 1 as each child has its own min reqs
+                # print(str(new_term))
+                return new_term, pos_id + 1
+            return 0
         else:
             tape_values = get_tape_values(pos_id, tape, penalties=penalties, buf_n=buf_n, rnd=rnd)
             op_status = np.zeros(len(builders), dtype=int)
@@ -830,7 +851,7 @@ def gen_term(builders: Builders,
                         op_status[op_id] = 0
                         tape_values[op_id] = inf
                         continue
-                    record_gen(new_term, gen_context)
+                    register_term(new_term, gen_context)
                     gen_context.max_counts[op_id] -= 1
                     # print(str(new_term))
                     return new_term, next_pos_id
@@ -847,7 +868,7 @@ def gen_term(builders: Builders,
 
                 if gen_context.min_leaf_count == 0 and gen_context.min_noleaf_count == 0: 
                     def get_min_counts(arg_i):
-                        return 0, gen_context.min_counts 
+                        return (0, 0), gen_context.min_counts 
                 else:
                     # left_counts = min_counts.copy()
                     # if left_counts[op_id] > 0:
@@ -869,7 +890,7 @@ def gen_term(builders: Builders,
                     
                 # we need to spread min counts between children 
                 arg_ops = []
-                # print(f"\t{builder.name}? {at_depth} {min_counts}:{max_counts}")
+                # print(f"\t{builder.name}? {at_depth} {gen_context.min_counts}:{gen_context.max_counts}")
                 for arg_i in range(op_arity):
                     min_group_counts, arg_min_counts = get_min_counts(arg_i)
                     child_gen_context = TermGenContext(*min_group_counts,
@@ -905,12 +926,12 @@ def gen_term(builders: Builders,
                     tape_values[op_id] = inf
                     op_status[op_id] = 0
                     continue
-                record_gen(new_term, gen_context)
+                register_term(new_term, gen_context)
                 if builder.context_limits is not None:
                     gen_context.max_counts[:] = gen_context.max_counts - (new_max_counts_before - new_max_counts_w_context)
                 else:
                     gen_context.max_counts[:] = new_max_counts
-                # print(str(new_tree))
+                # print(str(new_term))
                 return new_term, next_pos_id
             # print(f"\tfail {op_status}")
             if np.all(op_status == -1):
@@ -919,13 +940,15 @@ def gen_term(builders: Builders,
                 return 1
             return 0
 
-    if start_gen_context is None:
+    if start_point not in gen_contexts:
         start_gen_context = TermGenContext(
             *builders.get_leaf_nonleaf_min_counts(builders.min_counts),
             min_counts = builders.min_counts,
             max_counts = builders.max_counts.copy(),
-            enablance_mask = None
+            enablance_mask = builders.initial_mask
         )
+    else:
+        start_gen_context = gen_contexts[start_point].copy()
 
     term, _ = _iter_rec(0, start_gen_context, 0)
 
@@ -934,30 +957,33 @@ def gen_term(builders: Builders,
 def grow(builders: Builders,
          grow_depth = 5, grow_leaf_prob: Optional[float] = 0.1,
          rnd: np.random.RandomState = np.random,
-         start_gen_context: TermGenContext | None = None,
-         gen_context_cache: Optional[dict[Term, TermGenContext]] = None
+         start_point: tuple[Term, int] | None = None,
+         occurs: dict[Term, int] | None = None,
+         gen_contexts: Optional[dict[tuple[Term, int], TermGenContext]] = None,
          ) -> Optional[Term]:
     ''' Grow a tree with a given depth '''
 
     # arity_args = get_arity_args(builders, constraints, default_counts = default_counts)
     term = gen_term(builders, max_depth = grow_depth, 
                     leaf_proba = grow_leaf_prob, rnd = rnd,
-                    start_gen_context = start_gen_context,
-                    gen_context_cache = gen_context_cache)
+                    start_point = start_point, occurs = occurs,
+                    gen_contexts = gen_contexts)
     return term
 
 def ramped_half_and_half(builders: Builders,
                         rhh_min_depth = 1, rhh_max_depth = 5, rhh_grow_prob = 0.5,
                         grow_leaf_prob: Optional[float] = 0.1, 
                         rnd: np.random.RandomState = np.random,
-                        start_gen_context: TermGenContext | None = None,
-                        gen_context_cache: Optional[dict[Term, TermGenContext]] = None) -> Optional[Term]:
+                        start_point: tuple[Term, int] | None = None,
+                        occurs: dict[Term, int] | None = None,
+                        gen_contexts: Optional[dict[tuple[Term, int], TermGenContext]] = None,
+                        ) -> Optional[Term]:
     ''' Generate a population of half full and half grow trees '''
     depth = rnd.randint(rhh_min_depth, rhh_max_depth+1)
     leaf_prob = grow_leaf_prob if rnd.rand() < rhh_grow_prob else 0
     term = grow(builders, grow_depth = depth, grow_leaf_prob = leaf_prob, rnd = rnd,
-                    start_gen_context = start_gen_context,
-                    gen_context_cache = gen_context_cache)
+                    start_point = start_point, occurs = occurs,
+                    gen_contexts = gen_contexts)
     return term
 
 # IDEA: dropout in GP, frozen tree positions which cannot be mutated or crossovered - for later
@@ -970,51 +996,75 @@ def get_positions(root: Term) -> list[TermPos]:
     positions: list[TermPos] = []
     at_depth = 0
 
-    parent_poss = [ TermPos(None) ]
+    arg_stack = [(TermPos(None), [])]
 
+    occurs = {}
     def _enter_args(term: Term, term_i, *_):
         nonlocal at_depth
-        parent_pos = parent_poss[-1]
-        term_pos = TermPos(term, term_i, at_depth,
-                           depth = 0, size = 1, parent = parent_pos)
-        parent_poss.append(term_pos)
+        cur_occur = occurs.setdefault(term, 0)
+        term_pos = TermPos(term, cur_occur, term_i, at_depth,
+                           depth = 0, size = 1)
+        arg_stack[-1][-1].append(term_pos)
+        arg_stack.append((term_pos, [])) # new args for children
         at_depth += 1
 
     def _exit_term(*_):
         nonlocal at_depth
-        cur_pos = parent_poss.pop()
-        if cur_pos.term.arity() > 0:
-            cur_pos.depth += 1
-        cur_pos.parent.depth = max(cur_pos.parent.depth, cur_pos.depth)
-        cur_pos.parent.size += cur_pos.size
+        cur_pos, children_pos = arg_stack.pop()
+        if len(children_pos) > 0:
+            cur_pos.depth = max(child.depth for child, _ in children_pos) + 1
+        cur_pos.size += sum(child.size for child, _ in children_pos)
         positions.append(cur_pos)
         at_depth -= 1
+        occurs[cur_pos.term] += 1
 
     postorder_traversal(root, _enter_args, _exit_term)
 
     return positions # last one is the root
 
-def replace(builders: Builders,
-            term_pos: TermPos, with_term: Term,
-            gen_context_cache: dict[Term, TermGenContext]) -> Term:
+# def validate(term: Term, gen_context: TermGenContext):
+#     ''' '''
+#     gen_context.
 
-    cur_pos = term_pos
-    new_term = with_term
-    cur_gen_context_cache = {}
-    while cur_pos.parent.term is not None:
 
-        cur_args = cur_pos.parent.term.get_args()
+def replace(root: Term, at_pos: tuple[Term, int],
+            with_fn: Callable[[dict[tuple[Term, int], int]], Term],
+            builders: Builders,
+            gen_contexts: dict[tuple[Term, int], TermGenContext]):
 
-        new_parent_term_args = tuple((*cur_args[:cur_pos.pos], new_term, *cur_args[cur_pos.pos + 1:]))
+    new_contexts = {}
 
-        new_term = builders.copy_term(cur_pos.parent.term, new_parent_term_args)
-        if new_term is None:
-            return None
-        cur_gen_context_cache[new_term] = cur_gen_context_cache[cur_pos.parent]
-        cur_pos = cur_pos.parent
-        
-    gen_context_cache.update(cur_gen_context_cache)
-    return new_term
+    occurs = {}
+
+    replacement = {}
+
+    def _replace_enter(term: Term, term_i: int, parent: Term):
+        cur_occur = occurs.setdefault(term, 0)
+        if (term, cur_occur) == at_pos:
+            new_term = with_fn(builders = builders, start_point = (term, cur_occur), occurs = occurs, gen_contexts = new_contexts)
+            if new_term is not None:
+                replacement[parent] = (new_term, term_i)
+                return TRAVERSAL_EXIT_NODE
+            else:
+                return TRAVERSAL_EXIT
+        else:
+            new_contexts[(term, cur_occur)] = gen_contexts[(term, cur_occur)]
+
+    def _replace_exit(term: Term, term_i: int, parent: Term):
+        term_args = replacement.pop(term, None)
+        if term_args is not None:
+            new_term, arg_i = term_args
+            args = term.get_args()
+            new_parent_term_args = tuple((*args[:arg_i], new_term, *args[arg_i + 1:]))   
+            new_term = builders.copy_term(term, new_parent_term_args)
+            if new_term is None:
+                return TRAVERSAL_EXIT
+            replacement[parent] = (new_term, term_i)
+        occurs[term] += 1
+
+    postorder_traversal(root, _replace_enter, _replace_exit)
+
+    return (None if len(replacement) == 0 else replacement[None], new_contexts)
 
 def order_positions(positions: list[TermPos],
                         select_node_leaf_prob: Optional[float] = 0.1,
@@ -1026,27 +1076,19 @@ def order_positions(positions: list[TermPos],
     pos_proba = 1 - pos_proba
     return np.argsort(pos_proba)
 
-@dataclass(frozen=False, eq=False, unsafe_hash=False)
-class TermModificationContext:
-    term: Term
-    gen_context: TermGenContext
-    positions: list[TermPos] | None = None
-
-    def get_term_positions(self) -> list[TermPos]:
-        if self.positions is None:
-            self.positions = get_positions(self.term)
-        return self.positions
-
 def one_point_rand_mutation(term: Term,
-                            context: dict[Term, TermModificationContext],
+                            gen_contexts: dict[Term, dict[tuple[Term, int], TermGenContext]],
+                            pos_cache: dict[Term, list[TermPos]],
                             builders: Builders,
                             rnd: np.random.RandomState = np.random,
                             select_node_leaf_prob: Optional[float] = 0.1,
                             tree_max_depth = 17, max_grow_depth = 5,
                             num_children = 1) -> list[Term]:
     
-    term_context = context[term]
-    positions = term_context.get_term_positions()
+    cur_gen_context = gen_contexts[term]
+    if term not in pos_cache:
+        pos_cache[term] = get_positions(term)
+    positions = pos_cache[term]
 
     if len(positions) > 1:
         positions.pop() # remove root
@@ -1069,18 +1111,12 @@ def one_point_rand_mutation(term: Term,
             prev_same_count = 0
             prev_len = len(mutants)
         position: TermPos = positions[pos_id]
-        position_context = context[position.term]
-        new_child_gen_context = {}
-        new_child = grow(builders, 
-                            grow_depth = min(max_grow_depth, tree_max_depth - position.at_depth), 
-                            rnd = rnd, start_gen_context = position_context.gen_context,
-                            gen_context_cache = new_child_gen_context)
-        if new_child is not None:
-            mutated_term = replace(builders, position, new_child, new_child_gen_context)
-            if mutated_term is not None:
-                for t, tg in new_child_gen_context.items():
-                    context[t] = TermModificationContext(t, tg)
-                mutants.append(mutated_term)
+        mutated_term, new_gen_contexts = replace(term, (position.term, position.occur), 
+                                            lambda **kwargs: grow(grow_depth = min(max_grow_depth, tree_max_depth - position.at_depth), rnd = rnd,
+                                                                **kwargs), builders, cur_gen_context)
+        if mutated_term is not None:            
+            mutants.append(mutated_term)
+            gen_contexts[mutated_term] = new_gen_contexts
     
     if len(mutants) < num_children:
         mutants += [term] * (num_children - len(mutants))
@@ -1106,17 +1142,22 @@ def can_replace(at_pos: TermPos, with_pos: TermPos,
     return mask_sat
 
 def one_point_rand_crossover(term1: Term, term2: Term,
-                                context: dict[Term, TermModificationContext],
+                                gen_contexts: dict[Term, dict[tuple[Term, int], TermGenContext]],
+                                pos_cache: dict[Term, list[TermPos]],
                                 builders: Builders,  
                                 rnd: np.random.RandomState = np.random,
                                 select_node_leaf_prob: Optional[float] = 0.1,
                                 tree_max_depth = 17,
                                 num_children = 1):
 
-    term1_context = context[term1]
-    positions1 = term1_context.get_term_positions()
-    term2_context = context[term2]
-    positions2 = term2_context.get_term_positions()
+    term1_gen_context = gen_contexts[term1]
+    if term1 not in pos_cache:
+        pos_cache[term1] = get_positions(term1)
+    positions1 = pos_cache[term1]
+    term2_gen_context = gen_contexts[term2]
+    if term2 not in pos_cache:
+        pos_cache[term2] = get_positions(term2)
+    positions2 = pos_cache[term2]
 
     if len(positions1) == 1 or len(positions2) == 1: # no crossover of leaves
         res = [term1] * num_children
@@ -1145,25 +1186,23 @@ def one_point_rand_crossover(term1: Term, term2: Term,
             prev_same_count = 0
             prev_len = len(children)
         pos1: TermPos = positions1[pos_id1]
-        pos1_gen_context = context[pos1.term].gen_context
+        pos1_gen_context = term1_gen_context[(pos1.term, pos1.occur)]
         pos2: TermPos = positions2[pos_id2]
-        pos2_gen_context = context[pos2.term].gen_context
+        pos2_gen_context = term2_gen_context[(pos2.term, pos2.occur)]
         if can_replace(pos1, pos2, pos1_gen_context, pos2_gen_context, tree_max_depth):
-            new_child_gen_context = {}
-            new_child = replace(builders, pos1, pos2.term, new_child_gen_context)
+            new_child, new_gen_contexts = replace(term1, (pos1.term, pos1.occur), 
+                                            lambda **_: pos2.term, builders, term1_gen_context)
             if new_child is not None:
                 children.append(new_child)
-                for t, tg in new_child_gen_context.items():
-                    context[t] = TermModificationContext(t, tg)
+                gen_contexts[new_child] = new_gen_contexts
                 if len(children) >= num_children:
                     break
         if can_replace(pos2, pos1, pos2_gen_context, pos1_gen_context, tree_max_depth):
-            new_child_gen_context = {}
-            new_child = replace(builders, pos2, pos1.term, new_child_gen_context)
+            new_child, new_gen_contexts = replace(term2, (pos2.term, pos2.occur), 
+                                            lambda **_: pos1.term, builders, term2_gen_context)
             if new_child is not None:
                 children.append(new_child)
-                for t, tg in new_child_gen_context.items():
-                    context[t] = TermModificationContext(t, tg)
+                gen_contexts[new_child] = new_gen_contexts
                 if len(children) >= num_children:
                     break
 
