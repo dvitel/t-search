@@ -13,7 +13,7 @@ from time import perf_counter
 import numpy as np
 import torch
 from spatial import InteractionIndex, RTreeIndex, SpatialIndex
-from term import UNBOUND, Builder, Builders, Op, Term, Value, Variable, evaluate, \
+from term import Builder, Builders, Op, Term, Value, Variable, evaluate, \
                     get_fn_arity, get_positions, match_root, \
                     one_point_rand_crossover, one_point_rand_mutation, parse_term, \
                     ramped_half_and_half
@@ -266,7 +266,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # self.term_counts: dict[Term, np.ndarray] = {}
         self.pos_cache = {}
         self.gen_contexts = {}
-        self.gen_counts = {}
+        self.counts_cache = {}
 
         self.best_term: Optional[Term] = None
         self.best_outputs: Optional[torch.Tensor] = None
@@ -281,10 +281,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         self.op_builders = {}
         for op_id, op_fn in self.ops.items():
-            op_range = self.ops_counts.get(op_id, (0, UNBOUND))
             op_arity = get_fn_arity(op_fn)
-            op_builder = Builder(op_id, self._alloc_op_builder(op_id), op_arity, *op_range,
+            op_builder = Builder(op_id, self._alloc_op_builder(op_id), op_arity,
                                     commutative = op_id in self.commutative_ops)
+            if op_id in self.ops_counts:
+                op_min_count, op_max_count = self.ops_counts[op_id]
+                op_builder.min_count = op_min_count
+                op_builder.max_count = op_max_count
+
             self.op_builders[op_id] = op_builder
 
     def _reset_state(self, free_vars: Optional[Sequence] = None, target: Optional[Sequence] = None):
@@ -302,7 +306,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.term_fitness: dict[Term, torch.Tensor] = {}
         self.pos_cache = {}
         self.gen_contexts = {}
-        self.gen_counts = {}
+        self.counts_cache = {}
 
         self.best_term: Optional[Term] = None
         self.best_outputs: Optional[torch.Tensor] = None
@@ -356,7 +360,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             for arg_i in range(b.arity()):
                 disabled[b][arg_i].extend(self.op_builders[inner_op_id] for inner_op_id in op_ids)
 
-        self.builders.disabled_arg_builders(disabled)
+        self.builders.disable_arg_builders(disabled)
 
         context_limits = {}
         for op_id, op_limits in self.inner_ops_max_counts.items():
@@ -364,7 +368,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 continue
             context_limits[self.op_builders[op_id]] = {self.op_builders[inner_op_id]:cnt for inner_op_id, cnt in op_limits.items()}
 
-        self.builders.with_context_limits(context_limits)
+        self.builders.limit_context(context_limits)
 
         if target is not None:
             if not torch.is_tensor(target):
@@ -416,8 +420,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             sz = size - len(self.vars)
             while len(self.syntax) < sz:
                 new_gen_contexts = {}
-                term = init_fn(self.builders, rnd=self.rnd, gen_contexts = new_gen_contexts,
-                                gen_counts = self.gen_counts)
+                term = init_fn(self.builders, rnd=self.rnd, gen_contexts = new_gen_contexts)
                 if term is None:
                     none_count += 1
                 else:
@@ -431,8 +434,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             for _ in range(size):
                 new_gen_contexts = {}
                 term = init_fn(self.builders, rnd=self.rnd,
-                                gen_contexts = new_gen_contexts,
-                                gen_counts = self.gen_counts)
+                                gen_contexts = new_gen_contexts)
                 # print(str(term))
                 if term is not None:
                     res.append(term)
@@ -537,14 +539,18 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         mutated_parents = list(parents)
 
-        pos_cache = self._get_pos_cache()
+        if self.cache_term_props:
+            pos_cache = self.pos_cache
+            counts_cache = self.counts_cache
+        else:
+            pos_cache = {}
+            counts_cache = {}
 
         for term, term_p in mutation_pos.items():
             mutated_terms = mutation_fn(term = term,
                                 builders = self.builders,
                                 pos_cache = pos_cache,
                                 gen_contexts = self.gen_contexts,
-                                gen_counts = self.gen_counts,
                                 rnd=self.rnd, num_children=len(term_p))
             for i, mterm in zip(term_p, mutated_terms):
                 mutated_parents[i] = mterm
@@ -562,7 +568,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                                 builders = self.builders,
                                 pos_cache = pos_cache,
                                 gen_contexts = self.gen_contexts,
-                                gen_counts = self.gen_counts,
+                                counts_cache = counts_cache,
                                 rnd = self.rnd, num_children=2 * len(pair_ids))
             for i, ii in enumerate(pair_ids):
                 children[2 * ii] = new_children[2 * i]
@@ -608,12 +614,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
             
         return _alloc_op
     
-    def _get_pos_cache(self):
-        if self.cache_term_props:
-            return self.pos_cache
-        else:
-            return {}
-
     def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:        
         if isinstance(term, Variable):
             return self.var_binding[term.var_id]

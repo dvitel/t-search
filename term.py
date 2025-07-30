@@ -625,7 +625,7 @@ def _add_factorize(total: int, min_counts: np.ndarray, max_counts: np.ndarray,
         total -= new_count
         res[i] = new_count
 
-    counts = np.array(res)
+    counts = np.array(res, dtype=int)
 
     return counts
 
@@ -641,15 +641,13 @@ def get_fn_arity(fn: Callable) -> int:
     params = [p for p in signature.parameters.values() if p.kind != inspect.Parameter.KEYWORD_ONLY]
     return len(params)
 
-UNBOUND = 1000000    
-
 @dataclass(frozen=False, eq=False, unsafe_hash=False)
 class Builder:
     name: str
     fn: Callable
     term_arity: int
-    min_count: int = 0
-    max_count: int = UNBOUND 
+    min_count: int | None = None
+    max_count: int | None = None
     context_limits: np.ndarray | None = None
     ''' Specifies maximum number of builder occurances under this builder,
         int 1d array of size (num_builders,), combines with max_counts eventually 
@@ -660,15 +658,15 @@ class Builder:
 
     def __post_init__(self):
         self.id: int | None = None
+        self.leaf_id_id: int | None = None
+        self.nonleaf_id_id: int | None = None 
         if self.term_arity == 1:
             self.commutative = True 
 
     def arity(self) -> int:
         return self.term_arity
     
-    def get_disabled_args(self, rnd: np.random.RandomState = np.random) -> list[np.ndarray | None]:
-        if self.disabled_arg_mask is None:
-            return [None] * self.arity()
+    def get_disabled_args(self, rnd: np.random.RandomState = np.random) -> list[np.ndarray]:
         if self.commutative:
             res = self.disabled_arg_mask
         else:
@@ -679,90 +677,94 @@ class Builder:
 class Builders:
 
     def __init__(self, builders: list[Builder], get_term_builder: Callable[[Term], Builder],
-                    disallow_initial_leaves: bool = True):
+                    disallow_initial_leaves: bool = True, 
+                    global_min_count: np.int8 = 0, global_max_count: np.int8 = 100):
         self.builders: list[Builder] = builders
         self.get_term_builder: Callable[[Term], Builder] = get_term_builder
         self.leaf_ids = []
         self.nonleaf_ids = []
+        self.global_max_count = global_max_count
         for bi, b in enumerate(self.builders):
             b.id = bi
             if b.arity() == 0:
+                b.leaf_id_id = len(self.leaf_ids)
                 self.leaf_ids.append(bi)
             else:
+                b.nonleaf_id_id = len(self.nonleaf_ids)
                 self.nonleaf_ids.append(bi)
-        self.leaf_ids = np.array(self.leaf_ids)
-        self.nonleaf_ids = np.array(self.nonleaf_ids)
-        self.min_counts: np.ndarray = np.array([b.min_count for b in self.builders])
-        self.max_counts: np.ndarray = np.array([b.max_count for b in self.builders])
+            if b.max_count is None:
+                b.max_count = global_max_count
+            if b.min_count is None:
+                b.min_count = global_min_count
+        self.leaf_ids = np.array(self.leaf_ids, dtype=np.int8)
+        self.nonleaf_ids = np.array(self.nonleaf_ids, dtype=np.int8)
+        self.min_counts: np.ndarray = np.array([b.min_count for b in self.builders], dtype=np.int8)
+        self.max_counts: np.ndarray = np.array([b.max_count for b in self.builders], dtype=np.int8)
         self.arity_builder_ids: dict[int, np.ndarray] = {}
         for bi, b in enumerate(self.builders):
             self.arity_builder_ids.setdefault(b.arity(), []).append(bi)
 
-        self.arity_builder_ids = {a: np.array(self.arity_builder_ids[a]) for a in sorted(self.arity_builder_ids.keys())}
+        self.arity_builder_ids = {a: np.array(self.arity_builder_ids[a], dtype=np.int8) for a in sorted(self.arity_builder_ids.keys())}
 
         self.has_context_limits = False
-        self.initial_mask = None
+        initial_disabled_mask = np.zeros((len(self.builders),), dtype=bool)
         if disallow_initial_leaves:
-            self.initial_mask = np.zeros((len(self.builders),), dtype=bool)
-            self.initial_mask[self.leaf_ids] = True
-
-        self.min_leaf_counts = np.sum(self.min_counts[self.leaf_ids])
-        self.min_nonleaf_counts = np.sum(self.min_counts[self.nonleaf_ids])
+            initial_disabled_mask[self.leaf_ids] = True
 
         self.default_gen_context = TermGenContext(
-            min_leaf_count=self.min_leaf_counts,
-            min_nonleaf_count=self.min_nonleaf_counts,
             min_counts=self.min_counts,
             max_counts=self.max_counts,
-            disabled_mask=self.initial_mask)
+            context_limits=np.full((len(self.builders),), self.global_max_count, dtype=np.int8),
+            disabled_mask=initial_disabled_mask)
         
         self.leaf_one_hot = {}
         for op_id in self.leaf_ids:
-            self.leaf_one_hot[op_id] = np.zeros(len(self.builders), dtype=int)
-            self.leaf_one_hot[op_id][op_id] = True        
+            self.leaf_one_hot[op_id] = np.zeros(len(self.builders), dtype=np.int8)
+            self.leaf_one_hot[op_id][op_id] = True   
+
+        self.default_context_limits = np.full((len(self.builders),), self.global_max_count, dtype=np.int8)
+        for builder in self.builders:
+            builder.context_limits = self.default_context_limits
+            builder.disabled_arg_mask = np.zeros((builder.arity(), len(self.builders)), dtype=bool)
 
     def __len__(self):
         return len(self.builders)
 
-    def with_context_limits(self, cl: dict[Builder, dict[Builder, int]]) -> 'Builders':
-        for context_builder, limits in cl.items():
-            context_limits = np.full(len(self.builders), UNBOUND, dtype=int)
+    def limit_context(self, cl: dict[Builder, dict[Builder, int]]) -> 'Builders':
+        for context_builder, limits in cl.items():            
+            context_builder.context_limits = self.default_context_limits.copy()
             for bi, b in enumerate(self.builders):
                 if b in limits:
-                    context_limits[bi] = limits[b]
-            context_builder.context_limits = context_limits
+                    context_builder.context_limits[bi] = limits[b]
         self.has_context_limits = True
 
-    def disabled_arg_builders(self, disabled: dict[Builder, list[list[Builder]]]) -> 'Builders':
+    def disable_arg_builders(self, disabled: dict[Builder, list[list[Builder]]]) -> 'Builders':
         for b, disabled_per_arg in disabled.items():
-            mask = np.zeros((b.arity(), len(self.builders)), dtype=bool)
             for arg_i in range(b.arity()):
                 if arg_i < len(disabled_per_arg):
                     disabled_builders = disabled_per_arg[arg_i]
                     for bi, db in enumerate(self.builders):
                         if db in disabled_builders:
-                            mask[arg_i, bi] = True
-            b.disabled_arg_mask = mask
+                            b.disabled_arg_mask[arg_i, bi] = True
         
 @dataclass(frozen=False, eq=False, unsafe_hash=False)    
 class TermGenContext:
     ''' When we generate term, we preserve point requirements for later poitn regeneration '''
-    min_leaf_count: int
-    # leaf_counts: int
-    # max_leaf_count: int
-    min_nonleaf_count: int
-    # nonleaf_counts: int
-    # max_nonleaf_count: int
     min_counts: np.ndarray
-    # counts: np.ndarray
     max_counts: np.ndarray
-    disabled_mask: np.ndarray | None = None
-    # at_depth: int
+    context_limits: np.ndarray
+    disabled_mask: np.ndarray
 
-    # def copy(self) -> 'TermGenContext':
-    #     return TermGenContext(self.min_leaf_count, self.min_noleaf_count, 
-    #                           self.min_counts, self.max_counts.copy(),
-    #                           self.enablance_mask if self.enablance_mask is not None else None)
+    def limit_to(self, max_counts: np.ndarray, context_limits: np.ndarray, disabled_mask: np.ndarray | None = None) -> 'TermGenContext':
+        return TermGenContext(
+            min_counts=np.minimum(self.min_counts, max_counts),
+            max_counts=np.minimum(self.max_counts, max_counts),
+            context_limits=context_limits,
+            disabled_mask=self.disabled_mask if disabled_mask is None else disabled_mask
+        )
+    
+    def __str__(self):
+        return f"mins={self.min_counts}\nmaxs={self.max_counts}\ncntx={self.context_limits}\nmsk={self.disabled_mask.astype(np.int8)}"
 
 # @dataclass(eq=False, unsafe_hash=False)
 @dataclass(frozen=False, eq=False, unsafe_hash=False)
@@ -774,129 +776,151 @@ class TermPos:
     depth: int = 0
     size: int = 0
 
+global_gen_id = 0 # for debugging
 
 def gen_term(builders: Builders, 
             max_depth = 5, leaf_proba: float | None = 0.1,
             rnd: np.random.RandomState = np.random, buf_n = 100, inf = 100,
             start_context: TermGenContext | None = None,
             occurs: dict[Term, int] | None = None,
-            gen_contexts: Optional[dict[tuple[Term, int], TermGenContext]] = None,
-            gen_counts: dict[Term, np.ndarray] | None = None
+            gen_contexts: Optional[dict[tuple[Term, int], TermGenContext]] = None
          ) -> Optional[Term]:
     ''' Arities should be unique and provided in sorted order.
         Counts should correspond to arities 
     '''
+    global global_gen_id
+    global_gen_id += 1
 
     penalties = [] if leaf_proba is None else [(builders.leaf_ids, leaf_proba, 1)]
 
     tape = alloc_tape(len(builders), penalties=penalties, buf_n=buf_n, rnd=rnd) # tape is 2d ndarray: (t, score)
+
+    pos_id = 0 
+    def get_next_tape_values():
+        nonlocal pos_id 
+        tape_values = get_tape_values(pos_id, tape, penalties=penalties, buf_n=buf_n, rnd=rnd)            
+        pos_id += 1
+        return tape_values
 
     def get_occur(term: Term, occurs: dict) -> int:
         cur_occur = occurs.get(term, 0)
         occurs[term] = cur_occur + 1
         return cur_occur
     
-    if gen_counts is None:
-        gen_counts = {}
+    def alloc_leaf_status():
+        return np.zeros_like(builders.leaf_ids, dtype=np.int8)
 
-    def _iter_rec(pos_id: int, gen_context: TermGenContext,
+    def _iter_rec(gen_context: TermGenContext,
                   at_depth: iter, occurs: dict[Term, int], counts: np.ndarray,
                   gen_contexts: dict[tuple[Term, int], TermGenContext]
-                  ) -> tuple[Term, int] | Literal[-1, 0, 1]:
-        op_status = np.zeros(len(builders), dtype=int)
-        tape_values = get_tape_values(pos_id, tape, penalties=penalties, buf_n=buf_n, rnd=rnd)            
-        if gen_context.disabled_mask is not None:
-            tape_values[gen_context.disabled_mask] = inf
-            # op_status[gen_context.disabled_mask] = 0
-        overflow_mask = (gen_context.max_counts <= 0)
-        tape_values[overflow_mask] = inf
-        op_status[overflow_mask] = 1 # overflow
-        if (gen_context.min_nonleaf_count > 0) or (gen_context.min_leaf_count > 1):
-            tape_values[builders.leaf_ids] = inf # cannot have leaves, op should be selected
-            op_status[builders.leaf_ids] = -1 # underflow
-        if gen_context.min_leaf_count == 1:
-            impossiblel_leafs = builders.leaf_ids[gen_context.min_counts[builders.leaf_ids] != 1]
-            tape_values[impossiblel_leafs] = inf
-            op_status[impossiblel_leafs] = -1
+                  ) -> tuple[Term] | np.ndarray:
+        leaf_status = None
+        tape_values = get_next_tape_values()
+        # if gen_context.disabled_mask is not None:
+        #     tape_values[gen_context.disabled_mask] = inf
+        # if gen_context.context_limits is not None:
+        #     tape_values[counts >= gen_context.context_limits] = inf 
+        # overflow_mask = (counts >= gen_context.max_counts)
+        # tape_values[overflow_mask] = inf
+        # op_status[overflow_mask] = 1 # overflow
+        # if (gen_context.min_nonleaf_count > 0) or (gen_context.min_leaf_count > 1):
+        #     tape_values[builders.leaf_ids] = inf # cannot have leaves, op should be selected
+        #     op_status[builders.leaf_ids] = -1 # underflow
+        # if gen_context.min_leaf_count == 1:
+        #     impossiblel_leafs = builders.leaf_ids[gen_context.min_counts[builders.leaf_ids] != 1]
+        #     tape_values[impossiblel_leafs] = inf
+        #     op_status[impossiblel_leafs] = -1
+        # if at_depth >= max_depth:
+        #     tape_values[builders.nonleaf_ids] = inf
+        #     leaf_status_sum = np.sum(op_status[builders.leaf_ids])
+        #     leaf_count = len(builders.leaf_ids)
+        #     op_status[builders.nonleaf_ids] = 1 if leaf_status_sum == leaf_count else -1 if leaf_status_sum == -leaf_count else 0
         if at_depth >= max_depth:
             tape_values[builders.nonleaf_ids] = inf
-            leaf_status_sum = np.sum(op_status[builders.leaf_ids])
-            leaf_count = len(builders.leaf_ids)
-            op_status[builders.nonleaf_ids] = 1 if leaf_status_sum == leaf_count else -1 if leaf_status_sum == -leaf_count else 0
-        # ordered_ids = np.argsort(tape_values)
         while True:
             op_id = np.argmin(tape_values)
             cur_val = tape_values[op_id]
             if cur_val >= inf: # no more valid ops
                 break
+
+            if gen_context.disabled_mask[op_id]:
+                tape_values[op_id] = inf 
+                continue
+
+            if counts[op_id] >= gen_context.context_limits[op_id]:
+                tape_values[op_id] = inf 
+                continue
+
             builder = builders.builders[op_id]
             op_arity = builder.arity()
-            next_pos_id = pos_id + 1
+
             if op_arity == 0: # leaf selected - no nonleaf mins
+                counts[op_id] += 1
+
+                if counts[op_id] > gen_context.max_counts[op_id]:
+                    counts[op_id] -= 1 
+                    tape_values[op_id] = inf 
+                    if leaf_status is None:
+                        leaf_status = alloc_leaf_status()
+                    leaf_status[builder.leaf_id_id] = 1
+                    continue
+
+                if np.any(counts < gen_context.min_counts):
+                    counts[op_id] -= 1 
+                    tape_values[op_id] = inf
+                    if leaf_status is None:
+                        leaf_status = alloc_leaf_status()                    
+                    leaf_status[builder.leaf_id_id] = -1
+                    continue
+
                 new_term = builder.fn() # leaf term
                 if new_term is None: # validation failed
-                    op_status[op_id] = 0
+                    counts[op_id] -= 1 
                     tape_values[op_id] = inf
                     continue
-                # gen_context.max_counts[op_id] -= 1
-                counts[op_id] += 1
                 # print(str(new_term))
                 cur_occur = get_occur(new_term, occurs)
                 gen_contexts[(new_term, cur_occur)] = gen_context
-                gen_counts[new_term] = builders.leaf_one_hot[op_id]
-                return new_term, next_pos_id
-            backtrack = None
+                return new_term            
 
             new_counts = np.zeros_like(counts)
             new_counts[op_id] += 1
 
-            if builder.context_limits is not None:
-                max_counts = np.minimum(gen_context.max_counts, builder.context_limits)
-            else:
-                max_counts = gen_context.max_counts
+            new_context_limits = np.minimum(gen_context.context_limits, builder.context_limits)
+
             if op_arity == 1:
                 def get_counts(*_):
-                    return gen_context.min_leaf_count, gen_context.min_nonleaf_count, \
-                            gen_context.min_counts, max_counts
+                    return gen_context.min_counts, gen_context.max_counts, new_context_limits
             else:
-                bound_ids, = np.where(max_counts != UNBOUND)
-                arg_max_counts = max_counts.copy()
-                left_max_counts = arg_max_counts[bound_ids] % op_arity
-                arg_max_counts[bound_ids] //= op_arity
-                if gen_context.min_leaf_count == 0 and gen_context.min_nonleaf_count == 0: 
-                    def get_counts(arg_i):
-                        nonlocal left_max_counts
-                        arg_i_left_max_counts = np.where(left_max_counts > 0, 1, 0)
-                        arg_i_max_counts = arg_max_counts.copy()
-                        arg_i_max_counts[bound_ids] += arg_i_left_max_counts
-                        left_max_counts -= arg_i_left_max_counts
-                        return 0, 0, gen_context.min_counts, arg_i_max_counts
-                else:
-                    def get_counts(arg_i):
-                        nonlocal left_max_counts
 
-                        arg_i_left_max_counts = np.where(left_max_counts > 0, 1, 0)
-                        arg_i_max_counts = arg_max_counts.copy()
-                        arg_i_max_counts[bound_ids] += arg_i_left_max_counts
-                        left_max_counts -= arg_i_left_max_counts
+                def get_counts(arg_i):
 
-                        left_counts = gen_context.min_counts - new_counts
-                        left_counts[left_counts < 0] = 0
-                        if arg_i == op_arity - 1:
-                            arg_i_min_counts = left_counts
-                            # min_group_counts = builders.get_leaf_nonleaf_min_counts(left_counts)
-                            # return min_group_counts, left_counts
-                        else:
-                            # new_max_min_counts = left_counts // (op_arity - arg_i) # left args
-                            # arg_i_min_counts = rnd.randint(0, new_max_min_counts + 1)
-                            arg_i_min_counts = left_counts // (op_arity - arg_i)
+                    left_max_counts = gen_context.max_counts - new_counts
+                    if arg_i == op_arity - 1:
+                        arg_i_max_counts = left_max_counts
+                    else:
+                        arg_i_max_counts = left_max_counts // (op_arity - arg_i)
 
-                        assert np.all(arg_i_min_counts <= arg_i_max_counts)
-                        
-                        min_leaf_counts = np.sum(arg_i_min_counts[builders.leaf_ids])
-                        min_nonleaf_counts = np.sum(arg_i_min_counts[builders.nonleaf_ids])  
+                    left_context_limits = new_context_limits - new_counts
+                    if arg_i == op_arity - 1:
+                        arg_i_context_limits = left_context_limits
+                    else:
+                        arg_i_context_limits = left_context_limits // (op_arity - arg_i)
 
-                        return min_leaf_counts, min_nonleaf_counts, arg_i_min_counts, arg_i_max_counts
+                    left_min_counts = gen_context.min_counts - new_counts
+                    left_min_counts[left_min_counts < 0] = 0
+                    if arg_i == op_arity - 1:
+                        arg_i_min_counts = left_min_counts
+                        # min_group_counts = builders.get_leaf_nonleaf_min_counts(left_counts)
+                        # return min_group_counts, left_counts
+                    else:
+                        new_max_min_counts = np.minimum(arg_i_context_limits, left_min_counts // (op_arity - arg_i)) # left args
+                        arg_i_min_counts = rnd.randint(0, new_max_min_counts + 1)
+                        # arg_i_min_counts = left_counts // (op_arity - arg_i)
+
+                    assert np.all(arg_i_min_counts <= arg_i_max_counts)
+                    
+                    return arg_i_min_counts, arg_i_max_counts, arg_i_context_limits
                 
             disabled_args_mask = builder.get_disabled_args(rnd = rnd)
                 
@@ -905,57 +929,58 @@ def gen_term(builders: Builders,
             # print(f"\t{builder.name}? {at_depth} {gen_context.min_counts}:{gen_context.max_counts}")
             new_occurs = occurs.copy()
             new_gen_contexts = {}
+            backtrack = None
             for arg_i in range(op_arity):
-                arg_i_min_leaf_count, arg_i_min_nonleaf_count, arg_i_min_counts, arg_i_max_counts = get_counts(arg_i)
-                child_gen_context = TermGenContext(arg_i_min_leaf_count, arg_i_min_nonleaf_count,
-                    min_counts = arg_i_min_counts, max_counts = arg_i_max_counts,
+                arg_i_min_counts, arg_i_max_counts, arg_i_context_limits = get_counts(arg_i)
+                child_gen_context = TermGenContext(
+                    min_counts = arg_i_min_counts, 
+                    max_counts = arg_i_max_counts, 
+                    context_limits = arg_i_context_limits,
                     disabled_mask = disabled_args_mask[arg_i]
                 )
-                child_opt = _iter_rec(next_pos_id, child_gen_context, at_depth + 1, 
+                child_opt = _iter_rec(child_gen_context, at_depth + 1, 
                                       new_occurs, new_counts, new_gen_contexts)
-                if isinstance(child_opt, int):
+                if isinstance(child_opt, Term):
+                    child_term = child_opt
+                    arg_ops.append(child_term)
+                else:
                     # print(f"\t<<< {at_depth} {arg_i_min_counts}:{arg_i_max_counts}")
                     backtrack = child_opt
                     break
-                else:
-                    child_term, next_pos_id = child_opt
-                    arg_ops.append(child_term)
             if backtrack is not None:
-                if backtrack == -1: # on underflow we can skip all smaller arities
+                leaf_status = backtrack
+                backtrack_overflow = np.sum(backtrack == 1)
+                backtrack_underflow = np.sum(backtrack == -1)
+                if backtrack_underflow > 0 and backtrack_overflow == 0: # on underflow we can skip all smaller arities
                     for arity, builder_ids in builders.arity_builder_ids.items():
                         if arity <= op_arity:
                             tape_values[builder_ids] = inf
-                            op_status[builder_ids] = backtrack
-                elif backtrack == 1: # on overflow we can skip all larger arities
+                elif backtrack_underflow == 0 and backtrack_overflow > 0: # on overflow we can skip all larger arities
                     for arity, builder_ids in builders.arity_builder_ids.items():
                         if arity >= op_arity:
                             tape_values[builder_ids] = inf
-                            op_status[builder_ids] = backtrack
-                elif backtrack == 0:
+                else:
                     tape_values[op_id] = inf
-                    op_status[op_id] = backtrack
                 continue
             new_term = builder.fn(*arg_ops)
             if new_term is None:
                 tape_values[op_id] = inf
-                op_status[op_id] = 0
                 continue
             counts += new_counts
-            gen_counts[new_term] = new_counts
+
+            assert np.all(new_counts <= gen_context.max_counts)
+            assert np.all(new_counts >= gen_context.min_counts)
+            assert np.all(new_counts <= gen_context.context_limits)
             occurs.update(new_occurs)
             gen_contexts.update(new_gen_contexts)
             cur_occur = get_occur(new_term, occurs)
             gen_contexts[(new_term, cur_occur)] = gen_context
             # print(str(new_term))
-            return new_term, next_pos_id
+            return new_term
         # print(f"\tfail {op_status}")
-        not_nan = np.isfinite(op_status)
-        op_s = op_status[not_nan]
-        if np.all(op_s == -1):
-            return -1 
-        elif np.all(op_s == 1):
-            return 1
-        return 0
+        if leaf_status is None:
+            leaf_status = alloc_leaf_status()
+        return leaf_status
 
     if start_context is None:
         start_context = builders.default_gen_context
@@ -963,16 +988,13 @@ def gen_term(builders: Builders,
     cur_gen_contexts = {}
     cur_occurs = {} if occurs is None else (occurs.copy())
 
-    counts = np.zeros(len(builders), dtype=int)
+    counts = np.zeros(len(builders), dtype=np.int8)
 
-    res_opt = _iter_rec(0, start_context, 0, cur_occurs, counts, cur_gen_contexts)
+    new_term = _iter_rec(start_context, 0, cur_occurs, counts, cur_gen_contexts)
 
-
-    if isinstance(res_opt, int):
-        print(f"Fail generate for {start_context.min_counts}:{start_context.max_counts} ")
+    if not isinstance(new_term, Term):
+        print(f"Fail generate \n{str(start_context)}\nreason={new_term}")
         return None
-    
-    new_term, _ = res_opt
 
     if gen_contexts is not None:
         gen_contexts.update(cur_gen_contexts)
@@ -991,7 +1013,6 @@ def grow(builders: Builders,
          start_context: TermGenContext | None = None,
          occurs: dict[Term, int] | None = None,
          gen_contexts: Optional[dict[tuple[Term, int], TermGenContext]] = None,
-         gen_counts: dict[Term, np.ndarray] | None = None
          ) -> Optional[Term]:
     ''' Grow a tree with a given depth '''
 
@@ -999,7 +1020,7 @@ def grow(builders: Builders,
     term = gen_term(builders, max_depth = grow_depth, 
                     leaf_proba = grow_leaf_prob, rnd = rnd,
                     start_context = start_context, occurs = occurs,
-                    gen_contexts = gen_contexts, gen_counts = gen_counts)
+                    gen_contexts = gen_contexts)
     return term
 
 def ramped_half_and_half(builders: Builders,
@@ -1008,15 +1029,14 @@ def ramped_half_and_half(builders: Builders,
                         rnd: np.random.RandomState = np.random,
                         start_context: TermGenContext | None = None,
                         occurs: dict[Term, int] | None = None,
-                        gen_contexts: Optional[dict[tuple[Term, int], TermGenContext]] = None,
-                        gen_counts: dict[Term, np.ndarray] | None = None
+                        gen_contexts: Optional[dict[tuple[Term, int], TermGenContext]] = None
                         ) -> Optional[Term]:
     ''' Generate a population of half full and half grow trees '''
     depth = rnd.randint(rhh_min_depth, rhh_max_depth+1)
     leaf_prob = grow_leaf_prob if rnd.rand() < rhh_grow_prob else 0
     term = grow(builders, grow_depth = depth, grow_leaf_prob = leaf_prob, rnd = rnd,
                     start_context = start_context, occurs = occurs,
-                    gen_contexts = gen_contexts, gen_counts = gen_counts)
+                    gen_contexts = gen_contexts)
     return term
 
 # IDEA: dropout in GP, frozen tree positions which cannot be mutated or crossovered - for later
@@ -1060,14 +1080,15 @@ def get_positions(root: Term) -> list[TermPos]:
 #     gen_context.
 
 
-def enum_occurs(new_term: Term, some_occurs: dict, fn = lambda t,o:()) -> int:
+def enum_occurs(new_term: Term, some_occurs: dict, fn = lambda *_:()):
 
     def _enter_new_child(t, *_):
         cur_occur = some_occurs.setdefault(t, 0)        
 
-    def _exit_new_child(t, *_):
-        fn(t, some_occurs[t])
+    def _exit_new_child(t, _, p):
+        res = fn(t, some_occurs[t], p)
         some_occurs[t] += 1
+        return res
 
     postorder_traversal(new_term, _enter_new_child, _exit_new_child)
 
@@ -1144,14 +1165,13 @@ def order_positions(positions: list[TermPos],
                         rnd: np.random.RandomState = np.random) -> np.ndarray:
     pos_proba = rnd.rand(len(positions))
     if select_node_leaf_prob is not None:
-        proba_mod = np.array([select_node_leaf_prob if pos.term.arity() == 0 else (1 - select_node_leaf_prob) for pos in positions ])
+        proba_mod = np.array([select_node_leaf_prob if pos.term.arity() == 0 else (1 - select_node_leaf_prob) for pos in positions ], dtype=float)
         pos_proba *= proba_mod
     pos_proba = 1 - pos_proba
     return np.argsort(pos_proba)
 
 def one_point_rand_mutation(term: Term,
                             gen_contexts: dict[Term, dict[tuple[Term, int], TermGenContext]],
-                            gen_counts: dict[Term, np.ndarray],
                             pos_cache: dict[Term, list[TermPos]],
                             builders: Builders,
                             rnd: np.random.RandomState = np.random,
@@ -1187,45 +1207,42 @@ def one_point_rand_mutation(term: Term,
         position: TermPos = positions[pos_id]
         mutated_term, new_gen_contexts = replace(term, (position.term, position.occur), 
                                             lambda **kwargs: grow(grow_depth = min(max_grow_depth, tree_max_depth - position.at_depth), rnd = rnd,
-                                                                  gen_counts = gen_counts, **kwargs), builders, cur_gen_context)
+                                                                  **kwargs), builders, cur_gen_context)
         if mutated_term is not None:            
             mutants.append(mutated_term)
             gen_contexts[mutated_term] = new_gen_contexts
+            mutant_poss = get_positions(mutated_term)
+            for p in mutant_poss:
+                assert (p.term, p.occur) in new_gen_contexts
+            for p in positions:
+                assert (p.term, p.occur) in cur_gen_context
     
     if len(mutants) < num_children:
         mutants += [term] * (num_children - len(mutants))
         
     return mutants
 
-def can_replace(builders: Builders, at_pos: TermPos, at_pos_gen_context: TermGenContext,
-                with_pos: TermPos, with_counts: np.ndarray,    
-                tree_max_depth: int) -> bool:
+def can_replace(builders: Builders, at_pos_gen_context: TermGenContext,
+                with_term: Term, with_counts: np.ndarray) -> bool:
     
-    depth_sat = at_pos.at_depth + with_pos.depth <= tree_max_depth
-    if not depth_sat:
-        return False
     min_sat = np.all(with_counts >= at_pos_gen_context.min_counts)
     if not min_sat:
         return False
     max_sat = np.all(with_counts <= at_pos_gen_context.max_counts)
     if not max_sat:
         return False
-    with_builder = builders.get_term_builder(with_pos.term)
-    mask_sat = at_pos_gen_context.disabled_mask is None or \
-                 not at_pos_gen_context.disabled_mask[with_builder.id]
-    return mask_sat
-
-def copy_gen_contexts(term, *, occurs, gen_contexts, new_gen_context, **_):
-    def _copy_fn(t: Term, o: int):
-        gen_contexts[(t, o)] = new_gen_context
-    enum_occurs(term, occurs, _copy_fn)
-    return term
+    with_builder = builders.get_term_builder(with_term)
+    mask_sat = not at_pos_gen_context.disabled_mask[with_builder.id]
+    if not mask_sat:
+        return False
+    context_sat = np.all(with_counts <= at_pos_gen_context.context_limits)
+    return context_sat
 
 def get_counts(root: Term, builders: Builders, counts_cache: dict[Term, np.ndarray]) -> np.ndarray:
 
     counts_stack = [[]]
 
-    def _enter_args(t: Term):
+    def _enter_args(t: Term, *_):
         if t in counts_cache:
             counts_stack[-1].append(counts_cache[t])
             return TRAVERSAL_EXIT_NODE
@@ -1237,9 +1254,11 @@ def get_counts(root: Term, builders: Builders, counts_cache: dict[Term, np.ndarr
         else:
             counts_stack.append([])
 
-    def _exit_term(t: Term):
+    def _exit_term(t: Term, *_):
         args = counts_stack.pop()
         counts = sum(args)
+        builder = builders.get_term_builder(t)
+        counts[builder.id] += 1
         counts_cache[t] = counts
         counts_stack[-1].append(counts)
 
@@ -1247,13 +1266,79 @@ def get_counts(root: Term, builders: Builders, counts_cache: dict[Term, np.ndarr
 
     return counts_stack[-1][-1]
 
+def copy_contexts(root, *, builders: Builders, occurs, gen_contexts, from_contexts: list[TermGenContext], 
+                  root_context: TermGenContext, counts_cache, **_):
+
+    from_i = 0
+    def _copy_fn(t: Term, o: int, p: Term):
+        nonlocal from_i
+        if p is not None:
+            parent_builder = builders.get_term_builder(p)
+            new_context_limits = np.minimum(root_context.context_limits, parent_builder.context_limits)
+            disabled_mask = None
+        else:
+            new_context_limits = root_context.context_limits
+            disabled_mask = root_context.disabled_mask
+        new_context = from_contexts[from_i].limit_to(root_context.max_counts, new_context_limits, disabled_mask = disabled_mask)
+        gen_contexts[(t, o)] = new_context
+        t_counts = get_counts(t, builders, counts_cache)
+        assert np.all(t_counts <= new_context.context_limits)
+        assert np.all(t_counts <= new_context.max_counts)
+        assert np.all(t_counts >= new_context.min_counts)
+        from_i += 1
+        pass 
+
+    enum_occurs(root, occurs, _copy_fn)
+
+    return root
+
+def try_replace_pos(in_term: Term, at_pos: TermPos, with_term: Term, builders: Builders, 
+                        in_term_contexts: dict[tuple[Term, int], TermGenContext],
+                        with_term_contexts: dict[tuple[Term, int], TermGenContext],
+                        with_term_child_pos: list[TermPos],
+                        counts_cache: dict[Term, np.ndarray]) -> Optional[tuple[Term, dict[tuple[Term, int], TermGenContext]]]:
+    
+    at_pos_gen_context = in_term_contexts[(at_pos.term, at_pos.occur)]
+    with_pos_counts = get_counts(with_term, builders, counts_cache)
+    if not can_replace(builders, at_pos_gen_context, with_term, with_pos_counts):
+        return None, {}
+
+    for child_pos in reversed(with_term_child_pos):
+        child_pos_counts = get_counts(child_pos.term, builders, counts_cache)
+        if np.any(child_pos_counts > at_pos_gen_context.max_counts):
+            return None, {}
+
+    with_pos_child_contexts = [with_term_contexts[(child.term, child.occur)] for child in with_term_child_pos]
+    # for child in with_term_child_pos:
+    #     new_gen_context = with_term_contexts[(child.term, child.occur)].copy_with_context_mask(at_pos_gen_context.context_limits) 
+    #     with_pos_child_contexts.append(new_gen_context)
+    
+    # with_pos_child_contexts[-1].context_limits = at_pos_gen_context.context_limits
+    # with_pos_child_contexts[-1].disabled_mask = at_pos_gen_context.disabled_mask
+
+    new_child, new_gen_contexts = replace(in_term, (at_pos.term, at_pos.occur), 
+                                            partial(copy_contexts, with_term, from_contexts = with_pos_child_contexts,
+                                                    root_context = at_pos_gen_context, counts_cache = counts_cache),
+                                                builders, in_term_contexts)
+    if new_child is None:
+        return None, new_gen_contexts
+    
+    mutant_poss = get_positions(new_child)
+    for p in mutant_poss:
+        assert (p.term, p.occur) in new_gen_contexts
+    for p in with_term_child_pos:
+        assert (p.term, p.occur) in with_term_contexts
+    
+    return new_child, new_gen_contexts
+
 def one_point_rand_crossover(term1: Term, term2: Term,
                                 gen_contexts: dict[Term, dict[tuple[Term, int], TermGenContext]],
-                                gen_counts: dict[Term, np.ndarray],
+                                counts_cache: dict[Term, np.ndarray],
                                 pos_cache: dict[Term, list[TermPos]],
                                 builders: Builders,  
                                 rnd: np.random.RandomState = np.random,
                                 select_node_leaf_prob: Optional[float] = 0.1,
+                                exclude_values: bool = True,
                                 tree_max_depth = 17,
                                 num_children = 1):
 
@@ -1274,43 +1359,58 @@ def one_point_rand_crossover(term1: Term, term2: Term,
     else:
         positions1 = positions1[:-1] # remove root
         positions2 = positions2[:-1] # remove root
+
+    # if exclude_values:
+    #     positions1 = [pos for pos in positions1 if not isinstance(pos.term, Value)]
+    #     positions2 = [pos for pos in positions2 if not isinstance(pos.term, Value)]
     pos_ids1 = order_positions(positions1,
                                 select_node_leaf_prob = select_node_leaf_prob, 
-                                rnd = rnd)    
+                                rnd = rnd)
+    
+    if exclude_values:
+        pos_ids1 = [pos_id for pos_id in pos_ids1 if not isinstance(positions1[pos_id].term, Value)]
 
     pos_ids2 = order_positions(positions2,
                                 select_node_leaf_prob = select_node_leaf_prob, 
                                 rnd = rnd)
+    
+    if exclude_values:
+        pos_ids2 = [pos_id for pos_id in pos_ids2 if not isinstance(positions2[pos_id].term, Value)]
 
     children = []
 
     for pos_id1, pos_id2 in product(pos_ids1, pos_ids2):
         pos1: TermPos = positions1[pos_id1]
         pos2: TermPos = positions2[pos_id2]
-        pos1_gen_context = term1_gen_context[(pos1.term, pos1.occur)]
-        if can_replace(builders, pos1, pos1_gen_context, pos2, gen_counts[pos2.term], tree_max_depth):
+        if pos1.term == pos2.term:
+            continue
+        depth_sat1 = pos1.at_depth + pos2.depth <= tree_max_depth
+        depth_sat2 = pos2.at_depth + pos1.depth <= tree_max_depth
+        if not depth_sat1 and not depth_sat2:
+            continue
 
-            copy_fn = partial(copy_gen_contexts, pos2.term, new_gen_context = pos1_gen_context)
+        if depth_sat1:
 
-            new_child, new_gen_contexts = replace(term1, (pos1.term, pos1.occur), 
-                                                    copy_fn, builders, term1_gen_context)
+            new_child, new_gen_contexts = try_replace_pos(term1, pos1, pos2.term, builders, term1_gen_context, term2_gen_context,
+                                                             positions2[pos_id2 - pos2.size + 1:pos_id2 + 1], counts_cache)
+
             if new_child is not None:
                 children.append(new_child)
                 gen_contexts[new_child] = new_gen_contexts
                 if len(children) >= num_children:
                     break
-        pos2_gen_context = term2_gen_context[(pos2.term, pos2.occur)]
-        if can_replace(builders, pos2, pos2_gen_context, pos1, gen_counts[pos1.term], tree_max_depth):
 
-            copy_fn = partial(copy_gen_contexts, pos1.term, new_gen_context = pos2_gen_context)
-                        
-            new_child, new_gen_contexts = replace(term2, (pos2.term, pos2.occur), 
-                                            copy_fn, builders, term2_gen_context)
+
+        if depth_sat2:
+
+            new_child, new_gen_contexts = try_replace_pos(term2, pos2, pos1.term, builders, term2_gen_context, term1_gen_context,
+                                                             positions1[pos_id1 - pos1.size + 1:pos_id1 + 1], counts_cache)
+
             if new_child is not None:
                 children.append(new_child)
                 gen_contexts[new_child] = new_gen_contexts
                 if len(children) >= num_children:
-                    break
+                    break            
 
     if len(children) < num_children:
         left_children = [term1] * (num_children - len(children))
