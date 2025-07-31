@@ -13,7 +13,7 @@ from time import perf_counter
 import numpy as np
 import torch
 from spatial import InteractionIndex, RTreeIndex, SpatialIndex
-from term import Builder, Builders, Op, Term, Value, Variable, evaluate, \
+from term import Builder, Builders, Op, Term, Value, Variable, evaluate, get_counts, get_depth, \
                     get_fn_arity, get_positions, match_root, \
                     one_point_rand_crossover, one_point_rand_mutation, parse_term, \
                     ramped_half_and_half
@@ -192,6 +192,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 cache_terms: bool = False,
                 cache_evals: bool = False, # outputs and fitness
                 cache_inner_evals: bool = False,
+                cache_crossover: bool = False,
                 rtol = 1e-04, atol = 1e-03, # NOTE: these are for semantic/outputs comparison, not for fitness, see fit_0
                 rnd_seed: Optional[int] = None,
                 torch_rnd_seed: Optional[int] = None,
@@ -235,6 +236,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.cache_terms = cache_terms
         self.cache_evals = cache_evals
         self.cache_inner_evals = cache_inner_evals
+        self.cache_crossover = cache_crossover
         self.rtol = rtol
         self.atol = atol
         self.device = device
@@ -265,8 +267,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.term_fitness: dict[Term, torch.Tensor] = {}
         # self.term_counts: dict[Term, np.ndarray] = {}
         self.pos_cache = {}
-        self.gen_contexts = {}
+        self.pos_context_cache = {}
+        self.depth_cache = {}
         self.counts_cache = {}
+        self.crossover_cache = {} 
 
         self.best_term: Optional[Term] = None
         self.best_outputs: Optional[torch.Tensor] = None
@@ -305,8 +309,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.inner_semantics: dict[Term, dict[Term, torch.Tensor]] = {}
         self.term_fitness: dict[Term, torch.Tensor] = {}
         self.pos_cache = {}
-        self.gen_contexts = {}
+        self.pos_context_cache = {}
         self.counts_cache = {}
+        self.depth_cache = {}
+        self.crossover_cache = {}
 
         self.best_term: Optional[Term] = None
         self.best_outputs: Optional[torch.Tensor] = None
@@ -419,12 +425,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
             none_count = 0
             sz = size - len(self.vars)
             while len(self.syntax) < sz:
-                new_gen_contexts = {}
-                term = init_fn(self.builders, rnd=self.rnd, gen_contexts = new_gen_contexts)
+                term = init_fn(self.builders, rnd=self.rnd)
                 if term is None:
                     none_count += 1
-                else:
-                    self.gen_contexts[term] = new_gen_contexts
                 if none_count == size:
                     break 
             res = list(self.syntax.values())[:sz]
@@ -432,13 +435,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
         else:
             res = []
             for _ in range(size):
-                new_gen_contexts = {}
-                term = init_fn(self.builders, rnd=self.rnd,
-                                gen_contexts = new_gen_contexts)
+                term = init_fn(self.builders, rnd=self.rnd)
                 # print(str(term))
                 if term is not None:
                     res.append(term)
-                    self.gen_contexts[term] = new_gen_contexts
         return res 
     
     def eval(self, terms: list[Term], *, eval_fn: Callable = evaluate, **_) -> Optional[Term]:
@@ -497,12 +497,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 self.metrics.setdefault(fk, []).append(fv.item())
 
         if self.best_term is not None: # best term stats 
-            if self.best_term not in self.pos_cache:
-                self.pos_cache[self.best_term] = get_positions(self.best_term)
-            best_term_poss = self.pos_cache[self.best_term]
-            best_term_root_pos = best_term_poss[-1]
-            self.metrics.setdefault("best_term_depth", []).append(best_term_root_pos.depth)
-            self.metrics.setdefault("best_term_size", []).append(best_term_root_pos.size)
+            best_depth = get_depth(self.best_term, self.depth_cache)
+            best_counts = get_counts(self.best_term, self.builders, self.counts_cache)
+            best_size = best_counts.sum()
+            self.metrics.setdefault("best_term_depth", []).append(best_depth)
+            self.metrics.setdefault("best_term_size", []).append(best_size)
+            self.metrics["best_counts"] = best_counts.tolist()
 
         return outputs, fitness
     
@@ -542,15 +542,25 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if self.cache_term_props:
             pos_cache = self.pos_cache
             counts_cache = self.counts_cache
+            pos_context_cache = self.pos_context_cache
+            depth_cache = self.depth_cache
         else:
             pos_cache = {}
             counts_cache = {}
+            pos_context_cache = {}
+            depth_cache = {}
+
+        if self.cache_crossover:
+            crossover_cache = self.crossover_cache
+        else:
+            crossover_cache = {}
 
         for term, term_p in mutation_pos.items():
             mutated_terms = mutation_fn(term = term,
                                 builders = self.builders,
                                 pos_cache = pos_cache,
-                                gen_contexts = self.gen_contexts,
+                                pos_context_cache = pos_context_cache,
+                                counts_cache = counts_cache,
                                 rnd=self.rnd, num_children=len(term_p))
             for i, mterm in zip(term_p, mutated_terms):
                 mutated_parents[i] = mterm
@@ -567,14 +577,15 @@ class GPSolver(BaseEstimator, RegressorMixin):
             new_children = crossover_fn(term1 = parent1, term2 = parent2, 
                                 builders = self.builders,
                                 pos_cache = pos_cache,
-                                gen_contexts = self.gen_contexts,
+                                pos_context_cache = pos_context_cache,
                                 counts_cache = counts_cache,
+                                crossover_cache = crossover_cache,
+                                depth_cache = depth_cache,
                                 rnd = self.rnd, num_children=2 * len(pair_ids))
             for i, ii in enumerate(pair_ids):
                 children[2 * ii] = new_children[2 * i]
                 children[2 * ii + 1] = new_children[2 * i + 1]
 
-        self.gen_contexts = {ch:self.gen_contexts[ch] for ch in children }
         return children
     
     def _validate_term(self, term: Term) -> bool:
