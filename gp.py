@@ -14,7 +14,7 @@ import numpy as np
 import torch
 from spatial import InteractionIndex, RTreeIndex, SpatialIndex
 from term import Builder, Builders, Op, Term, Value, Variable, evaluate, get_counts, get_depth, \
-                    get_fn_arity, get_positions, match_root, \
+                    get_fn_arity, get_pos_constraints, get_positions, match_root, \
                     one_point_rand_crossover, one_point_rand_mutation, parse_term, \
                     ramped_half_and_half
 from sklearn.base import BaseEstimator, RegressorMixin
@@ -177,13 +177,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 forbid_patterns: list[str] = [],
                 # next is more optimized
                 inner_ops_max_counts: dict[str, dict[str, int]] = {},
-                disable_immediate_ops: dict[str, list[str]] = {},
+                immediate_arg_limits: dict[str, dict[str, int]] = {},
                 prohibit_ops_on_consts_only: bool = True,
-                commutative_ops: list[str] = [], # by all args
+                # commutative_ops: list[str] = [], # by all args
                 min_consts: int = 0,
                 max_consts: int = 5, # 0 to disable consts in terms
                 min_vars: int = 1,
                 max_vars: int = 10, # max number of free variables
+                max_ops: dict[str, int] = {},
                 max_gen: int = 100,
                 max_root_evals: int = 100_000, 
                 max_evals: int = 1_000_000,
@@ -206,6 +207,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.max_vars = max_vars
         self.min_consts = min_consts
         self.max_consts = max_consts
+        self.max_ops = max_ops
         self.forbid_patterns = forbid_patterns
         self.fpatterns = []
         if len(self.forbid_patterns) > 0:
@@ -243,8 +245,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.dtype = dtype
         self.prohibit_ops_on_consts_only = prohibit_ops_on_consts_only
         self.inner_ops_max_counts = inner_ops_max_counts
-        self.disable_immediate_ops = disable_immediate_ops
-        self.commutative_ops = set(commutative_ops)
+        self.immediate_arg_limits = immediate_arg_limits
+        # self.commutative_ops = set(commutative_ops)
 
         if rnd_seed is None:
             self.rnd = np.random
@@ -286,8 +288,11 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.op_builders = {}
         for op_id, op_fn in self.ops.items():
             op_arity = get_fn_arity(op_fn)
-            op_builder = Builder(op_id, self._alloc_op_builder(op_id), op_arity,
-                                    commutative = op_id in self.commutative_ops)
+            max_count = None 
+            if op_id in self.max_ops:
+                max_count = self.max_ops[op_id]
+            op_builder = Builder(op_id, self._alloc_op_builder(op_id), op_arity, max_count = max_count)
+                                    # commutative = op_id in self.commutative_ops)
             if op_id in self.ops_counts:
                 op_min_count, op_max_count = self.ops_counts[op_id]
                 op_builder.min_count = op_min_count
@@ -351,22 +356,23 @@ class GPSolver(BaseEstimator, RegressorMixin):
         
         self.builders = Builders(list(builders.values()), get_term_builder)
 
-        disabled = {}
+        arg_limits = {}
         if self.prohibit_ops_on_consts_only:
             for b in self.op_builders.values():
-                disabled[b] = [[] for _ in range(b.arity())]
-                disabled[b][0].append(builders[Value])
+                arg_limits[b] = {builders[Value]: b.arity() - 1}
 
-        for op_id, op_ids in self.disable_immediate_ops.items():
+        for op_id, op_dict in self.immediate_arg_limits.items():
             if op_id not in self.op_builders:
-                continue
+                raise ValueError(f"Operator {op_id} not found in op_builders")
             b = self.op_builders[op_id]
-            if b not in disabled:
-                disabled[b] = [[] for _ in range(b.arity())]
-            for arg_i in range(b.arity()):
-                disabled[b][arg_i].extend(self.op_builders[inner_op_id] for inner_op_id in op_ids)
+            if b not in arg_limits:
+                arg_limits[b] = {}
+            for inner_op_id, limit in op_dict.items():
+                if inner_op_id not in self.op_builders:
+                    raise ValueError(f"Inner operator {inner_op_id} not found in op_builders")
+                arg_limits[b][self.op_builders[inner_op_id]] = limit
 
-        self.builders.disable_arg_builders(disabled)
+        self.builders.limit_args(arg_limits)
 
         context_limits = {}
         for op_id, op_limits in self.inner_ops_max_counts.items():
@@ -499,7 +505,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if self.best_term is not None: # best term stats 
             best_depth = get_depth(self.best_term, self.depth_cache)
             best_counts = get_counts(self.best_term, self.builders, self.counts_cache)
-            best_size = best_counts.sum()
+            best_size = best_counts.sum().item()
             self.metrics.setdefault("best_term_depth", []).append(best_depth)
             self.metrics.setdefault("best_term_size", []).append(best_size)
             self.metrics["best_counts"] = best_counts.tolist()
@@ -515,6 +521,32 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 crossover_fn: Callable = one_point_rand_crossover,
                 mutation_rate = 0.1, crossover_rate = 0.9, **_) -> list[Term]:
         ''' Pipeline that mutates parents and then applies crossover on pairs. One-point operations '''
+
+        # caches 
+
+        if self.cache_term_props:
+            pos_cache = self.pos_cache
+            counts_cache = self.counts_cache
+            pos_context_cache = self.pos_context_cache
+            depth_cache = self.depth_cache
+        else:
+            pos_cache = {}
+            counts_cache = {}
+            pos_context_cache = {}
+            depth_cache = {}
+
+        if self.cache_crossover:
+            crossover_cache = self.crossover_cache
+        else:
+            crossover_cache = {}
+
+        # validation 1
+        # for term in population:
+        #     poss = get_positions(term, {})
+        #     for pos in poss:
+        #         get_pos_constraints(pos, self.builders, {}, {})
+        #     pass        
+
 
         selected_ids = selection_fn(size, population = population,
                                     fitness=fitness, outputs=outputs,
@@ -539,22 +571,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         mutated_parents = list(parents)
 
-        if self.cache_term_props:
-            pos_cache = self.pos_cache
-            counts_cache = self.counts_cache
-            pos_context_cache = self.pos_context_cache
-            depth_cache = self.depth_cache
-        else:
-            pos_cache = {}
-            counts_cache = {}
-            pos_context_cache = {}
-            depth_cache = {}
-
-        if self.cache_crossover:
-            crossover_cache = self.crossover_cache
-        else:
-            crossover_cache = {}
-
         for term, term_p in mutation_pos.items():
             mutated_terms = mutation_fn(term = term,
                                 builders = self.builders,
@@ -566,6 +582,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 mutated_parents[i] = mterm
 
         children = list(mutated_parents)
+
+        # validation 2
+        # for term in children:
+        #     poss = get_positions(term, {})
+        #     for pos in poss:
+        #         get_pos_constraints(pos, self.builders, {}, {})
+        # pass        
+
         crossover_pairs = {}
         for i, should_crossover in enumerate(crossover_mask_list):
             if should_crossover:
@@ -585,6 +609,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
             for i, ii in enumerate(pair_ids):
                 children[2 * ii] = new_children[2 * i]
                 children[2 * ii + 1] = new_children[2 * i + 1]
+
+        # validation 3
+        # for term in children:
+        #     poss = get_positions(term, {})
+        #     for pos in poss:
+        #         get_pos_constraints(pos, self.builders, {}, {})
+        # pass        
 
         return children
     
@@ -806,8 +837,11 @@ if __name__ == "__main__":
                         rnd_seed = rnd_seed, torch_rnd_seed = rnd_seed,
                         cache_terms=True, cache_term_props=True,
                         cache_evals = True, cache_inner_evals=True,
+                        cache_crossover=True,
                         init_args = dict(init_from_cache = False),
-                        commutative_ops=["add", "mul"],
+                        max_consts=5,
+                        max_ops = {"inv": 5, "neg": 5},
+                        # commutative_ops=["add", "mul"],
                         forbid_patterns = [
                             # "(inv (inv .))",
                             # "(neg (neg .))",
@@ -823,10 +857,11 @@ if __name__ == "__main__":
                             "exp": {"exp": 0},
                             "log": {"log": 0},                        
                             "pow": {"pow": 1},
+                            "inv": {"inv": 1}
                         },
-                        disable_immediate_ops={
-                            "inv": ["inv"],
-                            "neg": ["neg"]
+                        immediate_arg_limits={
+                            "inv": {"inv": 0},
+                            "neg": {"neg": 0}
                         }
                         # breed_args= dict(
                         #     selection_fn = lexicase_selection,

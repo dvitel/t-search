@@ -718,6 +718,8 @@ class Builders:
             builder.context_limits = self.unlimited
             builder.arg_limits = self.unlimited
 
+        self.zero = np.zeros((len(self.builders),), dtype=np.int8)
+
     def __len__(self):
         return len(self.builders)
 
@@ -786,6 +788,7 @@ class TermPos:
     # depth: int = 0
     # size: int = 0
     parent: Optional['TermPos'] = None
+    sibling_count: np.ndarray | None = None
 
 global_gen_id = 0 # for debugging
 
@@ -793,7 +796,8 @@ def gen_term(builders: Builders,
             max_depth = 5, leaf_proba: float | None = 0.1,
             rnd: np.random.RandomState = np.random, buf_n = 100, inf = 100,
             start_context: TermGenContext | None = None,
-            occurs: dict[Term, int] | None = None
+            occurs: dict[Term, int] | None = None,
+            arg_counts: np.ndarray | None = None,
          ) -> Optional[Term]:
     ''' Arities should be unique and provided in sorted order.
         Counts should correspond to arities 
@@ -976,7 +980,8 @@ def gen_term(builders: Builders,
     cur_occurs = {} if occurs is None else (occurs.copy())
 
     counts = np.zeros(len(builders), dtype=np.int8)
-    arg_counts = counts.copy()
+    if arg_counts is None:
+        arg_counts = counts.copy()
 
     new_term = _iter_rec(start_context, 0, cur_occurs, counts, arg_counts)
 
@@ -997,13 +1002,15 @@ def grow(builders: Builders,
          rnd: np.random.RandomState = np.random,
          start_context: TermGenContext | None = None,
          occurs: dict[Term, int] | None = None,
+         arg_counts: np.ndarray | None = None,
          ) -> Optional[Term]:
     ''' Grow a tree with a given depth '''
 
     # arity_args = get_arity_args(builders, constraints, default_counts = default_counts)
     term = gen_term(builders, max_depth = grow_depth, 
                     leaf_proba = grow_leaf_prob, rnd = rnd,
-                    start_context = start_context, occurs = occurs)
+                    start_context = start_context, occurs = occurs,
+                    arg_counts = arg_counts)
     return term
 
 def ramped_half_and_half(builders: Builders,
@@ -1012,12 +1019,13 @@ def ramped_half_and_half(builders: Builders,
                         rnd: np.random.RandomState = np.random,
                         start_context: TermGenContext | None = None,
                         occurs: dict[Term, int] | None = None,
+                        arg_counts: np.ndarray | None = None,
                         ) -> Optional[Term]:
     ''' Generate a population of half full and half grow trees '''
     depth = rnd.randint(rhh_min_depth, rhh_max_depth+1)
     leaf_prob = grow_leaf_prob if rnd.rand() < rhh_grow_prob else 0
     term = grow(builders, grow_depth = depth, grow_leaf_prob = leaf_prob, rnd = rnd,
-                    start_context = start_context, occurs = occurs)
+                    start_context = start_context, occurs = occurs, arg_counts = arg_counts)
     return term
 
 # IDEA: dropout in GP, frozen tree positions which cannot be mutated or crossovered - for later
@@ -1168,14 +1176,23 @@ def get_pos_constraints(pos: TermPos, builders: Builders, counts_cache: dict[Ter
         parent = chain_to_root[start_i]
         _context = pos_context_cache[(parent.term, parent.occur)]
 
-    for parent_i in range(start_i, 0, -1):
+    for parent_i in range(start_i, -1, -1):
         parent = chain_to_root[parent_i]
         parent_context = _context
 
-        args_counts = get_immediate_counts(parent.term, builders)
-        assert parent_context.sat_args(args_counts)
+        pos_context_cache[(parent.term, parent.occur)] = parent_context
 
         parent_builder = builders.get_term_builder(parent.term)
+
+        # parent_counts = get_counts(parent.term, builders, counts_cache)
+        # parent_one_hot = np.zeros(len(builders), dtype=np.int8)
+        # parent_one_hot[parent_builder.id] = 1
+
+        # assert parent_context.sat_args(parent_one_hot)
+        # assert parent_context.sat(parent_counts)
+
+        if parent_i == 0: 
+            break
         
         arg = chain_to_root[parent_i - 1]
         arg_context = parent_context.copy()
@@ -1187,25 +1204,25 @@ def get_pos_constraints(pos: TermPos, builders: Builders, counts_cache: dict[Ter
         if parent.term.arity() == 1:
             arg_context.min_counts[arg_context.min_counts < 0] = 0
             pos_context_cache[(arg.term, arg.occur)] = arg_context
+            _context = arg_context
             continue
 
-        child_counts = [ get_counts(child, builders, counts_cache) for child in enumerate(parent.term.get_args()) ]
+        child_counts = [ get_counts(child, builders, counts_cache) for child in parent.term.get_args() ]        
         other_counts = sum(cnts for child_i, cnts in enumerate(child_counts) if child_i != arg.pos)
 
         arg_context.min_counts -= other_counts
         arg_context.min_counts[arg_context.min_counts < 0] = 0
         arg_context.max_counts -= other_counts
         arg_context.context_limits -= other_counts
-        assert arg_context.sat(child_counts[arg.pos])
 
-        pos_context_cache[(arg.term, arg.occur)] = arg_context
+        # args_counts = get_immediate_counts(parent.term, builders)
+        # assert arg_context.sat_args(args_counts)
+
+        # assert arg_context.sat(child_counts[arg.pos])        
 
         _context = arg_context
 
-    res_context = pos_context_cache[(pos.term, pos.occur)]
-
-    args_counts = get_immediate_counts(pos.term, builders)
-    assert res_context.sat_args(args_counts)    
+    res_context = pos_context_cache[(pos.term, pos.occur)]  
 
     return res_context
 
@@ -1227,13 +1244,25 @@ def validate_term(root: Term, *, builders: Builders, counts_cache: dict[Term, np
     is_valid = True 
 
     current_context_stack = [[start_context]]
+    siblings_stack = [[root]]
 
     def _validate_enter(term: Term, term_i: int, *_):
         nonlocal is_valid        
         cur_occur = occurs.setdefault(term, 0)
         cur_context = current_context_stack[-1][term_i]
-        pos_context_cache[(term, cur_occur)] = cur_context
         
+        siblings = siblings_stack[-1]
+        siblings_count = np.zeros((len(builders), ), dtype=np.int8)
+        for arg in siblings:
+            builder = builders.get_term_builder(arg)
+            siblings_count[builder.id] += 1
+        
+        if not cur_context.sat_args(siblings_count):
+            is_valid = False
+            return TRAVERSAL_EXIT
+        
+        pos_context_cache[(term, cur_occur)] = cur_context
+
         counts = get_counts(term, builders, counts_cache)
         if not cur_context.sat(counts):
             is_valid = False
@@ -1242,11 +1271,6 @@ def validate_term(root: Term, *, builders: Builders, counts_cache: dict[Term, np
         if term.arity() == 0: # leaf
             occurs[term] += 1
             return TRAVERSAL_EXIT_NODE
-
-        args_counts = get_immediate_counts(term, builders)
-        if not cur_context.sat_args(args_counts):
-            is_valid = False
-            return TRAVERSAL_EXIT
         
         arg_context = cur_context.copy()
 
@@ -1256,12 +1280,15 @@ def validate_term(root: Term, *, builders: Builders, counts_cache: dict[Term, np
         arg_context.context_limits[term_builder.id] -= 1
         arg_context.context_limits = np.minimum(arg_context.context_limits, term_builder.context_limits)
         arg_context.arg_limits = term_builder.arg_limits
+
+        siblings_stack.append(term.get_args())
+
         if term.arity() == 1:
             arg_context.min_counts[arg_context.min_counts < 0] = 0
             current_context_stack.append([arg_context])
             return 
                     
-        child_counts = [ get_counts(child, builders, counts_cache) for child in enumerate(term.get_args()) ]
+        child_counts = [ get_counts(child, builders, counts_cache) for child in term.get_args() ]
         new_children = []
         for i in range(term.arity()):
             child_context = arg_context if arg_context == (term.arity() - 1) else arg_context.copy()
@@ -1281,6 +1308,7 @@ def validate_term(root: Term, *, builders: Builders, counts_cache: dict[Term, np
 
     def _validate_exit(term: Term, *_):        
         current_context_stack.pop() 
+        siblings_stack.pop()
         occurs[term] += 1
 
     postorder_traversal(root, _validate_enter, _validate_exit)
@@ -1290,6 +1318,18 @@ def validate_term(root: Term, *, builders: Builders, counts_cache: dict[Term, np
             context_cache.update(pos_context_cache)
         return root
     return None
+
+def get_pos_sibling_counts(position: TermPos, builders: Builders) -> np.ndarray:
+    if position.sibling_count is None:        
+        if position.parent is None or position.parent.term.arity() == 1:
+            arg_counts = builders.zero 
+        else:
+            arg_counts = get_immediate_counts(position.parent.term, builders)
+            position_builder = builders.get_term_builder(position.term)
+            arg_counts[position_builder.id] -= 1
+        position.sibling_count = arg_counts
+    return position.sibling_count
+
 
 def one_point_rand_mutation(term: Term,
                             pos_cache: dict[Term, list[TermPos]],
@@ -1326,10 +1366,15 @@ def one_point_rand_mutation(term: Term,
             prev_len = len(mutants)
         position: TermPos = positions[pos_id]
         start_context = get_pos_constraints(position, builders, counts_cache, pos_contexts)
+        arg_counts = get_pos_sibling_counts(position, builders)
         mutated_term = replace(term, (position.term, position.occur), 
                                             lambda **kwargs: grow(grow_depth = min(max_grow_depth, tree_max_depth - position.at_depth), rnd = rnd,
-                                                                  start_context = start_context, **kwargs), builders)
+                                                                  start_context = start_context, arg_counts = arg_counts, **kwargs), builders)
         if mutated_term is not None:            
+            # val_poss = get_positions(mutated_term, {})
+            # for val_pos in val_poss:
+            #     get_pos_constraints(val_pos, builders, {}, {})
+            # pass        
             mutants.append(mutated_term)
     
     if len(mutants) < num_children:
@@ -1446,9 +1491,14 @@ def one_point_rand_crossover(term1: Term, term2: Term, *,
 
             pos1_context = get_pos_constraints(pos1, builders, counts_cache, term1_pos_contexts)
 
-            new_child, new_gen_contexts = try_replace_pos(term1, pos1, pos2.term, builders, pos1_context, counts_cache)
+            new_child, new_gen_contexts = try_replace_pos(term1, pos1, pos2.term, pos1_context, builders, counts_cache)
+
 
             if new_child is not None:
+                # val_poss = get_positions(new_child, {})
+                # for val_pos in val_poss:
+                #     get_pos_constraints(val_pos, builders, {}, {})
+                # pass
                 children.append(new_child)
                 pos_context_cache[new_child] = new_gen_contexts
                 crossover_cache[(term1, pos1.term, pos1.occur, pos2.term)] = new_child
@@ -1461,7 +1511,7 @@ def one_point_rand_crossover(term1: Term, term2: Term, *,
 
             pos2_context = get_pos_constraints(pos2, builders, counts_cache, term2_pos_contexts)
 
-            new_child, new_gen_contexts = try_replace_pos(term2, pos2, pos1.term, builders, pos2_context, counts_cache)
+            new_child, new_gen_contexts = try_replace_pos(term2, pos2, pos1.term, pos2_context, builders, counts_cache)
 
             if new_child is not None:
                 children.append(new_child)
