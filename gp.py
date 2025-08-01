@@ -458,6 +458,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if self.cache_evals: # also means with inner semantics of terms 
             new_term_ids = [tid for tid, term in enumerate(terms) if term not in self.term_fitness]
 
+            best_found = self.has_solution
+
             if len(new_term_ids) > 0:
                 
                 all_outputs = [output_list[tid] for tid in new_term_ids]
