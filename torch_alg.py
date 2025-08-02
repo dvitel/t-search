@@ -10,13 +10,13 @@ from term import Term, Value, Variable, collect_terms, evaluate, parse_term
 alg_ops = {
     "add": lambda a, b: a + b,
     "mul": lambda a, b: a * b,
-    # "pow": lambda a, b: a ** b,
+    "pow": lambda a, b: a ** b,
     "neg": lambda a: -a,
     "inv": lambda a: 1 / a,
-    # "exp": lambda a: torch.exp(a),
-    # "log": lambda a: torch.log(a),
-    # "sin": lambda a: torch.sin(a),
-    # "cos": lambda a: torch.cos(a),
+    "exp": lambda a: torch.exp(a),
+    "log": lambda a: torch.log(a),
+    "sin": lambda a: torch.sin(a),
+    "cos": lambda a: torch.cos(a),
 }
 
 def lexsort(tensor: torch.Tensor) -> torch.Tensor:

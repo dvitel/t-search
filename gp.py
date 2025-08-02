@@ -427,11 +427,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
     def init(self, size: int, *, init_fn: Callable = ramped_half_and_half, init_from_cache = False, **_) -> list[Term]:
         ''' Initialize each term in population 0 with self.init_fn '''
+        init_metrics = self.metrics.setdefault("init_metrics", {})
         if self.cache_terms and init_from_cache:
             none_count = 0
             sz = size - len(self.vars)
             while len(self.syntax) < sz:
-                term = init_fn(self.builders, rnd=self.rnd)
+                term = init_fn(self.builders, rnd=self.rnd, gen_metrics = init_metrics)
                 if term is None:
                     none_count += 1
                 if none_count == size:
@@ -441,7 +442,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         else:
             res = []
             for _ in range(size):
-                term = init_fn(self.builders, rnd=self.rnd)
+                term = init_fn(self.builders, rnd=self.rnd, gen_metrics = init_metrics)
                 # print(str(term))
                 if term is not None:
                     res.append(term)
@@ -549,10 +550,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
         #         get_pos_constraints(pos, self.builders, {}, {})
         #     pass        
 
-
+        selection_start = perf_counter()
         selected_ids = selection_fn(size, population = population,
                                     fitness=fitness, outputs=outputs,
                                     target = self.target, gen=self.torch_gen)
+        selection_end = perf_counter()
+        self.metrics.setdefault("selection_time", []).append(round((selection_end - selection_start) * 1000))
 
         mutation_mask = torch.rand(size, device=self.device,
                                     generator=self.torch_gen) < mutation_rate
@@ -573,15 +576,22 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         mutated_parents = list(parents)
 
+        mutation_metrics = {}
+        mutation_start = perf_counter()
         for term, term_p in mutation_pos.items():
             mutated_terms = mutation_fn(term = term,
                                 builders = self.builders,
                                 pos_cache = pos_cache,
                                 pos_context_cache = pos_context_cache,
                                 counts_cache = counts_cache,
-                                rnd=self.rnd, num_children=len(term_p))
+                                rnd=self.rnd, num_children=len(term_p),
+                                mutation_metrics = mutation_metrics)
             for i, mterm in zip(term_p, mutated_terms):
                 mutated_parents[i] = mterm
+        mutation_end = perf_counter()
+        mutation_time = round((mutation_end - mutation_start) * 1000)
+        self.metrics.setdefault("mutation_time", []).append(mutation_time)
+        mutation_metrics["time"] = mutation_time
 
         children = list(mutated_parents)
 
@@ -599,6 +609,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 parent2 = mutated_parents[2 * i + 1]
                 crossover_pairs.setdefault((parent1, parent2), []).append(i)
 
+        crossover_metrics = {}
+        crossover_start = perf_counter()
         for (parent1, parent2), pair_ids in crossover_pairs.items():
             new_children = crossover_fn(term1 = parent1, term2 = parent2, 
                                 builders = self.builders,
@@ -607,10 +619,19 @@ class GPSolver(BaseEstimator, RegressorMixin):
                                 counts_cache = counts_cache,
                                 crossover_cache = crossover_cache,
                                 depth_cache = depth_cache,
-                                rnd = self.rnd, num_children=2 * len(pair_ids))
+                                rnd = self.rnd, num_children=2 * len(pair_ids),
+                                crossover_metrics = crossover_metrics)
             for i, ii in enumerate(pair_ids):
                 children[2 * ii] = new_children[2 * i]
                 children[2 * ii + 1] = new_children[2 * i + 1]
+        crossover_end = perf_counter()
+        crossover_time = round((crossover_end - crossover_start) * 1000)
+        self.metrics.setdefault("crossover_time", []).append(crossover_time)
+        crossover_metrics["time"] = crossover_time
+
+        self.metrics.setdefault(f"mutation", []).append(mutation_metrics)
+
+        self.metrics.setdefault(f"crossover", []).append(crossover_metrics)
 
         # validation 3
         # for term in children:
