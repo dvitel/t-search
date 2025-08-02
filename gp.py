@@ -152,7 +152,7 @@ def timed(fn: Callable, key: str, metrics: dict) -> Callable:
         start_time = perf_counter()
         result = fn(*args, **kwargs)
         elapsed_time = round((perf_counter() - start_time) * 1000)
-        metrics.setdefault(key, []).append(elapsed_time)
+        metrics[key] = elapsed_time
         return result
     return wrapper
 
@@ -427,12 +427,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
     def init(self, size: int, *, init_fn: Callable = ramped_half_and_half, init_from_cache = False, **_) -> list[Term]:
         ''' Initialize each term in population 0 with self.init_fn '''
-        init_metrics = self.metrics.setdefault("init_metrics", {})
+        self.init_metrics = self.metrics.setdefault("init", {})
+        start_time = perf_counter()
         if self.cache_terms and init_from_cache:
             none_count = 0
             sz = size - len(self.vars)
             while len(self.syntax) < sz:
-                term = init_fn(self.builders, rnd=self.rnd, gen_metrics = init_metrics)
+                term = init_fn(self.builders, rnd=self.rnd, gen_metrics = self.init_metrics)
                 if term is None:
                     none_count += 1
                 if none_count == size:
@@ -442,13 +443,15 @@ class GPSolver(BaseEstimator, RegressorMixin):
         else:
             res = []
             for _ in range(size):
-                term = init_fn(self.builders, rnd=self.rnd, gen_metrics = init_metrics)
+                term = init_fn(self.builders, rnd=self.rnd, gen_metrics = self.init_metrics)
                 # print(str(term))
                 if term is not None:
                     res.append(term)
+        end_time = perf_counter()
+        self.init_metrics["time"] = round((end_time - start_time) * 1000)
         return res 
     
-    def eval(self, terms: list[Term], *, eval_fn: Callable = evaluate, **_) -> Optional[Term]:
+    def eval(self, terms: list[Term], metrics: dict, *, eval_fn: Callable = evaluate, **_) -> Optional[Term]:
         output_list = []
         for term in terms:
             term_output = eval_fn(term, self.ops, self._get_binding, self._set_binding) 
@@ -503,22 +506,22 @@ class GPSolver(BaseEstimator, RegressorMixin):
             best_fitness = self.best_fitness.unsqueeze(-1) if len(self.best_fitness.shape) == 0 else self.best_fitness
             for fi, fv in enumerate(best_fitness):
                 fk = f"fitness_{fi}"
-                self.metrics.setdefault(fk, []).append(fv.item())
+                metrics.setdefault(fk, []).append(fv.item())
 
         if self.best_term is not None: # best term stats 
             best_depth = get_depth(self.best_term, self.depth_cache)
             best_counts = get_counts(self.best_term, self.builders, self.counts_cache)
             best_size = best_counts.sum().item()
-            self.metrics.setdefault("best_term_depth", []).append(best_depth)
-            self.metrics.setdefault("best_term_size", []).append(best_size)
-            self.metrics["best_counts"] = best_counts.tolist()
+            metrics.setdefault("best_term_depth", []).append(best_depth)
+            metrics.setdefault("best_term_size", []).append(best_size)
+            metrics["best_counts"] = best_counts.tolist()
 
         return outputs, fitness
     
     def breed(self, population: list[Term], 
                 outputs: torch.Tensor | Sequence[torch.Tensor], 
                 fitness: torch.Tensor | Sequence[torch.Tensor], 
-                size: int, *,
+                size: int, metrics: dict, *,
                 selection_fn: Callable[[list[Term], int], torch.Tensor] = tournament_selection, 
                 mutation_fn: Callable = one_point_rand_mutation, 
                 crossover_fn: Callable = one_point_rand_crossover,
@@ -555,7 +558,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                                     fitness=fitness, outputs=outputs,
                                     target = self.target, gen=self.torch_gen)
         selection_end = perf_counter()
-        self.metrics.setdefault("selection_time", []).append(round((selection_end - selection_start) * 1000))
+        metrics["selection_time"] = round((selection_end - selection_start) * 1000)
 
         mutation_mask = torch.rand(size, device=self.device,
                                     generator=self.torch_gen) < mutation_rate
@@ -590,8 +593,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 mutated_parents[i] = mterm
         mutation_end = perf_counter()
         mutation_time = round((mutation_end - mutation_start) * 1000)
-        self.metrics.setdefault("mutation_time", []).append(mutation_time)
-        mutation_metrics["time"] = mutation_time
+        metrics["mutation_time"] = mutation_time
+        for key, value in mutation_metrics.items():
+            metrics[f"mutation_{key}"] = value
 
         children = list(mutated_parents)
 
@@ -626,12 +630,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 children[2 * ii + 1] = new_children[2 * i + 1]
         crossover_end = perf_counter()
         crossover_time = round((crossover_end - crossover_start) * 1000)
-        self.metrics.setdefault("crossover_time", []).append(crossover_time)
-        crossover_metrics["time"] = crossover_time
-
-        self.metrics.setdefault(f"mutation", []).append(mutation_metrics)
-
-        self.metrics.setdefault(f"crossover", []).append(crossover_metrics)
+        metrics["crossover_time"] = crossover_time
+        for key, value in crossover_metrics.items():
+            metrics[f"crossover_{key}"] = value
 
         # validation 3
         # for term in children:
@@ -712,15 +713,22 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if self.cache_inner_evals and (term != root):
             self.inner_semantics.setdefault(root, {})[term] = value 
 
+    def _before_gen(self): 
+        self.gen_metrics = {}
+
+    def _after_gen(self):
+        self.metrics.setdefault("gens", []).append(self.gen_metrics)
+
     def _fit_inner(self, init_fn: Callable, eval_fn: Callable, breed_fn: Callable):   
         population = init_fn(self.pop_size)
-        while self.gen < self.max_gen and self.evals < self.max_evals and self.root_evals < self.max_root_evals:
-            outputs, fitness = eval_fn(population)
-            if self.has_solution:                    
-                break
-            population = breed_fn(population, outputs, fitness, self.pop_size) 
+        outputs, fitness = timed(eval_fn, "eval_time", self.init_metrics)(population, self.init_metrics)
+        while not self.has_solution and self.gen < self.max_gen and self.evals < self.max_evals and self.root_evals < self.max_root_evals:
+            self._before_gen()
+            population = timed(breed_fn, "breed_time", self.gen_metrics)(population, outputs, fitness, self.pop_size, self.gen_metrics) 
             del outputs, fitness 
+            outputs, fitness = timed(eval_fn, "eval_time", self.gen_metrics)(population, self.gen_metrics)
             self.gen += 1
+            self._after_gen()
 
     def _add_final_metrics(self):
         self.metrics['gen'] = self.gen
@@ -765,9 +773,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self._reset_state(free_vars=X, target=y)
         if self.check_trivial():
             return self
-        init_fn = timed(partial(self.init, **self.init_args), 'init_time', self.metrics)
-        eval_fn = timed(partial(self.eval, eval_fn = self.eval_fn), 'eval_time', self.metrics)
-        breed_fn = timed(partial(self.breed, **self.breed_args), 'breed_time', self.metrics)
+        init_fn = partial(self.init, **self.init_args)
+        eval_fn = partial(self.eval, eval_fn = self.eval_fn)
+        breed_fn = partial(self.breed, **self.breed_args)
         try:
             self._fit_inner(init_fn, eval_fn, breed_fn)
         except EvSearchTermination as e:

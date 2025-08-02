@@ -1316,7 +1316,27 @@ def get_pos_constraints(pos: TermPos, builders: Builders, counts_cache: dict[Ter
 
     return res_context
 
-def validate_term(root: Term, *, builders: Builders, counts_cache: dict[Term, np.ndarray],                        
+def validate_root(root: Term, *, builders: Builders, counts_cache: dict[Term, np.ndarray],                        
+                        root_context: TermGenContext | None = None) -> Optional[Term]:
+    
+    if root_context is None:
+        root_context = builders.default_gen_context
+                
+    if root_context.arg_limits is not None:
+        child_count = builders.zero.copy()
+        builder = builders.get_term_builder(root)
+        child_count[builder.id] += 1
+        
+        if np.any(child_count > root_context.arg_limits):
+            return None
+        
+    counts = get_counts(root, builders, counts_cache)
+    if np.any(counts > root_context.max_counts) or np.any(counts < root_context.min_counts):
+        return None
+
+    return root
+
+def validate_term_tree(root: Term, *, builders: Builders, counts_cache: dict[Term, np.ndarray],                        
                         occurs: dict[Term, int] | None = None,
                         context_cache: dict[tuple[Term, int], TermGenContext] | None = None,
                         start_context: TermGenContext | None = None) -> Optional[Term]:
@@ -1340,8 +1360,7 @@ def validate_term(root: Term, *, builders: Builders, counts_cache: dict[Term, np
         nonlocal is_valid        
         cur_occur = occurs.setdefault(term, 0)
         cur_context = current_context_stack[-1][term_i]
-        
-        
+                
         if cur_context.arg_limits is not None:
             children = child_stack[-1]
             child_count = builders.zero.copy()
@@ -1353,12 +1372,13 @@ def validate_term(root: Term, *, builders: Builders, counts_cache: dict[Term, np
                 is_valid = False
                 return TRAVERSAL_EXIT
         
-        pos_context_cache[(term, cur_occur)] = cur_context
 
         counts = get_counts(term, builders, counts_cache)
         if np.any(counts > cur_context.max_counts) or np.any(counts < cur_context.min_counts):
             is_valid = False
             return TRAVERSAL_EXIT
+        
+        pos_context_cache[(term, cur_occur)] = cur_context
 
         if term.arity() == 0: # leaf
             occurs[term] += 1
@@ -1549,12 +1569,16 @@ def try_replace_pos(in_term: Term, at_pos: TermPos, with_term: Term,
                         pos_gen_context: TermGenContext, builders: Builders, 
                         counts_cache: dict[Term, np.ndarray]) -> Optional[Term]:
     
+    valid_with_term = validate_root(with_term, builders = builders, root_context = pos_gen_context, counts_cache = counts_cache)
+    if valid_with_term is None:
+        return None, {}
+    
     new_gen_contexts = {}
-    new_child = replace(in_term, (at_pos.term, at_pos.occur), 
-                        lambda *,occurs,**_: validate_term(with_term, builders = builders,
-                                                    context_cache = new_gen_contexts, start_context = pos_gen_context, 
-                                                    counts_cache = counts_cache, occurs = occurs.copy()),
-                                                builders)
+    def _repl(occurs, **_):
+        cur_occur = occurs.get(valid_with_term, 0)
+        new_gen_contexts[(valid_with_term, cur_occur)] = pos_gen_context
+        return valid_with_term
+    new_child = replace(in_term, (at_pos.term, at_pos.occur), _repl, builders)
     
     return new_child, new_gen_contexts
 
