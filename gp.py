@@ -188,12 +188,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 max_gen: int = 100,
                 max_root_evals: int = 100_000, 
                 max_evals: int = 1_000_000,
-                pop_size: int = 1000,
+                pop_size: int = 1000, elitism: int = 0,
                 cache_term_props: bool = False,
                 cache_terms: bool = False,
                 cache_evals: bool = False, # outputs and fitness
                 cache_inner_evals: bool = False,
+                replace_with_best_inner: bool = False,
                 cache_crossover: bool = False,
+                deduplicate_terms: bool = False,
                 rtol = 1e-04, atol = 1e-03, # NOTE: these are for semantic/outputs comparison, not for fitness, see fit_0
                 rnd_seed: Optional[int] = None,
                 torch_rnd_seed: Optional[int] = None,
@@ -234,10 +236,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.max_root_evals = max_root_evals
         self.max_evals = max_evals
         self.pop_size = pop_size
+        self.elitism = elitism
+        assert self.elitism < self.pop_size, "Elitism should be less than population size"
         self.cache_term_props = cache_term_props
         self.cache_terms = cache_terms
         self.cache_evals = cache_evals
         self.cache_inner_evals = cache_inner_evals
+        self.replace_with_best_inner = replace_with_best_inner
+        self.deduplicate_terms = deduplicate_terms
         self.cache_crossover = cache_crossover
         self.rtol = rtol
         self.atol = atol
@@ -451,7 +457,11 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.init_metrics["time"] = round((end_time - start_time) * 1000)
         return res 
     
-    def eval(self, terms: list[Term], metrics: dict, *, eval_fn: Callable = evaluate, **_) -> Optional[Term]:
+    def eval(self, terms: list[Term], metrics: dict, *, eval_fn: Callable = evaluate, **_) -> Optional[Term]:        
+
+        if self.deduplicate_terms:
+            terms = list(set(terms))
+
         output_list = []
         for term in terms:
             term_output = eval_fn(term, self.ops, self._get_binding, self._set_binding) 
@@ -460,6 +470,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # assert len(terms) > 0, "No terms to update fitness for"
 
         if self.cache_evals: # also means with inner semantics of terms 
+            new_terms = terms
             new_term_ids = [tid for tid, term in enumerate(terms) if term not in self.term_fitness]
 
             best_found = self.has_solution
@@ -472,7 +483,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
                     for inner_term, inner_outputs in self.inner_semantics.get(terms[tid], {}).items():
                         all_terms.append(inner_term)
                         all_outputs.append(inner_outputs)
-                self.inner_semantics.clear()
 
                 predictions = stack_rows(all_outputs)
                 new_fitness: torch.Tensor = self.fitness_fn(predictions, self.target)
@@ -484,12 +494,30 @@ class GPSolver(BaseEstimator, RegressorMixin):
                     self.best_outputs = predictions[best_id].clone()
                     self.best_fitness = new_fitness[best_id].clone()
                 del predictions
+                
+                if self.replace_with_best_inner and (len(self.inner_semantics) > 0): # replacing root term with inner semantics
+                    for tid in new_term_ids:
+                        root = terms[tid]
+                        root_fitness = self.term_fitness[root]
+                        inner = list(self.inner_semantics.get(root, {}).keys())
+                        if len(inner) == 0:
+                            continue
+                        inner_fitness = [self.term_fitness[t] for t in inner]
+                        inner_fitness = stack_rows(inner_fitness)
+                        best_inner_id = inner_fitness.argmin().item()
+                        best_inner_term = inner[best_inner_id]
+                        best_inner_fitness = inner_fitness[best_inner_id]
+                        if best_inner_fitness <= root_fitness:
+                            new_terms[tid] = best_inner_term
+                            output_list[tid] = self.inner_semantics[root][best_inner_term]
+
+                self.inner_semantics.clear()
 
             outputs = output_list                    
-            fitness = [self.term_fitness[t] for t in terms]
+            fitness = [self.term_fitness[t] for t in new_terms]
 
         else:
-
+            new_terms = terms
             outputs = stack_rows(output_list)
             fitness = self.fitness_fn(outputs, self.target) 
             best_id, best_found = self.fit_condition(fitness, self.best_fitness)
@@ -506,17 +534,25 @@ class GPSolver(BaseEstimator, RegressorMixin):
             best_fitness = self.best_fitness.unsqueeze(-1) if len(self.best_fitness.shape) == 0 else self.best_fitness
             for fi, fv in enumerate(best_fitness):
                 fk = f"fitness_{fi}"
-                metrics.setdefault(fk, []).append(fv.item())
+                metrics[fk] = fv.item()
 
         if self.best_term is not None: # best term stats 
             best_depth = get_depth(self.best_term, self.depth_cache)
             best_counts = get_counts(self.best_term, self.builders, self.counts_cache)
             best_size = best_counts.sum().item()
-            metrics.setdefault("best_term_depth", []).append(best_depth)
-            metrics.setdefault("best_term_size", []).append(best_size)
+            metrics["best_term_depth"] = best_depth
+            metrics["best_term_size"] = best_size
             metrics["best_counts"] = best_counts.tolist()
 
-        return outputs, fitness
+        metrics["pop_size"] = len(new_terms)
+
+        if self.elitism > 0:
+            fitness = stack_rows(fitness)
+            sorted_ids = torch.argsort(fitness, dim=0)
+            elite_ids = sorted_ids[:self.elitism].tolist()
+            self.elite_terms = [new_terms[i] for i in elite_ids]
+
+        return new_terms, outputs, fitness
     
     def breed(self, population: list[Term], 
                 outputs: torch.Tensor | Sequence[torch.Tensor], 
@@ -552,6 +588,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         #     for pos in poss:
         #         get_pos_constraints(pos, self.builders, {}, {})
         #     pass        
+
+        size = size - self.elitism
 
         selection_start = perf_counter()
         selected_ids = selection_fn(size, population = population,
@@ -634,12 +672,15 @@ class GPSolver(BaseEstimator, RegressorMixin):
         for key, value in crossover_metrics.items():
             metrics[f"crossover_{key}"] = value
 
+        if self.elitism > 0:
+            children.extend(self.elite_terms)
+
         # validation 3
         # for term in children:
         #     poss = get_positions(term, {})
         #     for pos in poss:
         #         get_pos_constraints(pos, self.builders, {}, {})
-        # pass        
+        # pass      
 
         return children
     
@@ -721,12 +762,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
     def _fit_inner(self, init_fn: Callable, eval_fn: Callable, breed_fn: Callable):   
         population = init_fn(self.pop_size)
-        outputs, fitness = timed(eval_fn, "eval_time", self.init_metrics)(population, self.init_metrics)
+        population, outputs, fitness = timed(eval_fn, "eval_time", self.init_metrics)(population, self.init_metrics)
         while not self.has_solution and self.gen < self.max_gen and self.evals < self.max_evals and self.root_evals < self.max_root_evals:
             self._before_gen()
             population = timed(breed_fn, "breed_time", self.gen_metrics)(population, outputs, fitness, self.pop_size, self.gen_metrics) 
             del outputs, fitness 
-            outputs, fitness = timed(eval_fn, "eval_time", self.gen_metrics)(population, self.gen_metrics)
+            population, outputs, fitness = timed(eval_fn, "eval_time", self.gen_metrics)(population, self.gen_metrics)
             self.gen += 1
             self._after_gen()
 
@@ -846,7 +887,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
 #       [BAD IDEA] 10. Gen math expr instead of lisp expr 
 
 #      11. Other metrics??? Add when caches are enabled - syntactic diversity (is there convergance to same syntax)
-#      12. Elitism??? Aging??? 
+#      12. DONE Elitism
+#      13. Aging??? 
 
 # NOTE [BAD IDEA]: we should probably go with const identities: 10 constant - so we allocate 10 identities but have different their bindings ??
 # PROBLEM: 1. const identity should have max of 1 presence in the term, it seems that it should be this way, or small number???
@@ -867,10 +909,13 @@ if __name__ == "__main__":
     solver = GPSolver(ops = alg_ops, device = device, dtype = dtype,
                         rnd_seed = rnd_seed, torch_rnd_seed = rnd_seed,
                         cache_terms=True, cache_term_props=True,
-                        cache_evals = True, cache_inner_evals=True,
+                        cache_evals = True, 
+                        cache_inner_evals=True, 
+                        # replace_with_best_inner=True,
+                        deduplicate_terms=True,
                         cache_crossover=True,
                         init_args = dict(init_from_cache = False),
-                        max_consts=5,
+                        max_consts=5, elitism=10,
                         max_ops = {"inv": 5, "neg": 5},
                         # commutative_ops=["add", "mul"],
                         forbid_patterns = [

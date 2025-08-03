@@ -1597,9 +1597,7 @@ def one_point_rand_crossover(term1: Term, term2: Term, *,
                                 crossover_metrics: dict | None = None) -> list[Term]:    
 
     # metrics
-    num_tries = 0
     same_subtree = 0
-    at_root = 0
     success = 0 
     fail = 0
     cache_hit = 0
@@ -1609,45 +1607,40 @@ def one_point_rand_crossover(term1: Term, term2: Term, *,
     term1_pos_contexts = pos_context_cache.setdefault(term1, {})
     term2_pos_contexts = pos_context_cache.setdefault(term2, {})
 
-    if len(positions1) == 1 or len(positions2) == 1: # no crossover of leaves
-        num_tries += num_children
-        at_root += num_children
-        res = [term1] * num_children
-        for i in range(1, num_children, 2):
-            res[i] = term2
-        return res 
+    positions1 = positions1[:-1] # removing root
+    positions2 = positions2[:-1]
+    num_pairs = len(positions1) * len(positions2)
+    if num_pairs > 0:
+
+        pos_ids1 = order_positions(positions1,
+                                    select_node_leaf_prob = select_node_leaf_prob, 
+                                    rnd = rnd)
+        
+        if exclude_values:
+            pos_ids1 = [pos_id for pos_id in pos_ids1 if not isinstance(positions1[pos_id].term, Value)]
+
+        pos_ids2 = order_positions(positions2,
+                                    select_node_leaf_prob = select_node_leaf_prob, 
+                                    rnd = rnd)
+        
+        if exclude_values:
+            pos_ids2 = [pos_id for pos_id in pos_ids2 if not isinstance(positions2[pos_id].term, Value)]
+
     else:
-        positions1 = positions1[:-1]
-        positions2 = positions2[:-1]
-
-    # if exclude_values:
-    #     positions1 = [pos for pos in positions1 if not isinstance(pos.term, Value)]
-    #     positions2 = [pos for pos in positions2 if not isinstance(pos.term, Value)]
-    pos_ids1 = order_positions(positions1,
-                                select_node_leaf_prob = select_node_leaf_prob, 
-                                rnd = rnd)
-    
-    if exclude_values:
-        pos_ids1 = [pos_id for pos_id in pos_ids1 if not isinstance(positions1[pos_id].term, Value)]
-
-    pos_ids2 = order_positions(positions2,
-                                select_node_leaf_prob = select_node_leaf_prob, 
-                                rnd = rnd)
-    
-    if exclude_values:
-        pos_ids2 = [pos_id for pos_id in pos_ids2 if not isinstance(positions2[pos_id].term, Value)]
+        pos_ids1 = []
+        pos_ids2 = []
 
     children = []
+
+    num_points = min(len(pos_ids1) * len(pos_ids2), num_children)
 
     for pos_id1, pos_id2 in product(pos_ids1, pos_ids2):
         pos1: TermPos = positions1[pos_id1]
         pos2: TermPos = positions2[pos_id2]
         if pos1.term == pos2.term:
-            num_tries += 2
             same_subtree += 2
             continue
 
-        num_tries += 1
         if (term1, pos1.term, pos1.occur, pos2.term) in crossover_cache:
             children.append(crossover_cache[(term1, pos1.term, pos1.occur, pos2.term)])
             cache_hit += 1
@@ -1673,7 +1666,6 @@ def one_point_rand_crossover(term1: Term, term2: Term, *,
         if len(children) >= num_children:
             break
 
-        num_tries += 1
         if (term2, pos2.term, pos2.occur, pos1.term) in crossover_cache:
             children.append(crossover_cache[(term2, pos2.term, pos2.occur, pos1.term)])
             cache_hit += 1
@@ -1707,14 +1699,13 @@ def one_point_rand_crossover(term1: Term, term2: Term, *,
         children += left_children
 
     if crossover_metrics is not None:
-        crossover_metrics["num_tries"] = crossover_metrics.get("num_tries", 0) + num_tries
         crossover_metrics["same_subtree"] = crossover_metrics.get("same_subtree", 0) + same_subtree
-        crossover_metrics["at_root"] = crossover_metrics.get("at_root", 0) + at_root
         crossover_metrics["success"] = crossover_metrics.get("success", 0) + success
         crossover_metrics["fail"] = crossover_metrics.get("fail", 0) + fail
         crossover_metrics["cache_hit"] = crossover_metrics.get("cache_hit", 0) + cache_hit
         crossover_metrics["children"] = crossover_metrics.get("children", 0) + len(children)
         crossover_metrics["repr"] = crossover_metrics.get("repr", 0) + repr
+        crossover_metrics["num_points"] = crossover_metrics.get("num_points", 0) + num_points
 
     return children
 
