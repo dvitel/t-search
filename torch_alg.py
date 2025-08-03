@@ -3,9 +3,10 @@ from dataclasses import dataclass, field
 from functools import partial
 import inspect
 from typing import Any, Callable, Literal, Optional
+import numpy as np
 import torch
 
-from term import Term, Value, Variable, collect_terms, evaluate, parse_term
+from term import Builders, Term, Value, Variable, collect_terms, evaluate, parse_term, replace
 
 alg_ops = {
     "add": lambda a, b: a + b,
@@ -117,12 +118,13 @@ def get_interval_grid(steps: torch.Tensor | float, ranges: torch.Tensor,
 # pass
 
 def get_rand_interval_points(num_samples: int, ranges: torch.Tensor, 
-                             steps: Optional[torch.Tensor | float] = None, deltas: Optional[torch.Tensor] = None, rand_deltas = True) -> torch.Tensor:
+                             steps: Optional[torch.Tensor | float] = None, 
+                             deltas: Optional[torch.Tensor] = None, rand_deltas = True) -> list[torch.Tensor]:
     if steps is None:
         steps = (ranges[:, 1] - ranges[:, 0]) / num_samples
     grid_values = get_interval_points(steps, ranges, deltas, rand_deltas)
     points = [get_rand_grid_point(grid_values) for _ in range(num_samples)]
-    points = torch.stack(points, dim=0)
+    # points = torch.stack(points, dim=0)
     return points
 
 # t7 = get_rand_interval_points(10, torch.tensor([[1., 2.], [3., 4.], [5., 6.]]), 0.5)
@@ -276,6 +278,170 @@ def lbfgs_optimize(term: Term, gold_outputs: torch.Tensor, semantics: torch.Tens
     print(f"LBFGS optimization finished with loss {total_loss.item()}")
     # res = evaluate(term, all_ops, {})
     pass
+
+def const_value_rand_sampling(consts: list[Value], *, const_range: tuple, **_):
+    for c in consts:
+        rand_value = get_rand_interval_points(1, )
+
+@dataclass(frozen=False, eq=False, unsafe_hash=False, repr=False)
+class OptimPoint(Term): # guarantee ref equality instead of Value eq
+    value: torch.Tensor
+
+@dataclass 
+class OptimState:
+    optim_term: Term | None # have to have at least one optim point
+    optim_points: list[OptimPoint]
+    num_attempted: int = 0
+    best_loss: torch.Tensor | None = None
+    best_binding: dict[OptimPoint, torch.Tensor] | None = None
+
+def const_to_optim_point(pos, *, optim_points: list[OptimPoint], **_):
+    if isinstance(pos[0], Value):
+        optim_point = OptimPoint(value=pos[0].value.clone())
+        optim_point.value.requires_grad = True
+        optim_points.append(optim_point)
+        return optim_point
+    
+def optim_point_to_const(pos, *, binding: dict[OptimPoint, torch.Tensor], **_):
+    if isinstance(pos[0], OptimPoint):
+        return Value(binding[pos[0]])    
+    
+@dataclass(frozen=False, eq=False, unsafe_hash=False, repr=False)
+class OptimResult:
+    term: Term | None = None # new term 
+    num_evals: int = 0
+    num_root_evals: int = 0
+    
+def optimize_points(term: Term, target: torch.Tensor, builders: Builders,
+    given_ops: dict[str, Callable], get_binding: Callable, start_range: torch.Tensor,
+    eval_fn = evaluate, loss_fn: Callable = torch.nn.functional.mse_loss,
+    term_to_optim_point_fn: Callable = const_to_optim_point,
+    optim_point_to_term_fn: Callable = optim_point_to_const,
+    num_rand_tries = 10, max_rand_tries = 100, max_steps = 20, 
+    lr = 0.1, rtol: float = 1e-4, atol: float = 1e-4,
+    torch_gen: torch.Generator | None = None,
+    term_optim_cache: dict[Term, OptimState] | None = None) -> OptimResult:
+    ''' Searches for the term const values that would bring it closer to the target outputs.
+        Restarts will reinitialize the constants.
+    '''
+
+    if term not in term_optim_cache:
+
+        optim_points = []        
+        optim_term = replace(term, partial(term_to_optim_point_fn, optim_points=optim_points), builders)
+
+        if len(optim_points) == 0:
+            optim_term = None
+        term_optim_cache[term] = OptimState(optim_term, optim_points)
+
+    optim_state = term_optim_cache[term]
+
+    if optim_state.num_attempted >= max_rand_tries: 
+        for optim_point in optim_state.optim_points:
+            del optim_point.value
+        optim_state.optim_points.clear()
+        optim_state.optim_term = None
+
+    if len(optim_state.optim_points) == 0: # nothing to optimize
+        return OptimResult()
+    
+    starts_to_attempt = []
+
+    if optim_state.num_attempted == 0: # at first try we also optimize current values
+        starts_to_attempt.append([p.value for p in optim_state.optim_points])
+
+    rand_points_to_attempt = min(num_rand_tries, max_rand_tries - optim_state.num_attempted)
+    if rand_points_to_attempt > 0: # we use grid sampling with rand shifts 
+        should_del_ranges = False
+        if len(start_range.shape) == 1: # 1d range
+            should_del_ranges = True 
+            start_range = torch.tile(start_range, (len(optim_state.optim_points), 1))
+        rand_points = get_rand_interval_points(rand_points_to_attempt, start_range, rand_deltas=True, generator=torch_gen)
+        starts_to_attempt.extend(rand_points)
+        if should_del_ranges:
+            del start_range
+
+    def _redirected_get_binding(root: Term, term: Term):
+        if isinstance(term, OptimPoint):
+            return term.value
+        return get_binding(term)
+    
+    num_evals = 0
+    def _set_binding(root: Term, term: Term, value: torch.Tensor): # noop
+        nonlocal num_evals
+        num_evals += 1
+        return
+    
+    best_loss = optim_state.best_loss
+    best_outputs = None
+    best_binding = optim_state.best_binding
+
+    for start_values in starts_to_attempt:        
+        for c, cv in zip(optim_state.optim_points, start_values):
+            c.value[:] = cv # copy new value to optim point
+
+        params = [c.value for c in optim_state.optim_points]
+
+        optimizer = torch.optim.LBFGS(params, lr=lr, max_iter=max_steps,
+                                        # max_eval = 1.5 * num_steps,
+                                        tolerance_change=atol,
+                                        tolerance_grad=atol / 10,
+                                        # history_size=100,
+                                        line_search_fn='strong_wolfe'
+                                        )
+
+        last_outputs = None
+        last_loss = None
+
+        num_root_evals = 0
+
+        def closure_builder(optimizer: torch.optim.Optimizer):
+            nonlocal num_root_evals, last_outputs, last_loss
+            num_root_evals += 1
+            optimizer.zero_grad()
+            outputs: torch.Tensor = eval_fn(term, given_ops, _redirected_get_binding, _set_binding)
+            last_outputs = outputs
+            assert outputs is not None, "Term evaluation should be full. Term is evaluated partially"
+            loss: torch.Tensor = loss_fn(outputs, target)
+            # del loss_els
+            # loss = mse_loss(outputs, gold_outputs)
+            loss.backward()
+            return loss
+
+        closure = partial(closure_builder, optimizer)
+                
+        final_loss = optimizer.step(closure)
+
+        assert torch.allclose(last_loss, final_loss)
+
+        if best_loss is None or final_loss.item() < best_loss.item():
+            best_outputs = last_outputs
+            best_loss = final_loss
+            best_binding = {}
+            for optim_point in optim_state.optim_points:
+                found_value = torch.clone(optim_point.value)
+                found_value.requires_grad = False
+                best_binding[optim_point] = found_value
+            if torch.allclose(last_outputs, target, rtol=rtol, atol=atol):
+                optim_state.num_attempted = max_rand_tries
+                break
+
+        optim_state.num_attempted += 1
+
+        print(f"LBFGS optimization finished with loss {last_loss.item()}")
+
+    if best_outputs is not None: # new best term 
+
+        optim_state.best_loss = best_loss
+        optim_state.best_binding = best_binding        
+            
+        new_term = replace(term, partial(optim_point_to_term_fn, binding=best_binding), builders)
+
+        term_optim_cache[new_term] = optim_state
+
+        return OptimResult(new_term, num_evals, num_root_evals)
+
+    return OptimResult()
 
 class Benchmark: 
 

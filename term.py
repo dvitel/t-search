@@ -1173,8 +1173,8 @@ def enum_occurs(new_term: Term, some_occurs: dict, fn = lambda *_:()):
 
     postorder_traversal(new_term, _enter_new_child, _exit_new_child)
 
-def replace(root: Term, at_pos: tuple[Term, int],
-            with_fn: Callable[[dict[tuple[Term, int], int]], Term],
+def replace(root: Term,
+            get_replacement_fn: Callable[[dict[tuple[Term, int], Optional[Term]]], Term],
             builders: Builders) -> Optional[Term]:
 
     occurs = {}
@@ -1183,9 +1183,9 @@ def replace(root: Term, at_pos: tuple[Term, int],
 
     def _replace_enter(term: Term, term_i: int, parent: Term):
         cur_occur = occurs.get(term, 0)
-        if (term, cur_occur) == at_pos:
-            new_term = with_fn(occurs = occurs)
-            if new_term is not None:
+        new_term = get_replacement_fn((term, cur_occur), occurs = occurs)
+        if new_term is not None:
+            if isinstance(new_term, Term):
                 if parent is None:
                     replacement[None] = new_term
                     return TRAVERSAL_EXIT
@@ -1200,7 +1200,6 @@ def replace(root: Term, at_pos: tuple[Term, int],
             else:
                 replacement.clear()
                 return TRAVERSAL_EXIT
-
 
     def _replace_exit(term: Term, term_i: int, parent: Term):
         new_term = replacement.pop(term, None)
@@ -1501,10 +1500,16 @@ def one_point_rand_mutation(term: Term,
         position: TermPos = positions[pos_id]
         start_context = get_pos_constraints(position, builders, counts_cache, pos_contexts)
         arg_counts = get_pos_sibling_counts(position, builders)
-        mutated_term = replace(term, (position.term, position.occur), 
-                                            lambda **_: grow(grow_depth = min(max_grow_depth, tree_max_depth - position.at_depth), rnd = rnd,
+
+        def _get_replacement_fn(pos, **_):
+            if pos == (position.term, position.occur):
+                new_term = grow(grow_depth = min(max_grow_depth, tree_max_depth - position.at_depth), rnd = rnd,
                                                           builders = builders, start_context = start_context, arg_counts = arg_counts,
-                                                          gen_metrics = mutation_metrics), builders)
+                                                          gen_metrics = mutation_metrics)
+                if new_term is None:
+                    return TRAVERSAL_EXIT
+                return new_term
+        mutated_term = replace(term, _get_replacement_fn, builders)
         if mutated_term is not None:       
             # val_poss = get_positions(mutated_term, {})
             # for val_pos in val_poss:
@@ -1574,11 +1579,12 @@ def try_replace_pos(in_term: Term, at_pos: TermPos, with_term: Term,
         return None, {}
     
     new_gen_contexts = {}
-    def _repl(occurs, **_):
-        cur_occur = occurs.get(valid_with_term, 0)
-        new_gen_contexts[(valid_with_term, cur_occur)] = pos_gen_context
-        return valid_with_term
-    new_child = replace(in_term, (at_pos.term, at_pos.occur), _repl, builders)
+    def _repl(pos, *, occurs, **_):
+        if pos == (at_pos.term, at_pos.occur):
+            cur_occur = occurs.get(valid_with_term, 0)
+            new_gen_contexts[(valid_with_term, cur_occur)] = pos_gen_context
+            return valid_with_term
+    new_child = replace(in_term, _repl, builders)
     
     return new_child, new_gen_contexts
 

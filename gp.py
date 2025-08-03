@@ -6,6 +6,7 @@
         4. Mutation: one-point subtree
 '''
 
+from dataclasses import dataclass
 from functools import partial
 import math
 from typing import Callable, Literal, Optional, Sequence
@@ -18,6 +19,8 @@ from term import Builder, Builders, Op, Term, Value, Variable, evaluate, get_cou
                     one_point_rand_crossover, one_point_rand_mutation, parse_term, \
                     ramped_half_and_half
 from sklearn.base import BaseEstimator, RegressorMixin
+
+from torch_alg import const_to_optim_point, optim_point_to_const, optimize_points
 
 #utils
 
@@ -156,6 +159,14 @@ def timed(fn: Callable, key: str, metrics: dict) -> Callable:
         return result
     return wrapper
 
+@dataclass 
+class PointOptimization: 
+    num_retries: int = 10 # num random restarts in one go
+    max_retries: int = 100 # total attempts to optimize with rand restarts
+    num_steps: int = 10 # num of optimization steps
+    solver: Literal["LBFGS"] = "LBFGS"
+    learning_rate: float = 0.1 # TODO - think how to select this??? With func freq? FFT?
+
 class GPSolver(BaseEstimator, RegressorMixin):
 
     def __init__(self, 
@@ -196,6 +207,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 replace_with_best_inner: bool = False,
                 cache_crossover: bool = False,
                 deduplicate_terms: bool = False,
+                const_optimization: Optional[PointOptimization] = None,
                 rtol = 1e-04, atol = 1e-03, # NOTE: these are for semantic/outputs comparison, not for fitness, see fit_0
                 rnd_seed: Optional[int] = None,
                 torch_rnd_seed: Optional[int] = None,
@@ -238,6 +250,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.pop_size = pop_size
         self.elitism = elitism
         assert self.elitism < self.pop_size, "Elitism should be less than population size"
+        self.const_optimization = const_optimization
+        self.const_optim_cache = {}
         self.cache_term_props = cache_term_props
         self.cache_terms = cache_terms
         self.cache_evals = cache_evals
@@ -324,6 +338,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.counts_cache = {}
         self.depth_cache = {}
         self.crossover_cache = {}
+        self.const_optim_cache = {}
 
         self.best_term: Optional[Term] = None
         self.best_outputs: Optional[torch.Tensor] = None
@@ -457,14 +472,43 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.init_metrics["time"] = round((end_time - start_time) * 1000)
         return res 
     
-    def eval(self, terms: list[Term], metrics: dict, *, eval_fn: Callable = evaluate, **_) -> Optional[Term]:        
+    def eval_one(self, term: Term, eval_fn: Callable) -> tuple[Term, torch.Tensor]:
+        term_output = eval_fn(term, self.ops, self._get_binding, self._set_binding) 
+        if self.const_optimization is not None: 
+            # Note: initial eval is necessary to cache semantics of trees that do not participate in optimization
+            optim_res = optimize_points(term, self.target, self.builders,
+                                           self.ops, self._get_binding,
+                                           self.const_range, eval_fn, loss_fn = self.fitness_fn,
+                                           term_to_optim_point_fn = const_to_optim_point,
+                                           optim_point_to_term_fn=optim_point_to_const,
+                                           num_rand_tries=self.const_optimization.num_retries,
+                                           max_rand_tries=self.const_optimization.max_retries,
+                                           max_steps=self.const_optimization.num_steps,
+                                           lr = self.const_optimization.learning_rate,
+                                           rtol = self.rtol, atol = self.atol,
+                                           torch_gen=self.torch_gen,
+                                           term_optim_cache=self.const_optim_cache)
+            self.evals += optim_res.num_evals
+            self.root_evals += optim_res.num_root_evals
+            if self.evals > self.max_evals:
+                raise EvSearchTermination("MAX_EVAL", "Maximum number of evaluations reached")
+            if self.root_evals > self.max_root_evals:
+                raise EvSearchTermination("MAX_ROOT_EVAL", "Maximum number of root evaluations reached")
+            if optim_res.term is not None:
+                term = optim_res.term
+                term_output = eval_fn(term, self.ops, self._get_binding, self._set_binding)
+        return term, term_output
+    
+    def eval(self, terms: list[Term], metrics: dict, *, eval_fn: Callable = evaluate, **_):
 
         if self.deduplicate_terms:
             terms = list(set(terms))
 
         output_list = []
-        for term in terms:
-            term_output = eval_fn(term, self.ops, self._get_binding, self._set_binding) 
+        for term_i in range(len(terms)):
+            term = terms[term_i]
+            new_term, term_output = self.eval_one(term, eval_fn)
+            terms[term_i] = new_term
             output_list.append(term_output)
 
         # assert len(terms) > 0, "No terms to update fitness for"
@@ -544,13 +588,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
             metrics["best_term_size"] = best_size
             metrics["best_counts"] = best_counts.tolist()
 
-        metrics["pop_size"] = len(new_terms)
-
         if self.elitism > 0:
             fitness = stack_rows(fitness)
             sorted_ids = torch.argsort(fitness, dim=0)
             elite_ids = sorted_ids[:self.elitism].tolist()
             self.elite_terms = [new_terms[i] for i in elite_ids]
+
+        metrics["pop_size"] = len(new_terms)
 
         return new_terms, outputs, fitness
     
@@ -874,12 +918,16 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
 # TODO: 
 #       DONE 1. Testing with caches, probably separate cache enablance. 
-#       CURRENT 2. Lexicase selection and its advanced forms 
+#       2. Lexicase selection and its advanced forms 
+#          More advanced form of lexicase that considers pair of axes of interaction CS space
 #       3. Unification with discrete domains? Can this work with discrete domains?
 #       4. Unification with other evo processes in cde-search: NSGA and coevolution.
-#       5. Tuning of constants 
+#       CURRENT 5. Tuning of constants 
 #       6. Syntactic simplifications with axioms (again, need Tree Tries to match rules)
+#          No need in tree tries. Rewrites could be done with unification and then replacement.         
 #       7. Towards abstract forms (x * x + c * x + c)
+#           Reduced to another mutation operator as it replaces any child term with linear combination.
+#           Abstract form is just selection of isinstance(term, (Value, Variable)). Generally any child term could be replaced.
 #       8. Towards semantic GP (add operators) + propose tuned point operator, using indices
 #       9. Math properties and dynamic constraint sets.
 
@@ -887,8 +935,20 @@ class GPSolver(BaseEstimator, RegressorMixin):
 #       [BAD IDEA] 10. Gen math expr instead of lisp expr 
 
 #      11. Other metrics??? Add when caches are enabled - syntactic diversity (is there convergance to same syntax)
-#      12. DONE Elitism
+#      DONE 12. Elitism
 #      13. Aging??? 
+#      14. Dropout ???
+#      15. Distribution control in gen_term based on statistics of past decisions at point of generation -
+#           First, We need to have metric to see how gen process produce unique terms, not previously found in cache - should be controlled on term build.
+#      16. We observe that classic crossover frequently fallbacks to reproduction - less point-pairs that required num_children in breed.
+#          Therefore, we should noto require more generations from pair than present number of crossover points. 
+#          Better to attempt next parents when budget of crossover is not exhausted.
+#          Crossover cache hits --> does it make sense to produce same children? On cache hit - should be no child. Or crossover point should be prohibited.
+#          Aging controls which points could crossover.
+#          Globally crossover should not work with parents, but only with repository of crossover points (root, term, occur)
+
+#      17. Annealing on present ops - max_counts. At what point to add new op? Based on frequency of cache hits or max gens?
+#          Which ops should be first? Should we use fft here?
 
 # NOTE [BAD IDEA]: we should probably go with const identities: 10 constant - so we allocate 10 identities but have different their bindings ??
 # PROBLEM: 1. const identity should have max of 1 presence in the term, it seems that it should be this way, or small number???
@@ -938,7 +998,11 @@ if __name__ == "__main__":
                         immediate_arg_limits={
                             "inv": {"inv": 0},
                             "neg": {"neg": 0}
-                        }
+                        },
+                        const_optimization=PointOptimization(
+                            num_retries=10, max_retries=10, num_steps=10,
+                            learning_rate=0.1
+                        )
                         # breed_args= dict(
                         #     selection_fn = lexicase_selection,
                         # ),
