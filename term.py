@@ -1173,55 +1173,60 @@ def enum_occurs(new_term: Term, some_occurs: dict, fn = lambda *_:()):
 
     postorder_traversal(new_term, _enter_new_child, _exit_new_child)
 
-def replace(root: Term,
+def replace_pos(pos: TermPos, with_term: Term, builders: Builders) -> Optional[Term]:
+    if with_term is None:
+        return None
+    cur_pos = pos
+    new_term = with_term
+    while cur_pos.parent is not None:
+        parent = cur_pos.parent.term
+        term_i = cur_pos.pos
+        args = parent.get_args()
+        new_parent_term_args = tuple((*args[:term_i], new_term, *args[term_i + 1:]))   
+        builder = builders.get_term_builder(parent)
+        new_parent_term = builder.fn(*new_parent_term_args)
+        if new_parent_term is None:
+            return None
+        new_term = new_parent_term
+        cur_pos = cur_pos.parent
+
+    return new_term
+
+
+def replace_fn(root: Term,
             get_replacement_fn: Callable[[dict[tuple[Term, int], Optional[Term]]], Term],
             builders: Builders) -> Optional[Term]:
 
     occurs = {}
 
-    replacement = {}
+    # replacement = {}
+    arg_stack = [[]]
 
     def _replace_enter(term: Term, term_i: int, parent: Term):
-        cur_occur = occurs.get(term, 0)
-        new_term = get_replacement_fn((term, cur_occur), occurs = occurs)
+        cur_occur = occurs.setdefault(term, 0)
+        new_term = get_replacement_fn(term, cur_occur)
         if new_term is not None:
             if isinstance(new_term, Term):
-                if parent is None:
-                    replacement[None] = new_term
-                    return TRAVERSAL_EXIT
-                else:
-                    args = parent.get_args()
-                    new_parent_term_args = tuple((*args[:term_i], new_term, *args[term_i + 1:]))   
-                    builder = builders.get_term_builder(parent)
-                    new_parent_term = builder.fn(*new_parent_term_args)
-                    replacement[parent] = new_parent_term
-                    occurs[term] = occurs.get(term, 0) + 1
-                    return TRAVERSAL_EXIT_NODE
+                arg_stack[-1].append(new_term)
+                enum_occurs(term, occurs)
+                return TRAVERSAL_EXIT_NODE
             else:
-                replacement.clear()
+                arg_stack.clear()
                 return TRAVERSAL_EXIT
+        else:
+            arg_stack[-1].append(term)
+        arg_stack.append([])
 
     def _replace_exit(term: Term, term_i: int, parent: Term):
-        new_term = replacement.pop(term, None)
-        if new_term is not None:
-            if parent is None:
-                replacement[None] = new_term
-            else:
-                args = parent.get_args()
-                new_parent_term_args = tuple((*args[:term_i], new_term, *args[term_i + 1:]))   
-                builder = builders.get_term_builder(parent)
-                new_parent = builder.fn(*new_parent_term_args)
-                if new_parent is None:
-                    replacement.clear()
-                    return TRAVERSAL_EXIT
-                replacement[parent] = new_parent
-        else:
-            new_term = term
-        occurs[term] = occurs.get(term, 0) + 1
+        new_args = arg_stack.pop()
+        builder = builders.get_term_builder(term)
+        new_term = builder.fn(*new_args)
+        arg_stack[-1][term_i] = new_term
+        occurs[term] += 1
 
     postorder_traversal(root, _replace_enter, _replace_exit)
 
-    return None if len(replacement) == 0 else replacement[None]
+    return None if len(arg_stack) == 0 else arg_stack[-1][-1]
 
 def order_positions(positions: list[TermPos],
                         select_node_leaf_prob: Optional[float] = 0.1,
@@ -1501,15 +1506,11 @@ def one_point_rand_mutation(term: Term,
         start_context = get_pos_constraints(position, builders, counts_cache, pos_contexts)
         arg_counts = get_pos_sibling_counts(position, builders)
 
-        def _get_replacement_fn(pos, **_):
-            if pos == (position.term, position.occur):
-                new_term = grow(grow_depth = min(max_grow_depth, tree_max_depth - position.at_depth), rnd = rnd,
-                                                          builders = builders, start_context = start_context, arg_counts = arg_counts,
-                                                          gen_metrics = mutation_metrics)
-                if new_term is None:
-                    return TRAVERSAL_EXIT
-                return new_term
-        mutated_term = replace(term, _get_replacement_fn, builders)
+        new_term = grow(grow_depth = min(max_grow_depth, tree_max_depth - position.at_depth), rnd = rnd,
+                                                    builders = builders, start_context = start_context, arg_counts = arg_counts,
+                                                    gen_metrics = mutation_metrics)                
+        
+        mutated_term = replace_pos(position, new_term, builders)
         if mutated_term is not None:       
             # val_poss = get_positions(mutated_term, {})
             # for val_pos in val_poss:
@@ -1570,23 +1571,17 @@ def get_counts(root: Term, builders: Builders, counts_cache: dict[Term, np.ndarr
 
     return counts_stack[-1][-1]
 
-def try_replace_pos(in_term: Term, at_pos: TermPos, with_term: Term, 
+def try_replace_pos(at_pos: TermPos, with_term: Term, 
                         pos_gen_context: TermGenContext, builders: Builders, 
                         counts_cache: dict[Term, np.ndarray]) -> Optional[Term]:
     
     valid_with_term = validate_root(with_term, builders = builders, root_context = pos_gen_context, counts_cache = counts_cache)
     if valid_with_term is None:
-        return None, {}
+        return None
     
-    new_gen_contexts = {}
-    def _repl(pos, *, occurs, **_):
-        if pos == (at_pos.term, at_pos.occur):
-            cur_occur = occurs.get(valid_with_term, 0)
-            new_gen_contexts[(valid_with_term, cur_occur)] = pos_gen_context
-            return valid_with_term
-    new_child = replace(in_term, _repl, builders)
+    new_child = replace_pos(at_pos, valid_with_term, builders)
     
-    return new_child, new_gen_contexts
+    return new_child
 
 def one_point_rand_crossover(term1: Term, term2: Term, *,
                                 pos_cache: dict[Term, list[TermPos]],
@@ -1654,8 +1649,7 @@ def one_point_rand_crossover(term1: Term, term2: Term, *,
 
             pos1_context = get_pos_constraints(pos1, builders, counts_cache, term1_pos_contexts)
 
-            new_child, new_gen_contexts = try_replace_pos(term1, pos1, pos2.term, pos1_context, builders, counts_cache)
-
+            new_child = try_replace_pos(pos1, pos2.term, pos1_context, builders, counts_cache)
 
             if new_child is not None:
                 # val_poss = get_positions(new_child, {})
@@ -1663,7 +1657,6 @@ def one_point_rand_crossover(term1: Term, term2: Term, *,
                 #     get_pos_constraints(val_pos, builders, {}, {})
                 # pass
                 children.append(new_child)
-                pos_context_cache[new_child] = new_gen_contexts
                 crossover_cache[(term1, pos1.term, pos1.occur, pos2.term)] = new_child
                 success += 1
             else:
@@ -1679,7 +1672,7 @@ def one_point_rand_crossover(term1: Term, term2: Term, *,
 
             pos2_context = get_pos_constraints(pos2, builders, counts_cache, term2_pos_contexts)
 
-            new_child, new_gen_contexts = try_replace_pos(term2, pos2, pos1.term, pos2_context, builders, counts_cache)
+            new_child = try_replace_pos(pos2, pos1.term, pos2_context, builders, counts_cache)
 
             if new_child is not None:
                 # val_poss = get_positions(new_child, {})
@@ -1687,7 +1680,6 @@ def one_point_rand_crossover(term1: Term, term2: Term, *,
                 #     get_pos_constraints(val_pos, builders, {}, {})
                 # pass                
                 children.append(new_child)
-                pos_context_cache[new_child] = new_gen_contexts
                 crossover_cache[(term2, pos2.term, pos2.occur, pos1.term)] = new_child
                 success += 1
             else:

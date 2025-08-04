@@ -163,9 +163,9 @@ def timed(fn: Callable, key: str, metrics: dict) -> Callable:
 class PointOptimization: 
     num_retries: int = 10 # num random restarts in one go
     max_retries: int = 100 # total attempts to optimize with rand restarts
-    num_steps: int = 10 # num of optimization steps
+    num_evals: int = 10 # num of optimization steps
     solver: Literal["LBFGS"] = "LBFGS"
-    learning_rate: float = 0.1 # TODO - think how to select this??? With func freq? FFT?
+    learning_rate: float = 1.0 # TODO - think how to select this??? With func freq? FFT?
 
 class GPSolver(BaseEstimator, RegressorMixin):
 
@@ -232,7 +232,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 self.fpatterns.append(t)
                 
         # self.const_binding: list[torch.Tensor] = []
-        self.const_range: tuple[torch.Tensor, torch.Tensor] | None = None # detected from y on reset
+        self.const_range: torch.Tensor | None = None # detected from y on reset
         # NOTE: variables and consts are stored separately from tree - abstract shapes x * x + c * x + c 
         #       in this approach we have a problem with caching semantics of intermediate terms, as for different c and x, the results are different
         #       solution: make term_output as dictionary with keys (root, term). Root should be a part of all keys to identify concrete selection of c, x
@@ -304,6 +304,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.metrics: dict[str, int | float | list[int|float]] = {}
         self.status: GPSolverStatus = "INIT"
         self.start_time: float = 0
+        self.const_id = None 
+        self.const_tape = None
 
         self.op_builders = {}
         for op_id, op_fn in self.ops.items():
@@ -417,7 +419,15 @@ class GPSolver(BaseEstimator, RegressorMixin):
             dist = max_value - min_value
             min_value = min_value - 0.1 * dist
             max_value = max_value + 0.1 * dist
-            self.const_range = (min_value, max_value - min_value)
+            self.const_range = torch.tensor([min_value, max_value], dtype= self.dtype, device=self.device)
+            if torch.is_tensor(free_vars):
+                min_fv = torch.min(free_vars)
+                max_fv = torch.max(free_vars)
+            else:
+                min_fv = min(torch.min(xv).item() for xv in free_vars)
+                max_fv = max(torch.max(xv).item() for xv in free_vars)
+            self.const_range[0] = torch.minimum(self.const_range[0], min_fv)
+            self.const_range[1] = torch.maximum(self.const_range[1], max_fv)
         
     def get_vars(self, free_vars):
         vars = []
@@ -438,8 +448,15 @@ class GPSolver(BaseEstimator, RegressorMixin):
     
     def _alloc_const(self, *_) -> Value: 
         ''' Should we random sample of try some grid? Anyway we tune '''
-        value = self.const_range[0] + torch.rand((1,), device=self.device, dtype=self.dtype,
-                                                    generator=self.torch_gen) * self.const_range[1]
+        if self.const_id is None or self.const_id >= self.pop_size:
+            del self.const_tape
+            self.const_id = 0
+            self.const_tape = self.const_range[0] + \
+                                torch.rand(self.pop_size, device=self.device, 
+                                            dtype=self.dtype, generator=self.torch_gen) * \
+                                                (self.const_range[1] - self.const_range[0])
+        value = self.const_tape[self.const_id]
+        self.const_id += 1
         # const_id = len(self.const_binding)
         # self.const_binding.append(value)
         # return Value(const_id)
@@ -474,7 +491,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
     
     def eval_one(self, term: Term, eval_fn: Callable) -> tuple[Term, torch.Tensor]:
         term_output = eval_fn(term, self.ops, self._get_binding, self._set_binding) 
-        if self.const_optimization is not None: 
+        if self.const_optimization is not None and not torch.any(term_output.isnan()).item():            
             # Note: initial eval is necessary to cache semantics of trees that do not participate in optimization
             optim_res = optimize_points(term, self.target, self.builders,
                                            self.ops, self._get_binding,
@@ -483,7 +500,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                                            optim_point_to_term_fn=optim_point_to_const,
                                            num_rand_tries=self.const_optimization.num_retries,
                                            max_rand_tries=self.const_optimization.max_retries,
-                                           max_steps=self.const_optimization.num_steps,
+                                           max_evals=self.const_optimization.num_evals,
                                            lr = self.const_optimization.learning_rate,
                                            rtol = self.rtol, atol = self.atol,
                                            torch_gen=self.torch_gen,
@@ -502,7 +519,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
     def eval(self, terms: list[Term], metrics: dict, *, eval_fn: Callable = evaluate, **_):
 
         if self.deduplicate_terms:
-            terms = list(set(terms))
+            present_terms = set()
+            dedupl_terms = []
+            for term in terms:
+                if term not in present_terms:
+                    dedupl_terms.append(term)
+                    present_terms.add(term)
+            terms = dedupl_terms
 
         output_list = []
         for term_i in range(len(terms)):
@@ -1000,8 +1023,8 @@ if __name__ == "__main__":
                             "neg": {"neg": 0}
                         },
                         const_optimization=PointOptimization(
-                            num_retries=10, max_retries=10, num_steps=10,
-                            learning_rate=0.1
+                            num_retries=4, max_retries=4, num_evals=10,
+                            learning_rate=1.0
                         )
                         # breed_args= dict(
                         #     selection_fn = lexicase_selection,
