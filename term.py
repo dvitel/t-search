@@ -1103,22 +1103,6 @@ def grow(builders: Builders,
                     arg_counts = arg_counts, gen_metrics=gen_metrics)
     return term
 
-def ramped_half_and_half(builders: Builders,
-                        rhh_min_depth = 1, rhh_max_depth = 5, rhh_grow_prob = 0.5,
-                        grow_leaf_prob: Optional[float] = 0.1, 
-                        rnd: np.random.RandomState = np.random,
-                        start_context: TermGenContext | None = None,
-                        arg_counts: np.ndarray | None = None,
-                        gen_metrics: dict | None = None,
-                        ) -> Optional[Term]:
-    ''' Generate a population of half full and half grow trees '''
-    depth = rnd.randint(rhh_min_depth, rhh_max_depth+1)
-    leaf_prob = grow_leaf_prob if rnd.rand() < rhh_grow_prob else 0
-    term = grow(builders, grow_depth = depth, grow_leaf_prob = leaf_prob, rnd = rnd,
-                    start_context = start_context, arg_counts = arg_counts,
-                    gen_metrics = gen_metrics)
-    return term
-
 # IDEA: dropout in GP, frozen tree positions which cannot be mutated or crossovered - for later
 
 def get_positions(root: Term, pos_cache: dict[Term, list[TermPos]]) -> list[TermPos]:
@@ -1228,7 +1212,7 @@ def replace_fn(root: Term,
 
     return None if len(arg_stack) == 0 else arg_stack[-1][-1]
 
-def order_positions(positions: list[TermPos],
+def shuffle_positions(positions: list[TermPos],
                         select_node_leaf_prob: Optional[float] = 0.1,
                         rnd: np.random.RandomState = np.random) -> np.ndarray:
     pos_proba = rnd.rand(len(positions))
@@ -1464,75 +1448,6 @@ def get_pos_sibling_counts(position: TermPos, builders: Builders) -> np.ndarray:
 #         cur_pos = cur_pos.parent
 #     return res
 
-def one_point_rand_mutation(term: Term,
-                            pos_cache: dict[Term, list[TermPos]],
-                            pos_context_cache: dict[Term, dict[tuple[Term, int], TermGenContext]],
-                            counts_cache: dict[Term, np.ndarray],
-                            builders: Builders,
-                            rnd: np.random.RandomState = np.random,
-                            select_node_leaf_prob: Optional[float] = 0.1,
-                            tree_max_depth = 17, max_grow_depth = 5,
-                            num_children = 1,
-                            mutation_metrics: dict | None = None) -> list[Term]:
-    
-    # metrics
-    success = 0
-    fail = 0
-    
-    positions = get_positions(term, pos_cache)
-    pos_contexts = pos_context_cache.setdefault(term, {})
-
-    if len(positions) > 1:
-        positions = positions[:-1]
-
-    ordered_pos_ids = order_positions(positions, 
-                                      select_node_leaf_prob = select_node_leaf_prob, 
-                                      rnd = rnd)
-
-    mutants = []
-    prev_same_count = 0
-    prev_len = -1
-    for pos_id in cycle(ordered_pos_ids):
-        if len(mutants) >= num_children:
-            break
-        if prev_len == len(mutants):
-            prev_same_count += 1
-            if prev_same_count > len(ordered_pos_ids):
-                break
-        else:
-            prev_same_count = 0
-            prev_len = len(mutants)
-        position: TermPos = positions[pos_id]
-        start_context = get_pos_constraints(position, builders, counts_cache, pos_contexts)
-        arg_counts = get_pos_sibling_counts(position, builders)
-
-        new_term = grow(grow_depth = min(max_grow_depth, tree_max_depth - position.at_depth), rnd = rnd,
-                                                    builders = builders, start_context = start_context, arg_counts = arg_counts,
-                                                    gen_metrics = mutation_metrics)                
-        
-        mutated_term = replace_pos(position, new_term, builders)
-        if mutated_term is not None:       
-            # val_poss = get_positions(mutated_term, {})
-            # for val_pos in val_poss:
-            #     get_pos_constraints(val_pos, builders, {}, {})
-            # pass        
-            mutants.append(mutated_term)
-            success += 1
-        else:
-            fail += 1
-
-    repr = 0
-    if len(mutants) < num_children:
-        repr = num_children - len(mutants)
-        mutants += [term] * (num_children - len(mutants))
-
-    if mutation_metrics is not None:
-        mutation_metrics["success"] = mutation_metrics.get("success", 0) + success
-        mutation_metrics["fail"] = mutation_metrics.get("fail", 0) + fail
-        mutation_metrics["repr"] = mutation_metrics.get("repr", 0) + repr
-        
-    return mutants
-
 def get_immediate_counts(root: Term, builders: Builders) -> np.ndarray:
 
     counts = builders.zero.copy()
@@ -1582,130 +1497,6 @@ def try_replace_pos(at_pos: TermPos, with_term: Term,
     new_child = replace_pos(at_pos, valid_with_term, builders)
     
     return new_child
-
-def one_point_rand_crossover(term1: Term, term2: Term, *,
-                                pos_cache: dict[Term, list[TermPos]],
-                                pos_context_cache: dict[Term, dict[tuple[Term, int], TermGenContext]],
-                                counts_cache: dict[Term, np.ndarray],
-                                depth_cache: dict[Term, int],
-                                crossover_cache: dict[tuple[Term, Term, int, Term], Term],
-                                builders: Builders,  
-                                rnd: np.random.RandomState = np.random,
-                                select_node_leaf_prob: Optional[float] = 0.1,
-                                exclude_values: bool = True,
-                                tree_max_depth = 17,
-                                num_children = 1,
-                                crossover_metrics: dict | None = None) -> list[Term]:    
-
-    # metrics
-    same_subtree = 0
-    success = 0 
-    fail = 0
-    cache_hit = 0
-
-    positions1 = get_positions(term1, pos_cache)
-    positions2 = get_positions(term2, pos_cache)
-    term1_pos_contexts = pos_context_cache.setdefault(term1, {})
-    term2_pos_contexts = pos_context_cache.setdefault(term2, {})
-
-    positions1 = positions1[:-1] # removing root
-    positions2 = positions2[:-1]
-    num_pairs = len(positions1) * len(positions2)
-    if num_pairs > 0:
-
-        pos_ids1 = order_positions(positions1,
-                                    select_node_leaf_prob = select_node_leaf_prob, 
-                                    rnd = rnd)
-        
-        if exclude_values:
-            pos_ids1 = [pos_id for pos_id in pos_ids1 if not isinstance(positions1[pos_id].term, Value)]
-
-        pos_ids2 = order_positions(positions2,
-                                    select_node_leaf_prob = select_node_leaf_prob, 
-                                    rnd = rnd)
-        
-        if exclude_values:
-            pos_ids2 = [pos_id for pos_id in pos_ids2 if not isinstance(positions2[pos_id].term, Value)]
-
-    else:
-        pos_ids1 = []
-        pos_ids2 = []
-
-    children = []
-
-    num_points = min(len(pos_ids1) * len(pos_ids2), num_children)
-
-    for pos_id1, pos_id2 in product(pos_ids1, pos_ids2):
-        pos1: TermPos = positions1[pos_id1]
-        pos2: TermPos = positions2[pos_id2]
-        if pos1.term == pos2.term:
-            same_subtree += 2
-            continue
-
-        if (term1, pos1.term, pos1.occur, pos2.term) in crossover_cache:
-            children.append(crossover_cache[(term1, pos1.term, pos1.occur, pos2.term)])
-            cache_hit += 1
-        elif pos1.at_depth + get_depth(pos2.term, depth_cache) <= tree_max_depth:   
-
-            pos1_context = get_pos_constraints(pos1, builders, counts_cache, term1_pos_contexts)
-
-            new_child = try_replace_pos(pos1, pos2.term, pos1_context, builders, counts_cache)
-
-            if new_child is not None:
-                # val_poss = get_positions(new_child, {})
-                # for val_pos in val_poss:
-                #     get_pos_constraints(val_pos, builders, {}, {})
-                # pass
-                children.append(new_child)
-                crossover_cache[(term1, pos1.term, pos1.occur, pos2.term)] = new_child
-                success += 1
-            else:
-                fail += 1
-
-        if len(children) >= num_children:
-            break
-
-        if (term2, pos2.term, pos2.occur, pos1.term) in crossover_cache:
-            children.append(crossover_cache[(term2, pos2.term, pos2.occur, pos1.term)])
-            cache_hit += 1
-        elif pos2.at_depth + get_depth(pos1.term, depth_cache) <= tree_max_depth:
-
-            pos2_context = get_pos_constraints(pos2, builders, counts_cache, term2_pos_contexts)
-
-            new_child = try_replace_pos(pos2, pos1.term, pos2_context, builders, counts_cache)
-
-            if new_child is not None:
-                # val_poss = get_positions(new_child, {})
-                # for val_pos in val_poss:
-                #     get_pos_constraints(val_pos, builders, {}, {})
-                # pass                
-                children.append(new_child)
-                crossover_cache[(term2, pos2.term, pos2.occur, pos1.term)] = new_child
-                success += 1
-            else:
-                fail += 1
-        
-        if len(children) >= num_children:
-            break    
-
-    repr = 0
-    if len(children) < num_children:
-        repr = num_children - len(children)
-        left_children = [term1] * (num_children - len(children))
-        for i in range(1, len(left_children), 2):
-            left_children[i] = term2
-        children += left_children
-
-    if crossover_metrics is not None:
-        crossover_metrics["same_subtree"] = crossover_metrics.get("same_subtree", 0) + same_subtree
-        crossover_metrics["success"] = crossover_metrics.get("success", 0) + success
-        crossover_metrics["fail"] = crossover_metrics.get("fail", 0) + fail
-        crossover_metrics["cache_hit"] = crossover_metrics.get("cache_hit", 0) + cache_hit
-        crossover_metrics["children"] = crossover_metrics.get("children", 0) + len(children)
-        crossover_metrics["repr"] = crossover_metrics.get("repr", 0) + repr
-        crossover_metrics["num_points"] = crossover_metrics.get("num_points", 0) + num_points
-
-    return children
 
 def unique_term(root: Term, term_cache: dict[tuple, Term] | None = None) -> Term:
     ''' Remaps term to unique terms '''

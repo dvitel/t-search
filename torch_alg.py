@@ -341,7 +341,7 @@ def optimize_points(term: Term,
 
     optim_state = term_optim_cache[term]
 
-    if optim_state.num_attempted >= max_rand_tries: 
+    if optim_state.num_attempted > max_rand_tries: 
         for optim_point in optim_state.optim_points:
             del optim_point.value
         optim_state.optim_points.clear()
@@ -365,7 +365,7 @@ def optimize_points(term: Term,
         steps = (start_range[:, 1] - start_range[:, 0]) / rand_points_to_attempt
         rand_points = get_interval_grid(steps, start_range, rand_deltas=True, generator=torch_gen)
         if rand_points.shape[0] > rand_points_to_attempt:
-            selected_ids = torch.randperm(rand_points.shape[0], device=rand_points.device, generator=torch_gen)[:len(optim_state.optim_points) * rand_points_to_attempt]
+            selected_ids = torch.randperm(rand_points.shape[0], device=rand_points.device, generator=torch_gen)[:rand_points_to_attempt]
             new_rand_points = rand_points[selected_ids, :]
             del rand_points
             rand_points = new_rand_points
@@ -402,7 +402,7 @@ def optimize_points(term: Term,
         cur_best_binding = None
         cur_max_evals = max_evals
         while lr_try > 0:
-            # print(f"\t === {optim_state.num_attempted} {cur_lr}")
+            print(f"\t === {optim_state.num_attempted} {cur_lr}")
 
             for c, cv in zip(optim_state.optim_points, start_values):
                 c.value.requires_grad = False 
@@ -432,17 +432,18 @@ def optimize_points(term: Term,
                 outputs: torch.Tensor = eval_fn(optim_state.optim_term, given_ops, _redirected_get_binding, _set_binding)
                 assert outputs is not None, "Term evaluation should be full. Term is evaluated partially"
                 loss: torch.Tensor = loss_fn(outputs, target)
-                # print(f"\tLoss s{loss.item()}, binding {[p.item() for p in params]}")
+                print(f"\tLoss {loss.item()}, binding {[p.item() for p in params]}")
                 if not torch.isfinite(loss):
                     if last_loss is None:
                         raise LRAdjust(None)
                     else:
                         raise LRAdjust(0.1)
                 
-                if (last_loss is not None) and (loss > last_loss):
-                    raise LRAdjust(0.1)
-                if loss == last_loss:
-                    raise LRAdjust(None)
+                if last_loss is not None:
+                    if loss > last_loss:
+                        raise LRAdjust(0.1)
+                    if torch.allclose(loss, last_loss, rtol=rtol, atol=atol):
+                        raise LRAdjust(None)
 
                 last_loss = loss
 
@@ -490,7 +491,7 @@ def optimize_points(term: Term,
 
         term_optim_cache[new_term] = optim_state
 
-        # print(f">>> {new_term}")
+        print(f">>> {new_term}")
 
         return OptimResult(new_term, num_evals, num_root_evals)
 
