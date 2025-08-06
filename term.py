@@ -1145,6 +1145,18 @@ def get_positions(root: Term, pos_cache: dict[Term, list[TermPos]]) -> list[Term
 
     return positions # last one is the root
 
+def get_inner_terms(root: Term) -> list[Term]:
+    present_terms = set()
+    inner_terms = []
+    
+    def _inner_args(term: Term, *_):
+        if term not in present_terms:
+            inner_terms.append(term)
+            present_terms.add(term)
+    
+    postorder_traversal(root, _inner_args, lambda *_: ()) 
+    return inner_terms
+
 def enum_occurs(new_term: Term, some_occurs: dict, fn = lambda *_:()):
 
     def _enter_new_child(t, *_):
@@ -1304,8 +1316,8 @@ def get_pos_constraints(pos: TermPos, builders: Builders, counts_cache: dict[Ter
 
     return res_context
 
-def validate_root(root: Term, *, builders: Builders, counts_cache: dict[Term, np.ndarray],                        
-                        root_context: TermGenContext | None = None) -> Optional[Term]:
+def is_valid(root: Term, *, builders: Builders, counts_cache: dict[Term, np.ndarray],                        
+                        root_context: TermGenContext | None = None) -> bool:
     
     if root_context is None:
         root_context = builders.default_gen_context
@@ -1316,13 +1328,13 @@ def validate_root(root: Term, *, builders: Builders, counts_cache: dict[Term, np
         child_count[builder.id] += 1
         
         if np.any(child_count > root_context.arg_limits):
-            return None
+            return False
         
     counts = get_counts(root, builders, counts_cache)
     if np.any(counts > root_context.max_counts) or np.any(counts < root_context.min_counts):
-        return None
+        return False
 
-    return root
+    return True
 
 def validate_term_tree(root: Term, *, builders: Builders, counts_cache: dict[Term, np.ndarray],                        
                         occurs: dict[Term, int] | None = None,
@@ -1485,18 +1497,6 @@ def get_counts(root: Term, builders: Builders, counts_cache: dict[Term, np.ndarr
     postorder_traversal(root, _enter_args, _exit_term)
 
     return counts_stack[-1][-1]
-
-def try_replace_pos(at_pos: TermPos, with_term: Term, 
-                        pos_gen_context: TermGenContext, builders: Builders, 
-                        counts_cache: dict[Term, np.ndarray]) -> Optional[Term]:
-    
-    valid_with_term = validate_root(with_term, builders = builders, root_context = pos_gen_context, counts_cache = counts_cache)
-    if valid_with_term is None:
-        return None
-    
-    new_child = replace_pos(at_pos, valid_with_term, builders)
-    
-    return new_child
 
 def unique_term(root: Term, term_cache: dict[tuple, Term] | None = None) -> Term:
     ''' Remaps term to unique terms '''
