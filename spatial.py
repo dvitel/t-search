@@ -233,14 +233,34 @@ class VectorStorage:
         '''
         return get_by_ids(self.vectors, self.cur_id, ids)
     
-    def alloc_vectors(self, vectors: torch.Tensor) -> list[int]:
+    def _alloc_vectors(self, vectors: torch.Tensor) -> list[int]:
         ''' Adds vectors (n, dims) to storage and returns new ids. '''
-        self.vectors[self.cur_id:self.cur_id + vectors.shape[0]] = vectors
+        cur_end = self.cur_id + vectors.shape[0]
+        if cur_end > self.capacity: # reallocate memory 
+            new_vectors = torch.empty((self.capacity * 2, vectors.shape[1]), dtype=vectors.dtype, device=vectors.device)
+            new_vectors[:self.cur_id] = self.vectors[:self.cur_id]
+            old_vectors = self.vectors
+            self.vectors = new_vectors
+            del old_vectors
+        self.vectors[self.cur_id:cur_end] = vectors
         vector_ids = list(range(self.cur_id, self.cur_id + vectors.shape[0]))
         self.cur_id += vectors.shape[0]
         # if self.cur_id - self.stats.num_vectors >= self.stats_batch_size:
         #     self.stats.recompute(dim_delta = self.dim_delta)
         return vector_ids
+    
+    def query_points(self, points: torch.Tensor) -> list[int]:
+        ''' O(n). Return id of vectors in index if present. Empty tensor otherwise. '''
+        return self.find_close(None, points) # q here is one point among N points of all_vectors off shape (N, ..., dims)
+    
+    def query_range(self, qrange: torch.Tensor) -> list[int]:
+        ''' O(n). Returns ids stored in the index, shape (N), N >= 0 is most cases.
+            qrange[0] - mins, qrange[1] - maxs, both of shape (dims).
+        '''
+        return self.find_in_range(None, qrange)
+        
+    def insert(self, vectors: torch.Tensor) -> list[int]:
+        return self._alloc_vectors(vectors)
     
     # def _find(self, ids: None | tuple[int, int] | list[int], op, *args) -> list[int]:
         
@@ -344,24 +364,14 @@ class VectorStorage:
 
 class SpatialIndex(VectorStorage):
     ''' Defines the interface for spatial indices. 
-        This is default implementation which isi heavy inefficient O(N), N - number of semantics.
+        This is default implementation which is heavy inefficient O(N), N - number of semantics.
     '''
-    
-    def query_points(self, points: torch.Tensor) -> list[int]:
-        ''' O(n). Return id of vectors in index if present. Empty tensor otherwise. '''
-        return self.find_close(None, points) # q here is one point among N points of all_vectors off shape (N, ..., dims)
-    
-    def query_range(self, qrange: torch.Tensor) -> list[int]:
-        ''' O(n). Returns ids stored in the index, shape (N), N >= 0 is most cases.
-            qrange[0] - mins, qrange[1] - maxs, both of shape (dims).
-        '''
-        return self.find_in_range(None, qrange)
     
     def _insert_distinct(self, unique_vectors: torch.Tensor) -> list[int]:
         found_ids = self.query_points(unique_vectors)
         missing = get_missing_ids(found_ids)
         if len(missing) > 0:
-            missing_ids = self.alloc_vectors(unique_vectors[missing])
+            missing_ids = self._alloc_vectors(unique_vectors[missing])
             found_ids = merge_ids(found_ids, missing_ids)
         return found_ids
 
@@ -470,7 +480,7 @@ class BinIndex(SpatialIndex):
         if len(self.bins) == 0: 
             # if no bins, allocate all vectors
             self.bins = group_by_bins            
-            found_ids = self.alloc_vectors(unique_vectors)
+            found_ids = self._alloc_vectors(unique_vectors)
         else:
             trigger_bin_id = None
             all_bin_entries = [e for bin_index in self.bins.keys() for e in self.bins.get(bin_index, [])]
@@ -479,7 +489,7 @@ class BinIndex(SpatialIndex):
             found_ids = self.find_close(all_bin_entries, unique_vectors) # recompute stats if needed
             missing_ids = get_missing_ids(found_ids)
             if len(missing_ids) > 0:
-                new_ids = self.alloc_vectors(unique_vectors[missing_ids])
+                new_ids = self._alloc_vectors(unique_vectors[missing_ids])
                 found_ids = merge_ids(found_ids, new_ids)
                 for vector_id in missing_ids:
                     self.bins.setdefault(vector_bin_ids[vector_id], []).append(found_ids[vector_id])
@@ -856,7 +866,7 @@ class RTreeIndex(SpatialIndex):
             new_ids = []
             if len(missing_ids) > 0:
                 points_missing_tensor = cur_points[missing_ids]
-                new_ids = self.alloc_vectors(points_missing_tensor)
+                new_ids = self._alloc_vectors(points_missing_tensor)
                 local_found_ids = merge_ids(local_found_ids, new_ids)
                 node.children.extend(new_ids)
             if point_ids is None:
@@ -1236,7 +1246,7 @@ def test_storage(capacity = 100_000, dims = 1024, dtype = torch.float16, device 
     all_chunks = []
     for chunk_sz in range(1, 10):
         chunk = torch.randn((chunk_sz, dims), dtype=dtype, device=device)
-        ids = storage.alloc_vectors(chunk)
+        ids = storage._alloc_vectors(chunk)
         all_ids.append(ids)
         all_chunks.append(chunk)
     assert storage.cur_id == sum(len(l) for l in all_ids), "Storage did not allocate all vectors correctly."

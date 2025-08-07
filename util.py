@@ -11,3 +11,11 @@ def stack_rows(tensors: Sequence[torch.Tensor], target_size: int | None = None) 
     for i, ti in enumerate(tensors):
         res[i] = ti # assuming broadcastable
     return res  
+
+class Operator:
+    def __init__(self, name: str):
+        self.name = name 
+        self.metrics = {}
+
+    def on_start(self):
+        self.metrics = {}

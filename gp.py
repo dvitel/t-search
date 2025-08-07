@@ -14,9 +14,10 @@ import numpy as np
 import torch
 from initialization import RHH, Initialization
 from mutation import ConstOptimization, Deduplicate, Mutation, PointOptimization, PointRandCrossover, PointRandMutation
-from selection import TournamentSelection
+from selection import Elitism, TournamentSelection
+from spatial import SpatialIndex, VectorStorage
 from term import Builder, Builders, Op, Term, Value, Variable, evaluate, get_counts, get_depth, \
-                    get_fn_arity, get_inner_terms, match_root, parse_term
+                    get_fn_arity, match_root, parse_term
 from sklearn.base import BaseEstimator, RegressorMixin
 
 from util import stack_rows  
@@ -108,16 +109,16 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 max_root_evals: int = 100_000, 
                 max_evals: int = 1_000_000,
                 pop_size: int = 1000, 
-                elitism: int = 0, 
                 with_inner_evals: bool = False,
                 cache_term_props: bool = True,
-                cache_terms: bool = True,
-                cache_evals: bool = True, # outputs and fitness
+                # cache_terms: bool = True,
+                # cache_evals: bool = True, # outputs and fitness
                 # compute_output_range = True,
                 rtol = 1e-04, atol = 1e-03, # NOTE: these are for semantic/outputs comparison, not for fitness, see fit_0
                 rnd_seed: Optional[int] = None,
                 torch_rnd_seed: Optional[int] = None,
                 device = "cpu", dtype = torch.float32,
+                index_type = VectorStorage, # semantics storage
                 ):
         
         self.ops = ops
@@ -154,14 +155,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.max_gen = max_gen
         self.max_root_evals = max_root_evals
         self.max_evals = max_evals
-        self.pop_size = pop_size
-        self.elitism = elitism
+        self.pop_size = pop_size        
+        self.elitism: list[Elitism] = [op for op in self.pipeline if isinstance(op, Elitism)]
         self.with_inner_evals = with_inner_evals
-        self.elite_terms = []
-        assert self.elitism < self.pop_size, "Elitism should be less than population size"
         self.cache_term_props = cache_term_props
-        self.cache_terms = cache_terms
-        self.cache_evals = cache_evals
+        # self.cache_terms = cache_terms
+        # self.cache_evals = cache_evals
         self.rtol = rtol
         self.atol = atol
         self.device = device
@@ -189,15 +188,17 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # self.free_vars: Optional[Sequence] = None
         self.sign_syntax: dict[tuple[str, ...], Term] = {}
         self.term_repr: dict[Term, Term] = {} # unifies terms to same instance - to use in other caches
-        self.term_outputs: dict[Term, torch.Tensor] = {}
-        self.term_fitness: dict[Term, torch.Tensor] = {}
+        self.index: VectorStorage | None = None
+        self.index_type = index_type
+        self.term_outputs: dict[Term, int] = {} # int if storage is provided
+        self.new_term_outputs: dict[Term, torch.Tensor] = {}
+        self.output_fitness: dict[int, torch.Tensor] = {}
         # self.term_counts: dict[Term, np.ndarray] = {}
         self.pos_cache = {}
         self.pos_context_cache = {}
         self.depth_cache = {}
         self.counts_cache = {}
         self.crossover_cache = {} 
-        self.inner_term_cache = {}
 
         self.best_term: Optional[Term] = None
         self.best_outputs: Optional[torch.Tensor] = None
@@ -237,8 +238,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         self.target = None 
         self.syntax: dict[tuple[str, ...], Term] = {}
-        self.term_outputs: dict[Term, torch.Tensor] = {}
-        self.term_fitness: dict[Term, torch.Tensor] = {}
+        self.term_outputs: dict[Term, int] = {}
+        self.new_term_outputs: dict[Term, torch.Tensor] = {} # to be registered in index - new semantics
+        self.output_fitness: dict[int, torch.Tensor] = {}
         self.pos_cache = {}
         self.pos_context_cache = {}
         self.counts_cache = {}
@@ -258,7 +260,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.gen_metrics = {}
         self.is_fitted_ = False
         builders = {}
-        self.elite_terms = []
 
         if self.max_consts > 0:
             const_builder = Builder("C", self._alloc_const, 0, self.min_consts, self.max_consts)
@@ -339,6 +340,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # self.output_range[0] -= 0.1 * abs_target
         # self.output_range[1] += 0.1 * abs_target
         # del abs_target
+        if self.index is not None:
+            del self.index
+        self.index = self.index_type(capacity = self.max_evals, dims = self.target.shape[0], 
+                                dtype = self.dtype, device = self.device,
+                                rtol = self.rtol, atol = self.atol)
+        pass
+
         
     def get_vars(self, free_vars):
         vars = []
@@ -384,44 +392,42 @@ class GPSolver(BaseEstimator, RegressorMixin):
         
     def eval(self, terms: list[Term]):
 
-        if not self.cache_evals:
-            self.term_outputs.clear()
-            self.term_fitness.clear()
-
+        self.new_term_outputs.clear()
             
         outputs = []
         for term in terms:
             output = self.eval_fn(term, self.ops, self._get_binding, self._set_binding)
             outputs.append(output)
 
-        new_terms = [t for t in terms if t not in self.term_fitness]
+        new_terms = [t for t in terms if t in self.new_term_outputs]
         if self.with_inner_evals:
-            full_new_terms = list(new_terms)
-            outputs.clear()
-            already_added = set()
-            for term in new_terms:
-                if term not in self.inner_term_cache:
-                    inner_terms = get_inner_terms(term)
-                    inner_ops = [t for t in inner_terms if not isinstance(t, (Variable, Value))]
-                    self.inner_term_cache[term] = inner_ops
-                for inner_term in self.inner_term_cache[term]:
-                    if inner_term in self.term_fitness or inner_term in already_added:
-                        continue
-                    output = self.get_cached_output(inner_term)
-                    outputs.append(output)
-                    new_terms.append(inner_term)
-                    already_added.add(inner_term)
-            new_terms = full_new_terms
+            new_terms = list(self.new_term_outputs.keys())
 
         # assert len(terms) > 0, "No terms to update fitness for"
 
-        new_fitness = self.compute_fitness(new_terms, all_new=True)
-        if new_fitness is not None:
+        outputs = [self.new_term_outputs[t] for t in new_terms]
+        if len(outputs) > 0:
+            semantics = stack_rows(outputs, target_size=self.target.shape[0])
+            semantic_ids = self.index.insert(semantics)
+            # if self.compute_output_range:
+            #     finite_predictions_mask = torch.isfinite(predictions).all(dim=-1)
+            #     if torch.any(finite_predictions_mask):
+            #         finite_predictions = predictions[finite_predictions_mask]
+            #         min_outputs = torch.min(finite_predictions, dim=0).values
+            #         max_outputs = torch.max(finite_predictions, dim=0).values
+            #         torch.minimum(self.output_range[0], min_outputs, out=self.output_range[0])
+            #         torch.maximum(self.output_range[1], max_outputs, out=self.output_range[1])
+            new_fitness: torch.Tensor = self.fitness_fn(semantics, self.target)
+            for t, sid, f in zip(new_terms, semantic_ids, new_fitness):
+                self.term_outputs[t] = sid
+                self.output_fitness[sid] = f
+            del semantics
+
             best_id, best_found = self.fit_condition(new_fitness, self.best_fitness)
             if best_id is not None:
                 self.best_term = new_terms[best_id]
-                self.best_outputs = self.get_cached_output(self.best_term)
-                self.best_fitness = new_fitness[best_id]
+                self.best_outputs = outputs[best_id].clone()
+                self.best_fitness = new_fitness[best_id].clone()
         
             self.has_solution = best_found
 
@@ -442,52 +448,26 @@ class GPSolver(BaseEstimator, RegressorMixin):
             self.gen_metrics["best_term_size"] = best_size
             self.gen_metrics["best_counts"] = best_counts.tolist()
 
-        if self.elitism > 0:
-            fitness = stack_rows([self.term_fitness[t] for t in terms])
-            sorted_ids = torch.argsort(fitness, dim=0)
-            elite_ids = sorted_ids[:self.elitism].tolist()
-            self.elite_terms = [terms[i] for i in elite_ids]
-
         self.gen_metrics["pop_size"] = len(terms)
 
-        return outputs, fitness
+    def get_term_fitness(self, term: Term) -> Optional[torch.Tensor]:
+        if term in self.term_outputs:
+            semantics_id = self.term_outputs[term]
+            if semantics_id in self.output_fitness:
+                return self.output_fitness[semantics_id]
+        return None
     
-    def compute_fitness(self, terms: list[Term], 
-                            return_tensor: bool = False,
-                            all_new: bool = False) -> torch.Tensor | list[torch.Tensor]:
-        if all_new:
-            missing_terms = terms
-        else:
-            missing_terms = [t for t in terms if t not in self.term_fitness]
-        new_fitness = None
-        if len(missing_terms) > 0:
-            outputs = [self.get_cached_output(t) for t in missing_terms]
-            predictions = stack_rows(outputs, target_size=self.target.shape[0])
-            # if self.compute_output_range:
-            #     finite_predictions_mask = torch.isfinite(predictions).all(dim=-1)
-            #     if torch.any(finite_predictions_mask):
-            #         finite_predictions = predictions[finite_predictions_mask]
-            #         min_outputs = torch.min(finite_predictions, dim=0).values
-            #         max_outputs = torch.max(finite_predictions, dim=0).values
-            #         torch.minimum(self.output_range[0], min_outputs, out=self.output_range[0])
-            #         torch.maximum(self.output_range[1], max_outputs, out=self.output_range[1])
-            new_fitness: torch.Tensor = self.fitness_fn(predictions, self.target)
-            for t, f in zip(missing_terms, new_fitness):
-                self.term_fitness[t] = f
-            del predictions
-        if all_new:
-            return new_fitness
-        if (len(missing_terms) == len(terms)) and return_tensor:
-            return new_fitness
-        fitness = [self.term_fitness[t] for t in terms]
-        if return_tensor:
-            fitness = stack_rows(fitness)
-        return fitness
+    def get_terms_fitness(self, terms: list[Term]):
+        present_terms = []
+        present_fitness = []
+        for term in terms:
+            f = self.get_term_fitness(term)
+            if f is not None:
+                present_terms.append(term)
+                present_fitness.append(f)
+        return present_terms, present_fitness
 
-    def breed(self, population: list[Term], 
-                outputs: torch.Tensor | Sequence[torch.Tensor], 
-                fitness: torch.Tensor | Sequence[torch.Tensor], 
-                size: int) -> list[Term]:
+    def breed(self, population: list[Term]) -> list[Term]:
         ''' Pipeline that mutates parents and then applies crossover on pairs. One-point operations '''
 
         # caches 
@@ -505,16 +485,16 @@ class GPSolver(BaseEstimator, RegressorMixin):
         #         get_pos_constraints(pos, self.builders, {}, {})
         #     pass        
 
-        size = size - len(self.elite_terms)
+        children = population
 
-        children = timed(self.pipeline[0], "selection_time", self.gen_metrics)(self, population, size)
+        for operator in self.pipeline:
+            children = timed(operator, f"{operator.name}_time", self.gen_metrics)(self, children)
+            if len(operator.metrics) > 0:
+                self.gen_metrics[operator.name] = operator.metrics
 
-        for mutation_id in range(1, len(self.pipeline)):
-            mutation = self.pipeline[mutation_id]
-            children = timed(mutation, f"{mutation.name}_time", self.gen_metrics)(self, children)
-            self.gen_metrics[mutation.name] = mutation.metrics
-
-        children.extend(self.elite_terms)
+        for e in self.elitism:
+            elite_terms = e.get_elite()
+            children.extend(elite_terms)
 
         return children
     
@@ -530,28 +510,28 @@ class GPSolver(BaseEstimator, RegressorMixin):
         hit_key = "syntax_hit"
         miss_key = "syntax_miss"
 
-        if self.cache_terms:
-            def _alloc_op(*args):
-                signature = (op_id, *args) 
-                if signature in self.syntax:
-                    key = hit_key
-                    term = self.syntax[signature]
-                else:
-                    key = miss_key
-                    term = Op(op_id, args)
-                    self.syntax[signature] = term 
-                if not self._validate_term(term):
-                    self.syntax.pop(signature, None)
-                    return None
-                self.metrics[key] = self.metrics.get(key, 0) + 1
-                return term 
-        else:
-            def _alloc_op(*args):
-                self.metrics[miss_key] = self.metrics.get(miss_key, 0) + 1
+        # if self.cache_terms:
+        def _alloc_op(*args):
+            signature = (op_id, *args) 
+            if signature in self.syntax:
+                key = hit_key
+                term = self.syntax[signature]
+            else:
+                key = miss_key
                 term = Op(op_id, args)
-                if self._validate_term(term):
-                    return term
+                self.syntax[signature] = term 
+            if not self._validate_term(term):
+                self.syntax.pop(signature, None)
                 return None
+            self.metrics[key] = self.metrics.get(key, 0) + 1
+            return term 
+        # else:
+        #     def _alloc_op(*args):
+        #         self.metrics[miss_key] = self.metrics.get(miss_key, 0) + 1
+        #         term = Op(op_id, args)
+        #         if self._validate_term(term):
+        #             return term
+        #         return None
             
         return _alloc_op
     
@@ -560,8 +540,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
             return self.var_binding[term.var_id]
         if isinstance(term, Value):
             # return self.const_binding[term.value]
-            return term.value            
-        return self.term_outputs.get(term, None)
+            return term.value     
+        if term in self.new_term_outputs:
+            return self.new_term_outputs[term]       
+        if term in self.term_outputs:
+            semantics_id = self.term_outputs[term]
+            semantics = self.index.get_vectors(semantics_id)
+            return semantics
+        return None
 
     
     def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:        
@@ -582,7 +568,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
             raise EvSearchTermination("MAX_EVAL")
         if self.root_evals == self.max_root_evals:
             raise EvSearchTermination("MAX_ROOT_EVAL")
-        self.term_outputs[term] = value
+        # semantics_id = self.index.alloc_vectors(value)
+        self.new_term_outputs[term] = value
 
     def _checkpoint_metrics(self):
         if len(self.gen_metrics) > 0:
@@ -592,12 +579,11 @@ class GPSolver(BaseEstimator, RegressorMixin):
     def _loop(self):   
         population = timed(self.init, "init_time", self.gen_metrics)(self, self.pop_size)
         self.gen_metrics.update(self.init.metrics)
-        outputs, fitness = timed(self.eval, "eval_time", self.gen_metrics)(population)
+        timed(self.eval, "eval_time", self.gen_metrics)(population)
         self._checkpoint_metrics()
         while not self.has_solution and self.gen < self.max_gen and self.evals < self.max_evals and self.root_evals < self.max_root_evals:
-            population = self.breed(population, outputs, fitness, self.pop_size) 
-            del outputs, fitness 
-            outputs, fitness = timed(self.eval, "eval_time", self.gen_metrics)(population)
+            population = self.breed(population) 
+            timed(self.eval, "eval_time", self.gen_metrics)(population)
             self.gen += 1
             self._checkpoint_metrics()
 
@@ -765,12 +751,13 @@ if __name__ == "__main__":
 
     solver = GPSolver(ops = alg_ops, device = device, dtype = dtype,
                         rnd_seed = rnd_seed, torch_rnd_seed = rnd_seed,
-                        max_consts=5, elitism=10,
+                        max_consts=5,
                         max_ops = {"inv": 5, "neg": 5},
                         with_inner_evals=True,
                         init=RHH(),
                         #(num_tries=1, lr=0.1)],
-                        pipeline=[TournamentSelection(), 
+                        pipeline=[Elitism(size = 10),
+                                  TournamentSelection(), 
                                   PointRandMutation(), 
                                   PointRandCrossover(), 
                                   Deduplicate(), 

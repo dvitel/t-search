@@ -7,28 +7,18 @@ from typing import Optional, Sequence
 
 import torch
 
+from spatial import SpatialIndex
 from term import Term, TermGenContext, TermPos, Value, get_depth, get_inner_terms, get_pos_constraints, get_pos_sibling_counts, get_positions, grow, is_valid, replace_pos, shuffle_positions
 from torch_alg import OptimState, optimize_consts, optimize_positions
 
 from typing import TYPE_CHECKING
 
-from util import stack_rows
+from util import Operator, stack_rows
 
 if TYPE_CHECKING:
     from gp import GPSolver  # Import only for type checking
 
-class Mutation:
-    ''' Base interface '''
-    def __init__(self, name: str):
-        self.name = name
-        self.metrics = {}
-        # self.builders: Builders | None = None
-        # self.pos_cache: dict[Term, list[TermPos]] = {}
-        # self.pos_context_cache: dict[Term, dict[tuple[Term, int], TermGenContext]] = {}
-        # self.counts_cache: dict[Term, np.ndarray] = {}
-        # self.depth_cache: dict[Term, int] = {}
-        pass 
-
+class Mutation(Operator):
 
     def _mutate(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
         ''' Should be implemented in subclasses '''
@@ -36,7 +26,7 @@ class Mutation:
     
     def __call__(self, solver: 'GPSolver', population: Sequence[Term]): 
         ''' Use to trigger mutation, _mutate should not be called directly '''
-        self.metrics = {}
+        self.on_start()
         children =  self._mutate(solver, population)
         return children
     
@@ -509,13 +499,20 @@ class ReplaceWithBestInner(Mutation):
             if term not in self.term_best_inner_term_cache:
                 inner_terms = get_inner_terms(term)
                 # self.term_inner_terms_cache[term] = inner_terms
-                inner_fitness = solver.compute_fitness(inner_terms, return_tensor=True)
-                sort_ids = torch.argsort(inner_fitness)
-                best_ids = sort_ids[:self.inner_cnt]
-                best_inners = [inner_terms[i] for i in best_ids.tolist()]
-                self.term_best_inner_term_cache[term] = best_inners
-                del inner_fitness
-            for t in self.term_best_inner_term_cache[term]:
+                present_terms, present_fitness = solver.get_terms_fitness(inner_terms)
+                if len(present_fitness) > 0:
+                    inner_fitness = torch.stack(present_fitness, dim=0)
+                    sort_ids = torch.argsort(inner_fitness) 
+                    best_ids = sort_ids[:self.inner_cnt]
+                    best_inners = [present_terms[i] for i in best_ids.tolist()]
+                    if len(present_terms) == len(inner_terms):
+                        self.term_best_inner_term_cache[term] = best_inners
+                    del inner_fitness
+                else:
+                    best_inners = [term]
+            else:
+                best_inners = self.term_best_inner_term_cache[term]
+            for t in best_inners:
                 if t not in alerady_added:
                     children.append(t)
                     alerady_added.add(t)
@@ -533,7 +530,8 @@ class PointOptimization(Mutation):
                  frac = 0.2, 
                  num_vals: int = 1,
                  max_tries: int = 1,
-                 num_evals: int = 10, lr = 1.0):
+                 num_evals: int = 10, lr = 1.0,
+                 index_type = SpatialIndex):
         super().__init__(name)
         self.frac = frac
         self.num_vals = num_vals
@@ -542,6 +540,8 @@ class PointOptimization(Mutation):
         self.lr = lr
         self.tries_pos: dict[Term, set[tuple[Term, int]]] = {}
         self.point_optim_cache: dict[tuple[Term, tuple[Term, int]], OptimState] = {}
+        self.index: SpatialIndex | None = None
+        self.index_type = index_type
 
     def _optimize_rand_pos(self, solver: 'GPSolver', term: Term, population: Sequence[Term]) -> Term:
         # start_opt = perf_counter()
@@ -578,6 +578,8 @@ class PointOptimization(Mutation):
 
 
     def _mutate(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
+        if self.index is None:
+            self.index = self.index_type(population, [solver.get_cached_output(t) for t in population])
         children = list(population)
         max_count = int(len(population) * self.frac)
         if max_count == len(population):
