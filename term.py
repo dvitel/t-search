@@ -1105,7 +1105,8 @@ def grow(builders: Builders,
 
 # IDEA: dropout in GP, frozen tree positions which cannot be mutated or crossovered - for later
 
-def get_positions(root: Term, pos_cache: dict[Term, list[TermPos]]) -> list[TermPos]:
+def get_positions(root: Term, pos_cache: dict[Term, list[TermPos]],
+                    without_root: bool = True) -> list[TermPos]:
     ''' Returns dictionary where keys are all positions in the term and values are references to parent position 
         NOTE: we do not return thee root of the term as TermPos as it does not have parent
     '''
@@ -1141,6 +1142,8 @@ def get_positions(root: Term, pos_cache: dict[Term, list[TermPos]]) -> list[Term
 
     postorder_traversal(root, _enter_args, _exit_term)
 
+    if without_root:
+        positions.pop() # remove root 
     pos_cache[root] = positions
 
     return positions # last one is the root
@@ -1190,7 +1193,7 @@ def replace_pos(pos: TermPos, with_term: Term, builders: Builders) -> Optional[T
 
 
 def replace_fn(root: Term,
-            get_replacement_fn: Callable[[dict[tuple[Term, int], Optional[Term]]], Term],
+            get_replacement_fn: Callable[[Term, int], Optional[Term]],
             builders: Builders) -> Optional[Term]:
 
     occurs = {}

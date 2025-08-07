@@ -8,9 +8,11 @@ from typing import Optional, Sequence
 import torch
 
 from term import Term, TermGenContext, TermPos, Value, get_depth, get_inner_terms, get_pos_constraints, get_pos_sibling_counts, get_positions, grow, is_valid, replace_pos, shuffle_positions
-from torch_alg import OptimState, const_to_optim_point, const_to_optim_point_m, optim_point_to_const, optim_point_to_const_m, optimize_points, optimize_points_m
+from torch_alg import OptimState, optimize_consts, optimize_positions
 
 from typing import TYPE_CHECKING
+
+from util import stack_rows
 
 if TYPE_CHECKING:
     from gp import GPSolver  # Import only for type checking
@@ -70,10 +72,12 @@ class PointRandMutation(Mutation):
         fail = 0
         
         positions = get_positions(term, solver.pos_cache)
-        pos_contexts = solver.pos_context_cache.setdefault(term, {})
 
-        if len(positions) > 1:
-            positions = positions[:-1]
+        if len(positions) == 0:
+            fail += 1
+            return []
+        
+        pos_contexts = solver.pos_context_cache.setdefault(term, {})
 
         ordered_pos_ids = shuffle_positions(positions, 
                                         select_node_leaf_prob = self.leaf_proba, 
@@ -178,7 +182,6 @@ class PointRandCrossover(Mutation):
             term1 = population[term_i]
 
             positions1 = get_positions(term1, solver.pos_cache)
-            positions1 = positions1[:-1] # removing root
             if self.exclude_values:
                 positions1 = [pos for pos in positions1 if not isinstance(pos.term, Value)]            
 
@@ -199,7 +202,6 @@ class PointRandCrossover(Mutation):
                 term2 = population[other_id]
 
                 positions2 = get_positions(term2, solver.pos_cache)
-                positions2 = positions2[:-1] # removing root
                 if self.exclude_values:
                     positions2 = [pos for pos in positions2 if not isinstance(pos.term, Value)]
 
@@ -272,13 +274,11 @@ class ClassicPointRandCrossover(Mutation):
 
         positions1 = get_positions(term1, solver.pos_cache)
         positions2 = get_positions(term2, solver.pos_cache)
-        term1_pos_contexts = solver.pos_context_cache.setdefault(term1, {})
-        term2_pos_contexts = solver.pos_context_cache.setdefault(term2, {})
 
-        positions1 = positions1[:-1] # removing root
-        positions2 = positions2[:-1]
         num_pairs = len(positions1) * len(positions2)
         if num_pairs > 0:
+            term1_pos_contexts = solver.pos_context_cache.setdefault(term1, {})
+            term2_pos_contexts = solver.pos_context_cache.setdefault(term2, {})
 
             pos_ids1 = shuffle_positions(positions1,
                                         select_node_leaf_prob = self.leaf_proba, 
@@ -406,57 +406,7 @@ class ClassicPointRandCrossover(Mutation):
                 children[2 * ii + 1] = new_children[2 * i + 1]
 
         return children
-    
-class ConstOptimization1(Mutation):
-    ''' Adjust consts to correspond to the given target '''
-
-    def __init__(self, name = "const_opt", *, 
-                 frac = 0.5, 
-                 num_rand_tries: int = 0,
-                 max_tries: int = 1,
-                 num_evals: int = 10, lr = 1.0):
-        super().__init__(name)
-        self.frac = frac
-        self.num_rand_tries = num_rand_tries
-        self.max_tries = max_tries
-        self.num_evals = num_evals
-        self.lr = lr
-        self.const_optim_cache: dict[Term, OptimState] = {}
-
-    def _optimize_consts(self, solver: 'GPSolver', term: Term) -> Term:
-        optim_res = optimize_points(term, solver.target, solver.builders,
-                                    solver.ops, solver._get_binding,
-                                    solver.const_range, solver.eval_fn, 
-                                    loss_fn = solver.fitness_fn,
-                                    term_to_optim_point_fn = const_to_optim_point,
-                                    optim_point_to_term_fn = optim_point_to_const,
-                                    num_rand_tries=self.num_rand_tries,
-                                    max_rand_tries=self.max_tries,
-                                    max_evals=self.num_evals,
-                                    lr = self.lr,
-                                    rtol = solver.rtol, atol = solver.atol,
-                                    torch_gen=solver.torch_gen,
-                                    term_optim_cache=self.const_optim_cache)
-        solver.report_evals(optim_res.num_evals, optim_res.num_root_evals)
-        return optim_res.term
-
-
-    def _mutate(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
-        children = list(population)
-        max_count = int(len(population) * self.frac)
-        if max_count == len(population):
-            term_ids = range(len(population))
-        else:
-            term_ids = solver.rnd.permutation(len(population))
-        for term_id in term_ids:
-            if max_count <= 0:
-                break
-            optimized_term = self._optimize_consts(solver, population[term_id])
-            if optimized_term is not None:
-                children[term_id] = optimized_term
-                max_count -= 1
-        return children
-    
+        
 class ConstOptimization(Mutation):
     ''' Adjust consts to correspond to the given target '''
 
@@ -475,13 +425,10 @@ class ConstOptimization(Mutation):
 
     def _optimize_consts(self, solver: 'GPSolver', term: Term) -> Term:
         # start_opt = perf_counter()
-        optim_res = optimize_points_m(term, solver.target, solver.builders,
+        optim_res = optimize_consts(term, solver.target, solver.builders,
                                     solver.ops, solver._get_binding,
                                     solver.const_range, solver.eval_fn, 
-                                    # loss_fn = partial(torch.nn.functional.mse_loss, reduction='none'),
-                                    term_to_optim_point_fn = const_to_optim_point_m,
-                                    optim_point_to_term_fn = optim_point_to_const,
-                                    num_vals=self.num_vals,
+                                    num_vals = self.num_vals,
                                     max_tries=self.max_tries,
                                     max_evals=self.num_evals,
                                     lr = self.lr,
@@ -530,17 +477,20 @@ class Deduplicate(Mutation):
 class ReplaceWithBestInner(Mutation):
     ''' Replaces each term with its inner term with best fitness '''
 
-    def __init__(self, name: str = "best_inner", *, frac: float = 0.5):
+    def __init__(self, name: str = "best_inner", *, frac: float = 0.5,
+                    inner_cnt: float = 3, with_self: bool = True):
         super().__init__(name)
         self.term_best_inner_term_cache: dict[Term, Term] = {}
         self.frac = frac
+        self.inner_cnt = inner_cnt
+        self.with_self = with_self
 
     def _mutate(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
         
         if not solver.cache_evals:
             return population
         
-        children = list(population)
+        children = []
 
         max_count = int(len(population) * self.frac)
         if max_count == len(population):
@@ -548,29 +498,97 @@ class ReplaceWithBestInner(Mutation):
         else:
             term_ids = solver.rnd.permutation(len(population))
 
+        alerady_added = set()
         for term_id in term_ids:
-            if max_count <= 0:
-                break
             term = population[term_id]
+            if max_count <= 0:
+                if term not in alerady_added:
+                    children.append(term)
+                    alerady_added.add(term)
+                continue
             if term not in self.term_best_inner_term_cache:
                 inner_terms = get_inner_terms(term)
                 # self.term_inner_terms_cache[term] = inner_terms
                 inner_fitness = solver.compute_fitness(inner_terms, return_tensor=True)
-                best_inner_id = torch.argmin(inner_fitness).item()
-                best_inner = inner_terms[best_inner_id]
-                self.term_best_inner_term_cache[term] = best_inner
+                sort_ids = torch.argsort(inner_fitness)
+                best_ids = sort_ids[:self.inner_cnt]
+                best_inners = [inner_terms[i] for i in best_ids.tolist()]
+                self.term_best_inner_term_cache[term] = best_inners
                 del inner_fitness
-            best_inner = self.term_best_inner_term_cache[term]
-            if best_inner != term:
-                children[term_id] = best_inner
-                max_count -= 1
+            for t in self.term_best_inner_term_cache[term]:
+                if t not in alerady_added:
+                    children.append(t)
+                    alerady_added.add(t)
+            if self.with_self and term not in alerady_added:
+                children.append(term)
+                alerady_added.add(term)
+            max_count -= 1
 
         return children
-    
+        
 class PointOptimization(Mutation):
     ''' Adjust arbirary point of the term by searching best vectors at points ''' 
     
-    def __init__(self, name = "point_opt", *,
-                 frac = 0.2):
+    def __init__(self, name = "const_opt", *, 
+                 frac = 0.2, 
+                 num_vals: int = 1,
+                 max_tries: int = 1,
+                 num_evals: int = 10, lr = 1.0):
         super().__init__(name)
         self.frac = frac
+        self.num_vals = num_vals
+        self.max_tries = max_tries
+        self.num_evals = num_evals
+        self.lr = lr
+        self.tries_pos: dict[Term, set[tuple[Term, int]]] = {}
+        self.point_optim_cache: dict[tuple[Term, tuple[Term, int]], OptimState] = {}
+
+    def _optimize_rand_pos(self, solver: 'GPSolver', term: Term, population: Sequence[Term]) -> Term:
+        # start_opt = perf_counter()
+        positions = get_positions(term, solver.pos_cache)
+        # term_tried_pos = self.tries_pos.setdefault(term, set())
+        # TODO
+        rand_pos = solver.rnd.choice(positions)
+        pos_output = solver.get_cached_output(rand_pos.term)
+        output_range = torch.stack([pos_output, solver.target], dim=0)
+        torch.minimum(output_range[0], output_range[1], out=output_range[0])
+        torch.maximum(output_range[0], output_range[1], out=output_range[1])
+        optim_res = optimize_positions(term, (rand_pos,), solver.target, solver.builders,
+                                    solver.ops, solver._get_binding,
+                                    output_range, 
+                                    solver.eval_fn, 
+                                    pos_outputs=(pos_output,),
+                                    num_vals = self.num_vals,
+                                    max_tries=self.max_tries,
+                                    max_evals=self.num_evals,
+                                    lr = self.lr,
+                                    rtol = solver.rtol, atol = solver.atol,
+                                    torch_gen=solver.torch_gen,
+                                    term_optim_cache=self.point_optim_cache)
+        solver.report_evals(optim_res.num_evals, optim_res.num_root_evals)
+        if optim_res.binding is not None:
+            # here we have bindings (expected outputs), but we need to find closest syntax --> semantic index
+            # currently resorting to search in the population 
+            population_outputs = stack_rows([solver.get_cached_output(t) for t in population])
+            dists = torch.sum((population_outputs - optim_res.binding[0]) ** 2, dim=-1)
+            min_dist_id = torch.argmin(dists, dim=0)
+            min_dist = dists[min_dist_id]
+            optim_res.term = population[min_dist_id.item()]
+        return optim_res.term
+
+
+    def _mutate(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
+        children = list(population)
+        max_count = int(len(population) * self.frac)
+        if max_count == len(population):
+            term_ids = range(len(population))
+        else:
+            term_ids = solver.rnd.permutation(len(population))
+        for term_id in term_ids:
+            if max_count <= 0:
+                break
+            optimized_term = self._optimize_rand_pos(solver, population[term_id], population)
+            if optimized_term is not None:
+                children[term_id] = optimized_term
+                max_count -= 1
+        return children    

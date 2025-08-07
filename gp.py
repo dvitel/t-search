@@ -13,7 +13,7 @@ from time import perf_counter
 import numpy as np
 import torch
 from initialization import RHH, Initialization
-from mutation import ClassicPointRandCrossover, ConstOptimization, ConstOptimization1, Deduplicate, Mutation, PointRandCrossover, PointRandMutation, ReplaceWithBestInner
+from mutation import ConstOptimization, Deduplicate, Mutation, PointOptimization, PointRandCrossover, PointRandMutation
 from selection import TournamentSelection
 from term import Builder, Builders, Op, Term, Value, Variable, evaluate, get_counts, get_depth, \
                     get_fn_arity, get_inner_terms, match_root, parse_term
@@ -113,6 +113,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 cache_term_props: bool = True,
                 cache_terms: bool = True,
                 cache_evals: bool = True, # outputs and fitness
+                # compute_output_range = True,
                 rtol = 1e-04, atol = 1e-03, # NOTE: these are for semantic/outputs comparison, not for fitness, see fit_0
                 rnd_seed: Optional[int] = None,
                 torch_rnd_seed: Optional[int] = None,
@@ -165,6 +166,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.atol = atol
         self.device = device
         self.dtype = dtype
+        # self.output_range = None
+        # self.compute_output_range = compute_output_range
         self.prohibit_ops_on_consts_only = prohibit_ops_on_consts_only
         self.inner_ops_max_counts = inner_ops_max_counts
         self.immediate_arg_limits = immediate_arg_limits
@@ -330,6 +333,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 max_fv = max(torch.max(xv).item() for xv in free_vars)
             self.const_range[0] = torch.minimum(self.const_range[0], min_fv)
             self.const_range[1] = torch.maximum(self.const_range[1], max_fv)
+
+        # self.output_range = torch.stack([self.target, self.target], dim=0)
+        # abs_target = torch.abs(self.target)
+        # self.output_range[0] -= 0.1 * abs_target
+        # self.output_range[1] += 0.1 * abs_target
+        # del abs_target
         
     def get_vars(self, free_vars):
         vars = []
@@ -454,6 +463,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if len(missing_terms) > 0:
             outputs = [self.get_cached_output(t) for t in missing_terms]
             predictions = stack_rows(outputs, target_size=self.target.shape[0])
+            # if self.compute_output_range:
+            #     finite_predictions_mask = torch.isfinite(predictions).all(dim=-1)
+            #     if torch.any(finite_predictions_mask):
+            #         finite_predictions = predictions[finite_predictions_mask]
+            #         min_outputs = torch.min(finite_predictions, dim=0).values
+            #         max_outputs = torch.max(finite_predictions, dim=0).values
+            #         torch.minimum(self.output_range[0], min_outputs, out=self.output_range[0])
+            #         torch.maximum(self.output_range[1], max_outputs, out=self.output_range[1])
             new_fitness: torch.Tensor = self.fitness_fn(predictions, self.target)
             for t, f in zip(missing_terms, new_fitness):
                 self.term_fitness[t] = f
@@ -757,7 +774,9 @@ if __name__ == "__main__":
                                   PointRandMutation(), 
                                   PointRandCrossover(), 
                                   Deduplicate(), 
-                                  ConstOptimization(num_vals = 10, lr=1.0)],
+                                  ConstOptimization(num_vals = 10, lr=1.0),
+                                #   PointOptimization(num_vals = 10, lr=1.0),
+                                  ],
                         # mutations=[PointRandMutation(), PointRandCrossover(), Deduplicate(), ConstOptimization1(lr=1.0)],
                         # commutative_ops=["add", "mul"],
                         forbid_patterns = [
