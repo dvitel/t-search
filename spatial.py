@@ -75,6 +75,17 @@ def find_close(store: torch.Tensor, query: torch.Tensor, rtol=1e-5, atol=1e-4,
                           dim_batch_size=dim_batch_size, return_shape = return_shape)
     return found_ids
 
+def find_closest(store: torch.Tensor, query: torch.Tensor) -> torch.Tensor:
+    ''' Store (n, dims), query (m, dims). For each query m, searches closest point in store '''
+    store_sq = (store ** 2).sum(dim=1, keepdim=True) # (n, 1)
+    query_sq = (query ** 2).sum(dim=1, keepdim=True) # (m, 1)
+    prod = torch.mm(store, query.t()) # (n, m)
+    squared_dists = store_sq - 2 * prod + query_sq.t() # (n, m)
+    found_ids = torch.argmin(squared_dists, dim=0) # (m,)
+    distinct_ids = torch.unique(found_ids)
+
+    return distinct_ids
+
 def find_equal(store: torch.Tensor, query: torch.Tensor,
                store_batch_size = 1024, query_batch_size = 128, dim_batch_size = 64,
                return_shape: Literal["mask", "ids"] = "ids") -> torch.Tensor:
@@ -251,13 +262,16 @@ class VectorStorage:
     
     def query_points(self, points: torch.Tensor) -> list[int]:
         ''' O(n). Return id of vectors in index if present. Empty tensor otherwise. '''
-        return self.find_close(None, points) # q here is one point among N points of all_vectors off shape (N, ..., dims)
+        return self.find_close(None, points) # q here is one point among N points of all_vectors of shape (N, ..., dims)
     
     def query_range(self, qrange: torch.Tensor) -> list[int]:
         ''' O(n). Returns ids stored in the index, shape (N), N >= 0 is most cases.
             qrange[0] - mins, qrange[1] - maxs, both of shape (dims).
         '''
         return self.find_in_range(None, qrange)
+
+    # def query_closest(self, points: torch.Tensor, obj_ids: torch.Tensor | None = None) -> list[int]:
+    #     return self.find_closest(None, points, obj_ids)
         
     def insert(self, vectors: torch.Tensor) -> list[int]:
         return self._alloc_vectors(vectors)
@@ -281,6 +295,20 @@ class VectorStorage:
         del selection
         return remap_ids(found_ids, ids)
 
+    def find_closest(self, ids: None | tuple[int, int] | list[int], q: torch.Tensor,
+                        obj_ids: torch.Tensor | None = None) -> list[int]:
+        selection = self.get_vectors(ids)
+        if obj_ids is None:
+            store = selection
+            query = q
+        else:
+            store = selection[:, obj_ids]
+            query = q[:, obj_ids]
+        found_ids = find_closest(store, query)
+        del selection
+        if obj_ids is not None:
+            del store, query
+        return remap_ids(found_ids, ids)
     
     def find_in_range(self, ids: None | tuple[int, int] | list[int], query: torch.Tensor) -> list[int]:
         selection = self.get_vectors(ids)
@@ -439,6 +467,9 @@ class BinIndex(SpatialIndex):
         '''
         pass
 
+    # def get_closest_bin_indices(self, vectors: torch.Tensor, obj_ids: torch.Tensor | None = None) -> torch.Tensor:
+    #     pass 
+
     def on_rebuild(self, trigger_bin_id: tuple):
         ''' Index specific '''
         pass 
@@ -538,6 +569,16 @@ class BinIndex(SpatialIndex):
         # found_ids = [qid_found_ids[qid] for qid in range(query.shape[0])]
         return found_ids
     
+    # def query_closest(self, query: torch.Tensor, obj_ids: torch.Tensor | None = None) -> list[int]:
+    #     bin_indices = self.get_closest_bin_indices(query, obj_ids)
+    #     bin_ids = set([tuple(row) for row in bin_indices.tolist()])
+    #     del bin_indices
+    #     bin_entries = [e for bin_index in bin_ids for e in self.bins.get(bin_index, [])]
+    #     if len(bin_entries) > self.switch_to_all_cap * self.cur_id:
+    #         bin_entries = None
+    #     found_ids = self.find_closest(bin_entries, query, obj_ids)
+    #     return found_ids
+    
     def get_bins_range(self, qrange: torch.Tensor):
         bin_qrange = self.get_bin_index(qrange)
         all_bin_ids_list = [bin_id for bin_id in self.bins.keys()]
@@ -573,9 +614,12 @@ class GridIndex(BinIndex):
         else:
             self.epsilons = epsilons
 
-    def get_bin_index(self, vectors: torch.Tensor) -> list[tuple]:
+    def get_bin_index(self, vectors: torch.Tensor) -> torch.Tensor:
         ''' Get bin index for a given vector '''
         return torch.floor(vectors // self.epsilons).to(dtype=torch.int64)
+    
+    # def get_closest_bin_indices(self, vectors: torch.Tensor, obj_ids: torch.Tensor | None = None) -> torch.Tensor:
+    #     pass
     
     # def on_rebuild(self, trigger_bin_id: tuple):
     #     start_r_time = time.time()

@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from functools import partial
 import inspect
+import math
 from typing import Any, Callable, Literal, Optional
 import numpy as np
 import torch
@@ -281,31 +282,60 @@ def lbfgs_optimize(term: Term, gold_outputs: torch.Tensor, semantics: torch.Tens
     # res = evaluate(term, all_ops, {})
     pass
 
-@dataclass(frozen=False, eq=False, unsafe_hash=False, repr=False)
-class OptimPoint(Term): # guarantee ref equality instead of Value eq
-    value: torch.Tensor
+def mse_loss(output, target):
+    return torch.mean((output - target) ** 2, dim=-1)
+
+def mse_loss_nan_v(predictions, target, *, nan_error = torch.inf):
+    loss = torch.mean((predictions - target) ** 2, dim=-1)
+    loss = torch.where(torch.isnan(loss), torch.tensor(nan_error, device=loss.device, dtype=loss.dtype), loss)
+    return loss     
+
+def mse_loss_nan_vf(predictions, target, *, 
+                    nan_value_fn = lambda m,t: torch.tensor(torch.inf, 
+                                                    device = t.device, dtype=t.dtype), 
+                    nan_frac = 0.5):
+    nan_frac_count = math.floor(target.shape[0] * nan_frac)
+    nan_mask = torch.isnan(predictions)
+    err_rows: torch.Tensor = nan_mask.sum(dim=-1) > nan_frac_count
+    bad_positions = nan_mask & err_rows.unsqueeze(-1)
+    fixed_predictions = torch.where(bad_positions, 
+                                    nan_value_fn(bad_positions, target),
+                                    predictions)
+    err_rows.logical_not_()
+    fixed_positions = nan_mask & err_rows.unsqueeze(-1)
+    fully_fixed_predictions = torch.where(fixed_positions, target, fixed_predictions)
+    loss = torch.mean((fully_fixed_predictions - target) ** 2, dim=-1)
+    del fully_fixed_predictions, fixed_predictions, fixed_positions, bad_positions, err_rows, nan_mask
+    return loss         
+
+def l1_loss(predictions, target):
+    return torch.mean(torch.abs(predictions - target), dim=-1)  
+
+# @dataclass(frozen=False, eq=False, unsafe_hash=False, repr=False)
+# @dataclass(frozen=True)
+# class OptimPoint(Term): # guarantee ref equality instead of Value eq
+#     occur: int
+
+class OptimPoint(Term):
+    pass 
+
+OPoint = OptimPoint()
 
 @dataclass 
 class OptimState:
     optim_term: Term | None # have to have at least one optim point
-    optim_points: list[OptimPoint]
-    num_attempted: int = 0
-    best_loss: torch.Tensor | None = None
-    best_binding: dict[OptimPoint, torch.Tensor] | None = None
+    optim_points: list[torch.Tensor]
+    best_loss: torch.Tensor # 1d array
+    best_binding: list[torch.Tensor] # 2d (try, point)
+    num_attempted: int = 0    
 
-# def pos_to_optim_point(term, occur, *, optim_points: list[OptimPoint], 
-#                          pos: TermPos, pos_output: torch.Tensor, num_tries: int = 1, **_):
-#     if (term, occur) == (pos.term, pos.occur):
-#         value = torch.zeros((num_tries, 1 if len(pos_output.shape) == 0 else pos_output.shape[0]), dtype=pos_output.dtype, device=pos_output.device)
-#         value[0] = pos_output
-#         optim_point = OptimPoint(value=value)
-#         optim_points.append(optim_point)
-#         return optim_point                  
+@dataclass 
+class ConstOptimState(OptimState):
+    final_term: Term | None = None
     
 @dataclass(frozen=False, eq=False, unsafe_hash=False, repr=False)
 class OptimResult:
-    term: Term | None = None # new term 
-    binding: list[torch.Tensor] | None = None # binding for optim points
+    optim_state: OptimState
     num_evals: int = 0
     num_root_evals: int = 0
     
@@ -313,15 +343,10 @@ class LRAdjust(Exception):
     pass
 
 def optimize(optim_state: OptimState, target: torch.Tensor, given_ops: dict[str, Callable], 
-                get_binding: Callable, eval_fn = evaluate,
+                get_binding: Callable, eval_fn = evaluate, loss_fn = mse_loss,
                 lr: float = 1.0, max_evals: int = 10, 
                 atol: float = 1e-4, rtol: float = 1e-4,
                 lr_try: int = 5,) -> OptimResult:
-
-    def _redirected_get_binding(root: Term, term: Term):
-        if isinstance(term, OptimPoint):
-            return term.value
-        return get_binding(root, term)
     
     num_evals = 0
     num_root_evals = 0
@@ -332,167 +357,189 @@ def optimize(optim_state: OptimState, target: torch.Tensor, given_ops: dict[str,
     
     # print(f"--- {term}")
         
-    cur_lr = lr 
-    cur_best_loss = optim_state.best_loss
-    cur_best_binding = None
-    # cur_best_binding_id = None
-    cur_best_lr = lr
-    cur_max_evals = max_evals
+    # cur_lr = lr 
+    # cur_best_lr = lr
 
     # for c, cv in zip(optim_state.optim_points, const_vectors):
-    #     c.value.requires_grad = False 
-    #     c.value.copy_(cv) # copy new value to optim point
-    #     c.value.requires_grad = True
+    #     c.requires_grad = False 
+    #     c.copy_(cv) # copy new value to optim point
+    #     c.requires_grad = True
 
-    params = []
     for optim_point in optim_state.optim_points:
-        optim_point.value.requires_grad = True
-        params.append(optim_point.value)
+        optim_point.requires_grad = True
 
-    while lr_try > 0:
-        # print(f"\t === {optim_state.num_attempted} {cur_lr}")
+    # print(f"\t === {optim_state.num_attempted} {cur_lr}")
 
-        # if cur_best_binding is not None:
-        #     for c in optim_state.optim_points:
-        #         c.value.requires_grad = False 
-        #         c.value[cur_best_binding_id].copy_(cur_best_binding[c])
-        #         c.value.requires_grad = True
+    optimizer = torch.optim.LBFGS(optim_state.optim_points, lr=lr, max_iter=max_evals,
+                                    max_eval=max_evals,
+                                    # max_eval = 1.5 * num_steps,
+                                    tolerance_change=atol,
+                                    tolerance_grad=atol / 10,
+                                    # history_size=100,
+                                    line_search_fn='strong_wolfe'
+                                    )
 
+    last_min_loss = None        
 
-        optimizer = torch.optim.LBFGS(params, lr=cur_lr, max_iter=cur_max_evals,
-                                        max_eval=cur_max_evals,
-                                        # max_eval = 1.5 * num_steps,
-                                        tolerance_change=atol,
-                                        tolerance_grad=atol / 10,
-                                        # history_size=100,
-                                        line_search_fn='strong_wolfe'
-                                        )
+    def closure_builder(optimizer: torch.optim.Optimizer):
+        nonlocal num_root_evals, last_min_loss, max_evals
 
-        last_min_loss = None        
+        # cur_lr = optimizer.param_groups[0]['lr']
+        # print(f"LR: {cur_lr}")
+        if num_root_evals >= max_evals:
+            raise LRAdjust(None)
+        num_root_evals += 1
+        optimizer.zero_grad()
+        max_evals -= 1
 
-        def closure_builder(optimizer: torch.optim.Optimizer):
-            nonlocal num_root_evals, cur_best_binding, cur_best_loss, last_min_loss, cur_max_evals, cur_best_lr #, cur_best_binding_id
-            # if not all(torch.isfinite(p) for p in params):
-            #     raise LRAdjust(0.1)
-            if num_root_evals >= max_evals:
-                raise LRAdjust(None)
-            num_root_evals += 1
-            optimizer.zero_grad()
-            cur_max_evals -= 1
-            outputs: torch.Tensor = eval_fn(optim_state.optim_term, given_ops, _redirected_get_binding, _set_binding)
-            # assert outputs is not None, "Term evaluation should be full. Term is evaluated partially"
-            # finite_mask = torch.all(torch.isfinite(outputs), dim=-1)
-            # finite_ids, = torch.where(finite_mask)
-            # finite_outputs = outputs[finite_ids]
-            # if finite_outputs.numel() == 0:
-            #     raise LRAdjust(None)
-            ind_loss: torch.Tensor = (outputs - target) ** 2 # loss_fn(outputs, target)
-            loss = ind_loss.mean(dim=-1)
-            finite_loss_mask = torch.isfinite(loss)
-            if not torch.any(finite_loss_mask):
-                raise LRAdjust(None)
-            
-            finit_loss_ids, = torch.where(finite_loss_mask)
+        point_occur = 0
+        def _redirected_get_binding(root: Term, term: Term):
+            nonlocal point_occur
+            # if isinstance(term, OptimPoint):
+            if term == OPoint:
+                value = optim_state.optim_points[point_occur]
+                point_occur += 1
+                return value
+            return get_binding(root, term)    
+                
+        outputs: torch.Tensor = eval_fn(optim_state.optim_term, given_ops, _redirected_get_binding, _set_binding)
+        # assert outputs is not None, "Term evaluation should be full. Term is evaluated partially"
+        loss: torch.Tensor = loss_fn(outputs, target) 
+        finite_loss_mask = torch.isfinite(loss)
+        if not torch.any(finite_loss_mask):
+            raise LRAdjust(None)
+        
+        finite_loss_ids, = torch.where(finite_loss_mask)
+
+        finite_loss = loss[finite_loss_ids]
+
+        if optim_state.best_loss.numel() == 1: # pick best loss 
             # finit_loss_ids = finite_ids[finit_loss_id_ids]
-            new_min_loss_id_id = torch.argmin(loss[finit_loss_ids])
-            new_min_loss_id = finit_loss_ids[new_min_loss_id_id]
-            new_min_loss = loss[new_min_loss_id]
-            if last_min_loss is not None:
-                if new_min_loss > last_min_loss:
-                    raise LRAdjust(0.5)
-                if torch.allclose(new_min_loss, last_min_loss, rtol=rtol, atol=atol):
-                    raise LRAdjust(None)
+            new_min_loss_id_id = torch.argmin(finite_loss)
+            new_min_loss_id = finite_loss_ids[new_min_loss_id_id]
+            new_min_loss = finite_loss[new_min_loss_id_id]
+            if new_min_loss < optim_state.best_loss[0]:
+                optim_state.best_loss[0] = new_min_loss
+                optim_state.best_binding = [op[new_min_loss_id].detach().clone() for op in optim_state.optim_points]
+        else:
+            new_min_loss = None
+            stacked_loss = torch.concat([finite_loss, optim_state.best_loss], dim=0)
+            sort_ids = torch.argsort(stacked_loss)[:optim_state.best_loss.shape[0]]
+            optim_state.best_loss = stacked_loss[sort_ids]
+            del stacked_loss
+            new_mask = sort_ids < finite_loss.shape[0]
+            new_ids, = torch.where(new_mask)
+            if len(new_ids) > 0:
+                new_sort_ids = sort_ids[new_mask]
+                for cur_b, last_b in zip(optim_state.best_binding, optim_state.optim_points):
+                    cur_b[new_ids] = last_b[new_sort_ids]
+        
+        if new_min_loss is None:
+            new_min_loss = finite_loss.min().values()
 
-            last_min_loss = new_min_loss
+        # print(f"\tLoss {new_min_loss.item()}, {[b.tolist() for b in optim_state.best_binding]}, lr={cur_lr}, evals {num_root_evals}")
+        
+        # TODO: experiment with early exit - seems to be benefitial
+        if last_min_loss is not None:
+            # if torch.allclose(new_min_loss, last_min_loss, rtol=rtol, atol=atol):
+            #     raise LRAdjust(None)
+            # elif new_min_loss > last_min_loss:
+            #     # optimizer.param_groups[0]['lr'] *= 0.5
+            #     pass
+            if new_min_loss > last_min_loss:
+                raise LRAdjust(None)
 
-            if cur_best_loss is None or torch.all(new_min_loss < cur_best_loss).item():
-                cur_best_binding = {op: op.value[new_min_loss_id].detach().clone() for op in optim_state.optim_points}
-                # cur_best_binding_id = new_min_loss_id
-                cur_best_loss = new_min_loss.detach().clone()
-                cur_best_lr = cur_lr
-                print(f"\tLoss {cur_best_loss.item()}, binding {[op_v.tolist() for op_v in cur_best_binding.values()]}, lr={cur_best_lr}, evals {num_root_evals}")
+        last_min_loss = new_min_loss
 
-            total_loss = loss.mean()
-            total_loss.backward()
+        total_loss = finite_loss.mean()
+        total_loss.backward()
 
-            return total_loss
+        return total_loss
 
-        closure = partial(closure_builder, optimizer)
-            
-        try:
-            first_loss = optimizer.step(closure)
-        except ZeroDivisionError as e:
-            # print(f"LBFGS optimization failed with ZeroDivisionError")
-            pass # just use last loss
-        except LRAdjust as e:
-            if e.args[0] is None:
-                break 
-            cur_lr *= e.args[0]
-            lr_try -= 1
-            continue
-        break
-        # NOTE: optimizer actually returns first loss
+    closure = partial(closure_builder, optimizer)
+        
+    try:
+        first_loss = optimizer.step(closure)
+    except ZeroDivisionError as e:
+        # print(f"LBFGS optimization failed with ZeroDivisionError")
+        pass # just use last loss
+    except LRAdjust as e:
+        pass
+        # if e.args[0] is None:
+        #     break 
+        # cur_lr *= e.args[0]
+        # lr_try -= 1
+        # continue
+
+    # NOTE: optimizer actually returns first loss
 
     # assert torch.allclose(last_loss, final_loss)
 
     optim_state.num_attempted += 1
 
-    final_binding = None
-    if cur_best_binding is not None:
-        optim_state.best_loss = cur_best_loss
-        optim_state.best_binding = cur_best_binding
-        final_binding = list(cur_best_binding.values())
+    return OptimResult(optim_state, num_evals=num_evals, num_root_evals=num_root_evals)
 
-    return OptimResult(binding=final_binding, num_evals=num_evals, 
-                       num_root_evals=num_root_evals)
-
-def optimize_consts(term: Term,
+optim_id = -1 # for debugging
+def optimize_consts(term: Term, term_loss: torch.Tensor,
     target: torch.Tensor, builders: Builders,
     given_ops: dict[str, Callable], get_binding: Callable, start_range: torch.Tensor,
-    eval_fn = evaluate,
+    eval_fn = evaluate, loss_fn = mse_loss,
     num_vals = 10, max_tries = 1, max_evals = 20, 
     lr = 0.1, rtol: float = 1e-4, atol: float = 1e-4, lr_try: int = 5,
     torch_gen: torch.Generator | None = None,
-    term_optim_cache: dict[Term, OptimState] | None = None) -> OptimResult:
+    term_optim_cache: dict[Term, Term] | None = None,
+    optim_term_cache: dict[Term, ConstOptimState] | None = None) -> OptimResult:
     ''' Searches for the term const values that would bring it closer to the target outputs.
         Restarts will reinitialize the constants.
     '''
-
+    global optim_id
+    optim_id += 1
 
     if term not in term_optim_cache:
 
-        optim_points = []        
+        optim_points: list[torch.Tensor] = []        
 
-        def const_to_optim_point(term, occur):
+        def const_to_optim_point(term, *_):
             if isinstance(term, Value):
                 value = torch.zeros((num_vals, 1 if len(term.value.shape) == 0 else term.value.shape[0]), dtype=term.value.dtype, device=term.value.device)
                 value[0] = term.value
-                optim_point = OptimPoint(value=value)
-                optim_points.append(optim_point)
-                return optim_point    
+                # occur = len(optim_points)
+                optim_points.append(value)
+                # return OptimPoint(occur)
+                return OPoint
 
         optim_term = replace_fn(term, const_to_optim_point, builders)
 
         if len(optim_points) == 0:
             optim_term = None
-        term_optim_cache[term] = OptimState(optim_term, optim_points)
-
-    optim_state = term_optim_cache[term]
+        term_optim_cache[term] = optim_term
+        if optim_term not in optim_term_cache:
+            best_loss = torch.tensor([term_loss.item()], dtype=target.dtype, device=target.device)
+            best_binding = [p[0].clone() for p in optim_points]
+            optim_state = ConstOptimState(optim_term, optim_points, best_loss, best_binding, final_term=term)
+            optim_term_cache[optim_term] = optim_state
+        else:
+            optim_state = optim_term_cache[optim_term]
+            if term_loss < optim_state.best_loss:
+                optim_state.best_loss = term_loss
+                optim_state.best_binding = [p[0].clone() for p in optim_points]
+                optim_state.final_term = term
+    else:         
+        optim_state = optim_term_cache[term_optim_cache[term]]
 
     if optim_state.num_attempted >= max_tries: 
         for optim_point in optim_state.optim_points:
-            del optim_point.value
+            del optim_point
         optim_state.optim_points.clear()
-        optim_state.optim_term = None
 
     if len(optim_state.optim_points) == 0: # nothing to optimize
-        return OptimResult()
+        return OptimResult(optim_state)
     
     starts_to_attempt = []
 
     rand_points_to_attempt = num_vals
     if optim_state.num_attempted == 0: # at first try we also optimize current values
-        starts_to_attempt.append([p.value[0] for p in optim_state.optim_points])
+        starts_to_attempt.append([p[0] for p in optim_state.optim_points])
         rand_points_to_attempt -= 1
 
     if rand_points_to_attempt > 0: # we use grid sampling with rand shifts 
@@ -517,100 +564,109 @@ def optimize_consts(term: Term,
         const_vectors.append(const_values)
 
     for c, cv in zip(optim_state.optim_points, const_vectors):
-        c.value.requires_grad = False
-        c.value.copy_(cv) # copy new value to optim point
-        c.value.requires_grad = True
+        c.requires_grad = False
+        c.copy_(cv) # copy new value to optim point
+        c.requires_grad = True
 
-    print(f">>> {term}")
+    # print(f">>> [{optim_id}] {term}")
+
+    best_loss_before = optim_state.best_loss.clone()
     
-    optim_res = optimize(optim_state, target, given_ops, get_binding, eval_fn,
+    optim_res = optimize(optim_state, target, given_ops, get_binding, eval_fn, loss_fn,
                          lr=lr, max_evals=max_evals, atol=atol, rtol=rtol, lr_try=lr_try)
     
-    if optim_state.best_binding is not None: # new best term 
-            
+    if optim_state.final_term is None or (optim_state.best_loss < best_loss_before).any():
+                
         def bind_optim_points(term, occur, **_):
-            if isinstance(term, OptimPoint):
-                return Value(optim_state.best_binding[term])
+            # if isinstance(term, OptimPoint):
+            if term == OPoint:
+                return Value(optim_res.optim_state.best_binding[occur])
             
-        new_term = replace_fn(optim_state.optim_term, bind_optim_points, builders)
+        optim_state.final_term = replace_fn(optim_res.optim_state.optim_term, bind_optim_points, builders)
 
-        term_optim_cache[new_term] = optim_state
-
-        optim_res.term = new_term
-
-        print(f"<<< {new_term}")
-
+        term_optim_cache[optim_state.final_term] = optim_state.optim_term
+    
     return optim_res
 
-def optimize_positions(term: Term, positions: tuple[TermPos], 
-    target: torch.Tensor, builders: Builders,
-    given_ops: dict[str, Callable], get_binding: Callable, start_range: torch.Tensor,
-    eval_fn = evaluate, pos_outputs: tuple[torch.Tensor] | None = None,
-    num_vals = 10, max_tries = 1, max_evals = 20, 
-    lr = 0.1, rtol: float = 1e-4, atol: float = 1e-4, lr_try: int = 5,
-    torch_gen: torch.Generator | None = None,
-    term_optim_cache: dict[tuple[Term, tuple[Term, int]], OptimState] | None = None) -> OptimResult:
-    ''' Searches for the term const values that would bring it closer to the target outputs.
-        Restarts will reinitialize the constants.
-    '''
+@dataclass 
+class PosOptimState(OptimState):
+    moment: int = -1
+    good_fit_ids: torch.Tensor | None = None
+
+def get_pos_optim_state(term: Term, positions: list[TermPos], num_vals: int,
+    term_optim_cache: dict[tuple[Term, tuple[Term, int]], Term],
+    optim_term_cache: dict[Term, PosOptimState], builders: Builders,
+    best_loss_size: int = 5,
+    output_size: int = 1,
+    dtype = torch.float16, device = "cuda") -> PosOptimState:
 
     key = (term, *((p.term, p.occur) for p in positions))
 
     if key not in term_optim_cache:
         
-        optim_points = {}
-        for pos in positions:
-            value = torch.zeros((num_vals, 1 if len(target.shape) == 0 else target.shape[0]), dtype=target.dtype, device=target.device)
-            optim_point = OptimPoint(value=value)
-            optim_points[(pos.term, pos.occur)] = optim_point
-
-        if len(optim_points) == 1:
-            optim_term = replace_pos(positions[0], optim_point, builders)
+        if len(positions) == 1:
+            value = torch.zeros((num_vals, output_size), dtype=dtype, device=device)
+            optim_points = [value]
+            # optim_term = replace_pos(positions[0], OptimPoint(0), builders)
+            optim_term = replace_pos(positions[0], OPoint, builders)
         else:
 
+            prersent_pos = set((p.term, p.occur) for p in positions)
+            optim_points = []
             def pos_to_optim_point(term, occur):
-                if (term, occur) in optim_points:
-                    optim_point = optim_points[(term, occur)]
-                    return optim_point
+                if (term, occur) in prersent_pos:
+                    # point_occur = len(optim_points)
+                    value = torch.zeros((num_vals, output_size), dtype=dtype, device=device)
+                    optim_points.append(value)
+                    # return OptimPoint(point_occur)
+                    return OPoint
                 
             optim_term = replace_fn(positions, pos_to_optim_point, builders)
 
-        term_optim_cache[key] = OptimState(optim_term, optim_points=list(optim_points.values()))
+        term_optim_cache[key] = optim_term
 
-    optim_state = term_optim_cache[key]
+        if optim_term not in optim_term_cache:   
+            best_loss = torch.full((best_loss_size,), torch.inf, dtype=dtype, device=device)
+            optim_state = PosOptimState(optim_term, optim_points, 
+                                        best_loss, [best_loss.clone() for _ in optim_points])
+            optim_term_cache[optim_term] = optim_state
+        else:
+            optim_state = optim_term_cache[optim_term]             
+    else:
+        optim_state = optim_term_cache[term_optim_cache[key]]
+    return optim_state
 
-    if optim_state.num_attempted >= max_tries: 
-        for optim_point in optim_state.optim_points:
-            del optim_point.value
-        optim_state.optim_points.clear()
-        optim_state.optim_term = None
 
-    if len(optim_state.optim_points) == 0: # nothing to optimize
-        return OptimResult()
+def optimize_positions(optim_state: OptimState,
+    target: torch.Tensor,
+    given_ops: dict[str, Callable], get_binding: Callable, start_range: torch.Tensor,
+    eval_fn = evaluate, loss_fn = mse_loss,
+    pos_outputs: list[tuple[torch.Tensor]] = [],
+    num_vals = 10, max_evals = 20, 
+    lr = 0.1, rtol: float = 1e-4, atol: float = 1e-4, lr_try: int = 5,
+    torch_gen: torch.Generator | None = None) -> Optional[OptimResult]:
+    ''' Searches for the term const values that would bring it closer to the target outputs.
+        Restarts will reinitialize the constants.
+    '''
     
-    starts_to_attempt = []
+    starts_to_attempt = list(pos_outputs)
 
-    rand_points_to_attempt = num_vals
-    if optim_state.num_attempted == 0 and pos_outputs is not None: # at first try we also optimize current values
-        # starts_to_attempt.append([p.value[0] for p in optim_state.optim_points])
-        starts_to_attempt.append(pos_outputs)
-        rand_points_to_attempt -= 1
-
+    rand_points_to_attempt = num_vals - len(starts_to_attempt)
     if rand_points_to_attempt > 0: # we use grid sampling with rand shifts 
         pos_rand_attempt = []
-        for pos in positions:
+        for _ in optim_state.optim_points:
             rand_points = get_rand_interval_points(rand_points_to_attempt, start_range.t(), rand_deltas=True, generator=torch_gen)
             pos_rand_attempt.append(rand_points)
         starts_to_attempt.extend(zip(*pos_rand_attempt))
 
     for op_id, op in enumerate(optim_state.optim_points):
-        op.value.requires_grad = False
+        op.requires_grad = False
         for opt_id, start_to_attempt in enumerate(starts_to_attempt):
             # for att_id, att in enumerate(start_to_attempt):                
-            op.value[opt_id] = start_to_attempt[op_id]
-        op.value.requires_grad = True
+            op[opt_id] = start_to_attempt[op_id]
+        op.requires_grad = True
 
-    optim_res = optimize(optim_state, target, given_ops, get_binding, eval_fn,
+    optim_res = optimize(optim_state, target, given_ops, get_binding, eval_fn, loss_fn,
                          lr=lr, max_evals=max_evals, atol=atol, rtol=rtol, lr_try=lr_try)
 
     return optim_res

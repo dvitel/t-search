@@ -14,12 +14,13 @@ import numpy as np
 import torch
 from initialization import RHH, Initialization
 from mutation import ConstOptimization, Deduplicate, Mutation, PointOptimization, PointRandCrossover, PointRandMutation
-from selection import Elitism, TournamentSelection
+from selection import Elitism, Finite, TournamentSelection
 from spatial import SpatialIndex, VectorStorage
 from term import Builder, Builders, Op, Term, Value, Variable, evaluate, get_counts, get_depth, \
                     get_fn_arity, match_root, parse_term
 from sklearn.base import BaseEstimator, RegressorMixin
 
+from torch_alg import mse_loss
 from util import stack_rows  
 
 GPSolverStatus = Literal["INIT", "MAX_GEN", "MAX_EVAL", "MAX_ROOT_EVAL", "SOLVED"]
@@ -43,36 +44,7 @@ def fit_0(fitness: torch.Tensor,
     if torch.isclose(best_fitness, zero, rtol = rtol, atol = atol):
         best_found = True
     return best_id, best_found
-    
-def mse_loss(predictions, target):
-    return torch.mean((predictions - target) ** 2, dim=-1)
-    
-def mse_loss_nan_v(predictions, target, *, nan_error = torch.inf):
-    loss = torch.mean((predictions - target) ** 2, dim=-1)
-    loss = torch.where(torch.isnan(loss), torch.tensor(nan_error, device=loss.device, dtype=loss.dtype), loss)
-    return loss     
-
-def mse_loss_nan_vf(predictions, target, *, 
-                    nan_value_fn = lambda m,t: torch.tensor(torch.inf, 
-                                                    device = t.device, dtype=t.dtype), 
-                    nan_frac = 0.5):
-    nan_frac_count = math.floor(target.shape[0] * nan_frac)
-    nan_mask = torch.isnan(predictions)
-    err_rows: torch.Tensor = nan_mask.sum(dim=-1) > nan_frac_count
-    bad_positions = nan_mask & err_rows.unsqueeze(-1)
-    fixed_predictions = torch.where(bad_positions, 
-                                    nan_value_fn(bad_positions, target),
-                                    predictions)
-    err_rows.logical_not_()
-    fixed_positions = nan_mask & err_rows.unsqueeze(-1)
-    fully_fixed_predictions = torch.where(fixed_positions, target, fixed_predictions)
-    loss = torch.mean((fully_fixed_predictions - target) ** 2, dim=-1)
-    del fully_fixed_predictions, fixed_predictions, fixed_positions, bad_positions, err_rows, nan_mask
-    return loss         
-
-def l1_loss(predictions, target):
-    return torch.mean(torch.abs(predictions - target), dim=-1)  
-
+    s
 def timed(fn: Callable, key: str, metrics: dict) -> Callable:
     ''' Decorator to time function execution '''
     def wrapper(*args, **kwargs):
@@ -87,7 +59,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
     def __init__(self, 
                 ops: dict[str, Callable],
-                fitness_fn: Callable = mse_loss_nan_v,
+                fitness_fn: Callable = mse_loss,
                 fit_condition = partial(fit_0, rtol = 1e-04, atol = 1e-03),
                 init: Initialization = RHH(),
                 eval_fn = evaluate,
@@ -191,7 +163,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.index: VectorStorage | None = None
         self.index_type = index_type
         self.term_outputs: dict[Term, int] = {} # int if storage is provided
+        self.output_terms: dict[int, Term] = {}
         self.new_term_outputs: dict[Term, torch.Tensor] = {}
+        self.invalid_term_outputs: dict[Term, torch.Tensor] = {} # terms with nans or infs in output, some indices do not support them 
         self.output_fitness: dict[int, torch.Tensor] = {}
         # self.term_counts: dict[Term, np.ndarray] = {}
         self.pos_cache = {}
@@ -203,7 +177,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.best_term: Optional[Term] = None
         self.best_outputs: Optional[torch.Tensor] = None
         self.best_fitness: Optional[torch.Tensor] = None
-        self.has_solution = False
         self.gen: int = 0
         self.evals: int = 0
         self.root_evals: int = 0
@@ -239,7 +212,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.target = None 
         self.syntax: dict[tuple[str, ...], Term] = {}
         self.term_outputs: dict[Term, int] = {}
+        self.output_terms: dict[int, Term] = {}
         self.new_term_outputs: dict[Term, torch.Tensor] = {} # to be registered in index - new semantics
+        self.invalid_term_outputs: dict[Term, torch.Tensor] = {}
         self.output_fitness: dict[int, torch.Tensor] = {}
         self.pos_cache = {}
         self.pos_context_cache = {}
@@ -250,7 +225,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.best_term: Optional[Term] = None
         self.best_outputs: Optional[torch.Tensor] = None
         self.best_fitness: Optional[torch.Tensor] = None
-        self.has_solution = False
         self.gen: int = 0
         self.evals: int = 0
         self.root_evals: int = 0
@@ -390,9 +364,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if self.root_evals > self.max_root_evals:
             raise EvSearchTermination("MAX_ROOT_EVAL", "Maximum number of root evaluations reached")
         
-    def eval(self, terms: list[Term]):
-
-        self.new_term_outputs.clear()
+    def eval(self, terms: list[Term]):        
             
         outputs = []
         for term in terms:
@@ -408,47 +380,51 @@ class GPSolver(BaseEstimator, RegressorMixin):
         outputs = [self.new_term_outputs[t] for t in new_terms]
         if len(outputs) > 0:
             semantics = stack_rows(outputs, target_size=self.target.shape[0])
-            semantic_ids = self.index.insert(semantics)
-            # if self.compute_output_range:
-            #     finite_predictions_mask = torch.isfinite(predictions).all(dim=-1)
-            #     if torch.any(finite_predictions_mask):
-            #         finite_predictions = predictions[finite_predictions_mask]
-            #         min_outputs = torch.min(finite_predictions, dim=0).values
-            #         max_outputs = torch.max(finite_predictions, dim=0).values
-            #         torch.minimum(self.output_range[0], min_outputs, out=self.output_range[0])
-            #         torch.maximum(self.output_range[1], max_outputs, out=self.output_range[1])
-            new_fitness: torch.Tensor = self.fitness_fn(semantics, self.target)
-            for t, sid, f in zip(new_terms, semantic_ids, new_fitness):
-                self.term_outputs[t] = sid
-                self.output_fitness[sid] = f
-            del semantics
+            finite_semantics_mask = torch.isfinite(semantics).all(dim=-1) # we do not insert nans and infs 
+            valid_ids, = torch.where(finite_semantics_mask)
+            infinite_ids, = torch.where(~finite_semantics_mask)
+            for infinite_id in infinite_ids.tolist():
+                invalid_term = new_terms[infinite_id]
+                self.invalid_term_outputs[invalid_term] = outputs[infinite_id]
+            new_semantics = semantics[valid_ids]
+            valid_terms = [new_terms[i] for i in valid_ids.tolist()]
+            del semantics, finite_semantics_mask, infinite_ids, valid_ids 
+            if len(valid_terms) > 0:
+                semantics = new_semantics
+                semantic_ids = self.index.insert(semantics)
+                # if self.compute_output_range:
+                #     finite_predictions_mask = torch.isfinite(predictions).all(dim=-1)
+                #     if torch.any(finite_predictions_mask):
+                #         finite_predictions = predictions[finite_predictions_mask]
+                #         min_outputs = torch.min(finite_predictions, dim=0).values
+                #         max_outputs = torch.max(finite_predictions, dim=0).values
+                #         torch.minimum(self.output_range[0], min_outputs, out=self.output_range[0])
+                #         torch.maximum(self.output_range[1], max_outputs, out=self.output_range[1])
+                new_fitness: torch.Tensor = self.fitness_fn(semantics, self.target)
+                for t, sid, f in zip(valid_terms, semantic_ids, new_fitness):
+                    self.term_outputs[t] = sid
+                    if sid not in self.output_terms:
+                        self.output_terms[sid] = t
+                    else:
+                        cur_t = self.output_terms[sid]
+                        cur_t_depth = get_depth(cur_t, self.depth_cache)
+                        t_depth = get_depth(t, self.depth_cache)
+                        if t_depth < cur_t_depth:
+                            self.output_terms[sid] = t
+                    self.output_fitness[sid] = f
+                del semantics
 
-            best_id, best_found = self.fit_condition(new_fitness, self.best_fitness)
-            if best_id is not None:
-                self.best_term = new_terms[best_id]
-                self.best_outputs = outputs[best_id].clone()
-                self.best_fitness = new_fitness[best_id].clone()
-        
-            self.has_solution = best_found
+                best_id, best_found = self.fit_condition(new_fitness, self.best_fitness)
+                if best_id is not None:
+                    self.best_term = valid_terms[best_id]
+                    self.best_outputs = outputs[best_id].clone()
+                    self.best_fitness = new_fitness[best_id].clone()            
+                    if best_found:
+                        raise(EvSearchTermination("SOLVED"))
 
-        if self.has_solution:
-            self.status = "SOLVED"    
+        self.new_term_outputs.clear()
 
-        if self.best_fitness is not None:
-            best_fitness = self.best_fitness.unsqueeze(-1) if len(self.best_fitness.shape) == 0 else self.best_fitness
-            for fi, fv in enumerate(best_fitness):
-                fk = f"fitness_{fi}"
-                self.gen_metrics[fk] = fv.item()
-
-        if self.best_term is not None: # best term stats 
-            best_depth = get_depth(self.best_term, self.depth_cache)
-            best_counts = get_counts(self.best_term, self.builders, self.counts_cache)
-            best_size = best_counts.sum().item()
-            self.gen_metrics["best_term_depth"] = best_depth
-            self.gen_metrics["best_term_size"] = best_size
-            self.gen_metrics["best_counts"] = best_counts.tolist()
-
-        self.gen_metrics["pop_size"] = len(terms)
+        # self.gen_metrics["pop_size"] = len(terms)
 
     def get_term_fitness(self, term: Term) -> Optional[torch.Tensor]:
         if term in self.term_outputs:
@@ -547,6 +523,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
             semantics_id = self.term_outputs[term]
             semantics = self.index.get_vectors(semantics_id)
             return semantics
+        if term in self.invalid_term_outputs:
+            return self.invalid_term_outputs[term]
         return None
 
     
@@ -573,6 +551,20 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
     def _checkpoint_metrics(self):
         if len(self.gen_metrics) > 0:
+            if self.best_fitness is not None:
+                best_fitness = self.best_fitness.unsqueeze(-1) if len(self.best_fitness.shape) == 0 else self.best_fitness
+                for fi, fv in enumerate(best_fitness):
+                    fk = f"fitness_{fi}"
+                    self.gen_metrics[fk] = fv.item()
+
+            if self.best_term is not None: # best term stats 
+                best_depth = get_depth(self.best_term, self.depth_cache)
+                best_counts = get_counts(self.best_term, self.builders, self.counts_cache)
+                best_size = best_counts.sum().item()
+                self.gen_metrics["best_term_depth"] = best_depth
+                self.gen_metrics["best_term_size"] = best_size
+                self.gen_metrics["best_counts"] = best_counts.tolist()
+
             self.metrics.setdefault("gens", []).append(self.gen_metrics)
             self.gen_metrics = {}
 
@@ -581,7 +573,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.gen_metrics.update(self.init.metrics)
         timed(self.eval, "eval_time", self.gen_metrics)(population)
         self._checkpoint_metrics()
-        while not self.has_solution and self.gen < self.max_gen and self.evals < self.max_evals and self.root_evals < self.max_root_evals:
+        while self.gen < self.max_gen and self.evals < self.max_evals and self.root_evals < self.max_root_evals:
             population = self.breed(population) 
             timed(self.eval, "eval_time", self.gen_metrics)(population)
             self.gen += 1
@@ -597,25 +589,77 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if self.best_term is not None:
             self.metrics["solution"] = self.best_term
 
-    def check_trivial(self):
-        if torch.allclose(self.target, self.target[0], rtol = self.rtol, atol = self.atol):
-            self.best_term = Value(self.target[0]) #len(self.const_binding))
-            self.best_fitness = torch.tensor(0, device=self.device, dtype=self.dtype)
-            self.best_outputs = self.target
-            # self.const_binding.append(self.target[0])
-            self.status = "SOLVED"
-            self.has_solution = True
-            return True 
+    def find_any_const(self, outputs: torch.Tensor) -> Optional[torch.Tensor]:
+        ''' Check if output is const or very slow function '''
+        means = outputs.mean(dim=-1, keepdim=True)
+        close_el_mask = torch.isclose(outputs, means, rtol = self.rtol, atol = self.atol)
+        close_mask = close_el_mask.all(dim=-1)
+        const_ids, = torch.where(close_mask)
+        if len(const_ids) > 0:
+            return means[const_ids[0], 0]
+        return None
+    
+    def find_any_var(self, outputs: torch.Tensor) -> Optional[Variable]:
         for x in self.vars:
             x_binding = self.var_binding[x.var_id]
-            if torch.allclose(self.target, x_binding, rtol = self.rtol, atol = self.atol):
-                self.best_term = x
-                self.best_fitness = torch.tensor(0, device=self.device, dtype=self.dtype)
-                self.best_outputs = x_binding
-                self.status = "SOLVED"
-                self.has_solution = True
-                return True
+            close_el_mask = torch.isclose(outputs, x_binding, rtol = self.rtol, atol = self.atol)
+            cur_close_mask = close_el_mask.all(dim=-1)
+            cur_close_ids, = torch.where(cur_close_mask)
+            if len(cur_close_ids) > 0:
+                return x
+        return None
+    
+    def check_trivial(self): 
+        const_val = self.find_any_const(self.target.unsqueeze(0))
+        if const_val is not None: # NOTE: or torch.any ??? config option 
+            self.best_term = Value(const_val) #len(self.const_binding))
+            self.best_fitness = torch.tensor(0, device=self.device, dtype=self.dtype)
+            self.best_outputs = const_val
+            self.status = "SOLVED"
+            return True 
+        x = self.find_any_var(self.target.unsqueeze(0))
+        if x is not None:
+            self.best_term = x
+            self.best_fitness = torch.tensor(0, device=self.device, dtype=self.dtype)
+            self.best_outputs = self.var_binding[x.var_id]
+            self.status = "SOLVED"
+            return True
         return False 
+    
+    def get_close_known_terms(self, outputs: torch.Tensor,
+                                start_delta = 0.01,
+                                delta_increase = 10,
+                                num_tries = 3) -> list[Term]:
+        const_val = self.find_any_const(outputs)
+        if const_val is not None:
+            return [Value(const_val)]
+        
+        var = self.find_any_var(outputs)
+        if var is not None:
+            return [var]
+
+        best_found_semantic_ids = None
+        cur_delta = start_delta
+        while num_tries > 0:
+            found_semantic_ids = set()
+            for output in outputs:
+                range = torch.stack([output - cur_delta, output + cur_delta], dim=0)
+                output_semantic_ids = self.index.query_range(range)
+                found_semantic_ids.update(output_semantic_ids)
+            if best_found_semantic_ids is None or \
+                ((len(found_semantic_ids) > 0) and \
+                    (len(found_semantic_ids) < len(best_found_semantic_ids))):
+                best_found_semantic_ids = found_semantic_ids
+            if len(found_semantic_ids) > 10:
+                cur_delta /= delta_increase
+            elif len(found_semantic_ids) == 0:
+                cur_delta *= delta_increase
+            num_tries -= 1
+
+        if best_found_semantic_ids is None:
+            return []
+        found_terms = [self.output_terms[sem_id] for sem_id in best_found_semantic_ids]
+        return found_terms
 
     def fit(self, X: np.ndarray | torch.Tensor, y: np.ndarray | torch.Tensor) -> 'GPSolver':
         """
@@ -740,6 +784,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
 #      Solection operators
 #      Mutation that is guided by distribution of syntaxes in population ??? 
 
+# TODO: think about terms that are optimized to consts --> invalid_terms vs const_terms store
+# TODO: unification of terms without meta variables to find most abstract common pattern???
+
 if __name__ == "__main__":
 
     from torch_alg import alg_ops, koza_1
@@ -756,12 +803,13 @@ if __name__ == "__main__":
                         with_inner_evals=True,
                         init=RHH(),
                         #(num_tries=1, lr=0.1)],
-                        pipeline=[Elitism(size = 10),
+                        pipeline=[Finite(),
+                                  ConstOptimization(num_vals = 10, lr=1.0),
+                                  Elitism(size = 10),
                                   TournamentSelection(), 
                                   PointRandMutation(), 
                                   PointRandCrossover(), 
                                   Deduplicate(), 
-                                  ConstOptimization(num_vals = 10, lr=1.0),
                                 #   PointOptimization(num_vals = 10, lr=1.0),
                                   ],
                         # mutations=[PointRandMutation(), PointRandCrossover(), Deduplicate(), ConstOptimization1(lr=1.0)],

@@ -116,3 +116,17 @@ class Elitism(Selection):
         elite_ids = sorted_ids[:self.elite_size].tolist()
         self.elite = [present_terms[i] for i in elite_ids]
         return population
+    
+class Finite(Selection):
+    ''' Selects only children that have finite or unknown outputs 
+        Resorts back to  full population if all outputs are infinie or nan
+    '''
+    def __init__(self, name: str = "finite"):
+        super().__init__(name)
+
+    def _select(self, solver: 'GPSolver', population: list[Term]):
+        children = [ch for ch in population if ch not in solver.invalid_term_outputs]
+        if len(children) == 0:
+            print("WARN: all population has nans or infs")
+            return population
+        return children

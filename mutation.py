@@ -1,15 +1,13 @@
 ''' Module for different mutation and crossover operators '''
 
-from functools import partial
+from dataclasses import dataclass
 from itertools import cycle, product
-from time import perf_counter
 from typing import Optional, Sequence
 
 import torch
 
-from spatial import SpatialIndex
-from term import Term, TermGenContext, TermPos, Value, get_depth, get_inner_terms, get_pos_constraints, get_pos_sibling_counts, get_positions, grow, is_valid, replace_pos, shuffle_positions
-from torch_alg import OptimState, optimize_consts, optimize_positions
+from term import Term, TermPos, Value, get_depth, get_inner_terms, get_pos_constraints, get_pos_sibling_counts, get_positions, grow, is_valid, replace_fn, replace_pos, shuffle_positions
+from torch_alg import OPoint, OptimResult, OptimState, get_pos_optim_state, optimize_consts, optimize_positions
 
 from typing import TYPE_CHECKING
 
@@ -404,37 +402,49 @@ class ConstOptimization(Mutation):
                  frac = 0.2, 
                  num_vals: int = 1,
                  max_tries: int = 1,
-                 num_evals: int = 10, lr = 1.0):
+                 num_evals: int = 10, lr = 1.0,
+                 rtol: float = 1e-5, atol: float = 1e-5):
         super().__init__(name)
         self.frac = frac
         self.num_vals = num_vals
         self.max_tries = max_tries
         self.num_evals = num_evals
         self.lr = lr
-        self.const_optim_cache: dict[Term, OptimState] = {}
+        self.rtol = rtol
+        self.atol = atol
+        self.const_optim_cache: dict[Term, Term] = {}
+        self.optim_term_cache: dict[Term, OptimState] = {}
 
-    def _optimize_consts(self, solver: 'GPSolver', term: Term) -> Term:
+    def _optimize_consts(self, solver: 'GPSolver', term: Term, term_loss: torch.Tensor) -> Term:
         # start_opt = perf_counter()
-        optim_res = optimize_consts(term, solver.target, solver.builders,
+        optim_res = optimize_consts(term, term_loss, solver.target, solver.builders,
                                     solver.ops, solver._get_binding,
-                                    solver.const_range, solver.eval_fn, 
+                                    solver.const_range, 
+                                    solver.eval_fn, solver.fitness_fn,
                                     num_vals = self.num_vals,
                                     max_tries=self.max_tries,
                                     max_evals=self.num_evals,
                                     lr = self.lr,
-                                    rtol = solver.rtol, atol = solver.atol,
+                                    rtol = self.rtol, atol = self.atol,
                                     torch_gen=solver.torch_gen,
-                                    term_optim_cache=self.const_optim_cache)
+                                    term_optim_cache=self.const_optim_cache,
+                                    optim_term_cache=self.optim_term_cache)
         # end_opt = perf_counter()
         # dur = round((end_opt - start_opt) * 1000)
         # if dur > 100:
         #     print(f"O: {dur}, {optim_res.num_root_evals}, {term}\n\t{optim_res.term}")
-        solver.report_evals(optim_res.num_evals, optim_res.num_root_evals)
-        return optim_res.term
+        if optim_res.optim_state.optim_term is not None:
+            solver.report_evals(optim_res.num_evals, optim_res.num_root_evals)                        
+
+            # print(f"<<< {optim_res.optim_state.final_term} | {term_loss:.2f} --> {optim_res.optim_state.best_loss.item():.2f} >>>")
+            pass
+
+        return optim_res.optim_state.final_term
 
 
     def _mutate(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
         children = list(population)
+        new_terms = []
         max_count = int(len(population) * self.frac)
         if max_count == len(population):
             term_ids = range(len(population))
@@ -443,10 +453,17 @@ class ConstOptimization(Mutation):
         for term_id in term_ids:
             if max_count <= 0:
                 break
-            optimized_term = self._optimize_consts(solver, population[term_id])
+            term = population[term_id]
+            if term not in solver.term_outputs:            
+                continue # optimizing only evaluated and good terms
+            term_loss = solver.output_fitness[solver.term_outputs[term]]
+            optimized_term = self._optimize_consts(solver, term, term_loss)
             if optimized_term is not None:
                 children[term_id] = optimized_term
+                new_terms.append(optimized_term)
                 max_count -= 1
+        if len(new_terms) > 0:
+            solver.eval(new_terms)
         return children    
     
 class Deduplicate(Mutation):
@@ -523,63 +540,136 @@ class ReplaceWithBestInner(Mutation):
 
         return children
         
+@dataclass 
+class OptimizedPos:
+    term_pos: list[TermPos]
+    cur_id: int
+            
 class PointOptimization(Mutation):
     ''' Adjust arbirary point of the term by searching best vectors at points ''' 
     
-    def __init__(self, name = "const_opt", *, 
-                 frac = 0.2, 
-                 num_vals: int = 1,
-                 max_tries: int = 1,
-                 num_evals: int = 10, lr = 1.0,
-                 index_type = SpatialIndex):
+    def __init__(self, name = "point_opt", *, 
+                 frac = 0.2, num_vals: int = 1, max_tries: int = 1,
+                 num_evals: int = 10, lr = 1.0, delta: float = 0.1,
+                 delay = 3, best_loss_size: int = 5,
+                 loss_threshold: Optional[float] = 1.0,
+                 rtol: float = 1e-5, atol: float = 1e-5):
         super().__init__(name)
         self.frac = frac
         self.num_vals = num_vals
         self.max_tries = max_tries
         self.num_evals = num_evals
         self.lr = lr
-        self.tries_pos: dict[Term, set[tuple[Term, int]]] = {}
-        self.point_optim_cache: dict[tuple[Term, tuple[Term, int]], OptimState] = {}
-        self.index: SpatialIndex | None = None
-        self.index_type = index_type
+        self.delta = delta
+        self.delay = delay
+        self.rtol = rtol
+        self.atol = atol
+        self.best_loss_size = best_loss_size
+        self.tries_pos: dict[Term, OptimizedPos] = {}
+        self.term_optim_cache: dict[tuple[Term, tuple[Term, int]], Term] = {}
+        self.optim_term_cache: dict[Term, OptimState] = {}
+        self.loss_threshold = loss_threshold
 
-    def _optimize_rand_pos(self, solver: 'GPSolver', term: Term, population: Sequence[Term]) -> Term:
+    def _optimize_pos(self, solver: 'GPSolver', term: Term) -> Optional[Term]:
         # start_opt = perf_counter()
-        positions = get_positions(term, solver.pos_cache)
+        if term not in self.tries_pos:
+            positions = get_positions(term, solver.pos_cache)
+            # DECISION 1: how to pick term pos?? shuffle, sorted by depth?
+            # positions.sort(key=lambda pos: pos.at_depth) # start with shallowest positions
+            positions = solver.rnd.permutation(positions)
+            self.tries_pos[term] = OptimizedPos(term_pos=positions, cur_id=0)
         # term_tried_pos = self.tries_pos.setdefault(term, set())
-        # TODO
-        rand_pos = solver.rnd.choice(positions)
-        pos_output = solver.get_cached_output(rand_pos.term)
-        output_range = torch.stack([pos_output, solver.target], dim=0)
-        torch.minimum(output_range[0], output_range[1], out=output_range[0])
-        torch.maximum(output_range[0], output_range[1], out=output_range[1])
-        optim_res = optimize_positions(term, (rand_pos,), solver.target, solver.builders,
-                                    solver.ops, solver._get_binding,
-                                    output_range, 
-                                    solver.eval_fn, 
-                                    pos_outputs=(pos_output,),
-                                    num_vals = self.num_vals,
-                                    max_tries=self.max_tries,
-                                    max_evals=self.num_evals,
-                                    lr = self.lr,
-                                    rtol = solver.rtol, atol = solver.atol,
-                                    torch_gen=solver.torch_gen,
-                                    term_optim_cache=self.point_optim_cache)
-        solver.report_evals(optim_res.num_evals, optim_res.num_root_evals)
-        if optim_res.binding is not None:
-            # here we have bindings (expected outputs), but we need to find closest syntax --> semantic index
-            # currently resorting to search in the population 
-            population_outputs = stack_rows([solver.get_cached_output(t) for t in population])
-            dists = torch.sum((population_outputs - optim_res.binding[0]) ** 2, dim=-1)
-            min_dist_id = torch.argmin(dists, dim=0)
-            min_dist = dists[min_dist_id]
-            optim_res.term = population[min_dist_id.item()]
-        return optim_res.term
+        term_pos = self.tries_pos[term]
+        end_id = term_pos.cur_id - 1 
+        if end_id < 0:
+            end_id = len(term_pos.term_pos) - 1
+        optim_state = None
+        while term_pos.cur_id <= end_id:
+            cur_pos = term_pos.term_pos[term_pos.cur_id % len(term_pos.term_pos)]
+            term_pos.cur_id += 1
+            optim_state = get_pos_optim_state(term, (cur_pos,), self.num_vals,
+                                self.term_optim_cache, self.optim_term_cache,
+                                solver.builders,
+                                best_loss_size=self.best_loss_size,
+                                output_size = solver.target.shape[0],
+                                dtype = solver.dtype, device = solver.device)
+            # DECISION 2: how many optim attempts? what starting point to take?
+            if (optim_state.num_attempted > 0) and \
+                ((len(optim_state.good_fit_ids) == 0) or (solver.gen - optim_state.moment) < self.delay):
+                # point was already optimized with no good results or to early to retry search 
+                continue # try next pos // or should we try next term??? return None
+                # return None ???
+            break 
+        if optim_state is None: 
+            return None 
+        if optim_state.num_attempted == 0: # we start optim only once currently
+            pos_output = solver.get_cached_output(cur_pos.term)
+            output_range = torch.stack([pos_output, solver.target], dim=0)
+            range_mins = torch.minimum(output_range[0], output_range[1])
+            range_maxs = torch.maximum(output_range[0], output_range[1])
+            output_range[0] = range_mins - self.delta
+            output_range[1] = range_maxs + self.delta
+            optim_res: OptimResult = optimize_positions(optim_state, solver.target,
+                                        solver.ops, solver._get_binding,
+                                        output_range, 
+                                        solver.eval_fn, solver.fitness_fn,
+                                        moment = solver.gen,
+                                        pos_outputs=(pos_output,),
+                                        num_vals = self.num_vals,
+                                        max_tries=self.max_tries,
+                                        max_evals=self.num_evals,
+                                        lr = self.lr,
+                                        rtol = self.rtol, atol = self.atol,
+                                        torch_gen=solver.torch_gen)
+            solver.report_evals(optim_res.num_evals, optim_res.num_root_evals)
+            optim_state.good_fit_ids = torch.where(optim_state.best_loss < self.loss_threshold)
+            if len(optim_state.good_fit_ids) == 0: # no good points
+                return None                
+        
+        closest_terms = solver.get_close_known_terms(optim_state.best_binding[0])
+        if len(closest_terms) == 0:
+            return None 
+        
+        if len(close_terms) > 100:
+            print(f"WARN: too many close terms: {len(close_terms)}")
+            close_terms = solver.rnd.choice(close_terms, size=100, replace=False)
 
+        close_outputs = stack_rows([solver.get_cached_output(term) for term in close_terms], target_size=solver.target.shape[0])
+        
+        def _redirected_get_binding(root: Term, term: Term):
+            # if isinstance(term, OptimPoint):
+            if term == OPoint:
+                return close_outputs
+            return solver.get_binding(root, term)
+        
+        attempted = {}
+        num_evals = 0
+        num_root_evals = 0
+        def _set_binding(root: Term, term: Term, values: torch.Tensor):
+            nonlocal num_evals, num_root_evals
+            attempted[term] = values
+            num_evals += values.shape[0]
+            if root == term:
+                num_root_evals += values.shape[0]
+            return
+                        
+        outputs = solver.eval_fn(optim_res.optim_state.optim_term, solver.ops,
+                                    _redirected_get_binding, _set_binding)
+        
+        # TODO: finite outputs --> cache in solver, closest to target as result
+        # finite_mask = torch.isfinite(outputs).all(dim=-1)
+
+        solver.report_evals(num_evals, num_root_evals)
+
+        target_dist = torch.sum((outputs - solver.target) ** 2, dim = -1)
+        target_dist.nan_to_num_(torch.inf)
+        min_dist_id = torch.argmin(target_dist)
+        min_dist = target_dist[min_dist_id]
+        best_term = close_terms[min_dist_id]
+        print(f"PointOpt: {best_term}, dist: {min_dist}")
+        return best_term
 
     def _mutate(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
-        if self.index is None:
-            self.index = self.index_type(population, [solver.get_cached_output(t) for t in population])
         children = list(population)
         max_count = int(len(population) * self.frac)
         if max_count == len(population):
@@ -589,7 +679,7 @@ class PointOptimization(Mutation):
         for term_id in term_ids:
             if max_count <= 0:
                 break
-            optimized_term = self._optimize_rand_pos(solver, population[term_id], population)
+            optimized_term = self._optimize_pos(solver, population[term_id])
             if optimized_term is not None:
                 children[term_id] = optimized_term
                 max_count -= 1
