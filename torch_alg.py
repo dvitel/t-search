@@ -343,9 +343,10 @@ class LRAdjust(Exception):
 
 def optimize(optim_state: OptimState,
                 target: torch.Tensor, given_ops: dict[str, Callable], 
-                get_binding: Callable, eval_fn = evaluate, loss_fn = mse_loss,
+                get_binding: Callable, *, eval_fn = evaluate, loss_fn = mse_loss,
                 num_best: int = 1, lr: float = 1.0, max_evals: int = 10, 
-                atol: float = 1e-4, rtol: float = 1e-4):
+                atol: float = 1e-4, rtol: float = 1e-4, collect_inner_binding: bool = False,
+                loss_threshold: float = 0.1,):
     
     num_evals = 0
     num_root_evals = 0
@@ -379,8 +380,15 @@ def optimize(optim_state: OptimState,
 
     best_loss = None 
 
-    iter_loss = [optim_state.best_loss] if optim_state.best_loss is not None else []
-    iter_binding = {k:[v] for k,v in optim_state.best_binding.items()} if optim_state.best_binding is not None else {}
+    iter_loss = []
+    iter_binding = {}
+
+    if optim_state.best_loss is not None:
+        iter_loss.append(optim_state.best_loss)    
+
+    if optim_state.best_binding is not None:
+        for k, v in optim_state.best_binding.items():
+            iter_binding[k] = [v]
 
     def closure_builder(optimizer: torch.optim.Optimizer):
         nonlocal num_root_evals, best_loss, max_evals
@@ -401,17 +409,15 @@ def optimize(optim_state: OptimState,
         def _set_binding(root: Term, term: Term, output: torch.Tensor):
             nonlocal num_evals
             num_evals += 1
-            if term in optim_state.binding:
-                del optim_state.binding[term]
-            optim_state.binding[term] = output
+            if collect_inner_binding and (root != term):
+                if term in optim_state.binding:
+                    del optim_state.binding[term]
+                optim_state.binding[term] = output
             return         
                 
         outputs: torch.Tensor = eval_fn(optim_state.optim_term, given_ops, _redirected_get_binding, _set_binding)
         # assert outputs is not None, "Term evaluation should be full. Term is evaluated partially"
         loss: torch.Tensor = loss_fn(outputs, target) 
-        iter_loss.append(loss.detach().clone())
-        for k,v in optim_state.binding.items():
-            iter_binding.setdefault(k, []).append(v.detach().clone())            
         finite_loss_mask = torch.isfinite(loss)
         if not torch.any(finite_loss_mask):
             raise LRAdjust(None)
@@ -453,9 +459,14 @@ def optimize(optim_state: OptimState,
         #         for cur_b, last_b in zip(optim_state.best_binding, optim_state.optim_points):
         #             cur_b[new_ids] = last_b[new_sort_ids]
         
-        min_loss = finite_loss.min().values()
+        min_loss = finite_loss.min()
 
-        # print(f"\tLoss {new_min_loss.item()}, {[b.tolist() for b in optim_state.best_binding]}, lr={cur_lr}, evals {num_root_evals}")
+        # print(f"\tLoss {min_loss.item()}, evals {num_root_evals}")
+
+        if min_loss < loss_threshold:
+            iter_loss.append(loss.detach().clone())
+            for k,v in optim_state.binding.items():
+                iter_binding.setdefault(k, []).append(v.detach().clone())        
         
         # TODO: experiment with early exit - seems to be benefitial
         if best_loss is not None:
@@ -464,8 +475,9 @@ def optimize(optim_state: OptimState,
             # elif new_min_loss > last_min_loss:
             #     # optimizer.param_groups[0]['lr'] *= 0.5
             #     pass
-            if min_loss >= best_loss:
-                raise LRAdjust(None)
+            # if min_loss >= best_loss:
+            #     raise LRAdjust(None)
+            pass
 
         best_loss = min_loss
 
@@ -493,33 +505,37 @@ def optimize(optim_state: OptimState,
 
     # assert torch.allclose(last_loss, final_loss)
 
-    all_iter_loss = torch.concat(iter_loss)
-    all_iter_loss.nan_to_num_(torch.inf)
-    if num_best == 1:
-        best_ids = torch.argmin(all_iter_loss).unsqueeze(0)
-    else:
-        best_ids = torch.argsort(all_iter_loss)[:num_best]
-    best_loss = all_iter_loss[best_ids]
-    del all_iter_loss
-    for il in iter_loss:
-        del il
+    if len(iter_loss) > 0:
 
-    best_binding = {}
-    for k, v in iter_binding.items():
-        v_tensor = torch.stack(v, dim=0)
-        best_binding[k] = v_tensor[best_ids]
-        del v_tensor
-        for vi in v:
-            del vi
+        all_iter_loss = torch.concat(iter_loss)
+        all_iter_loss.nan_to_num_(torch.inf)
+        if num_best == 1:
+            best_ids = torch.argmin(all_iter_loss).unsqueeze(0)
+        else:
+            best_ids = torch.argsort(all_iter_loss)[:num_best]
+        best_loss = all_iter_loss[best_ids]
+        best_id_ids, = torch.where(best_loss < loss_threshold)
+        best_ids = best_ids[best_id_ids]
+        del all_iter_loss
+        for il in iter_loss:
+            del il
 
-    optim_state.best_loss = best_loss
-    optim_state.best_binding = best_binding
+        best_binding = {}
+        for k, v in iter_binding.items():
+            v_tensor = torch.concat(v, dim=0)
+            best_binding[k] = v_tensor[best_ids]
+            del v_tensor
+            for vi in v:
+                del vi
+
+        optim_state.best_loss = best_loss[best_id_ids]
+        optim_state.best_binding = best_binding
 
     optim_state.dec()
 
     return num_evals, num_root_evals
 
-# optim_id = -1 # for debugging
+optim_id = -1 # for debugging
 def optimize_consts(term: Term, term_loss: torch.Tensor,
     target: torch.Tensor, builders: Builders,
     given_ops: dict[str, Callable], get_binding: Callable, start_range: torch.Tensor,
@@ -527,6 +543,7 @@ def optimize_consts(term: Term, term_loss: torch.Tensor,
     eval_fn = evaluate, loss_fn = mse_loss,
     num_vals = 10, max_tries = 1, max_evals = 20, num_best: int = 1,
     lr = 0.1, rtol: float = 1e-4, atol: float = 1e-4,
+    loss_threshold: float = 0.1, collect_inner_binding: bool = False,
     torch_gen: torch.Generator | None = None,
     term_values_cache: dict[Term, list[Value]],
     optim_term_cache: dict[Term, Term | None],
@@ -534,8 +551,8 @@ def optimize_consts(term: Term, term_loss: torch.Tensor,
     ''' Searches for the term const values that would bring it closer to the target outputs.
         Restarts will reinitialize the constants.
     '''
-    # global optim_id
-    # optim_id += 1
+    global optim_id
+    optim_id += 1
     
     if term not in optim_term_cache: # need to build optim term with optim points
 
@@ -550,7 +567,7 @@ def optimize_consts(term: Term, term_loss: torch.Tensor,
                 optim_points.append(point)
                 value = torch.zeros((num_vals, 1 if len(term.value.shape) == 0 else term.value.shape[0]), dtype=term.value.dtype, device=term.value.device)
                 binding[point] = value
-                values.append(value)
+                values.append(term)
                 return point
 
         optim_term = replace_fn(term, const_to_optim_point, builders)
@@ -618,11 +635,13 @@ def optimize_consts(term: Term, term_loss: torch.Tensor,
     best_loss_before = optim_state.best_loss if optim_state.best_loss is not None else None
     
     num_evals, num_root_evals = \
-        optimize(optim_state.optim_term, optim_state.optim_points, optim_state.binding,
-                        target, given_ops, get_binding, eval_fn, loss_fn,
-                         lr=lr, max_evals=max_evals, num_best = num_best, atol=atol, rtol=rtol)
+        optimize(optim_state, target, given_ops, get_binding, 
+                 eval_fn = eval_fn, loss_fn = loss_fn, loss_threshold = loss_threshold,
+                 collect_inner_binding = collect_inner_binding,
+                 lr=lr, max_evals=max_evals, num_best = num_best, atol=atol, rtol=rtol)
 
-    if best_loss_before is None or optim_state.best_loss[0] < best_loss_before[0]:
+    if optim_state.best_loss is not None and \
+        (best_loss_before is None or optim_state.best_loss[0] < best_loss_before[0]):
                 
         def bind_optim_points(term, occur, **_):
             if isinstance(term, OptimPoint):
@@ -688,8 +707,8 @@ def optimize_positions(optim_state: OptimState,
     given_ops: dict[str, Callable], get_binding: Callable, start_range: torch.Tensor,
     eval_fn = evaluate, loss_fn = mse_loss,
     pos_outputs: list[tuple[torch.Tensor]] = [],
-    num_vals = 10, max_evals = 20, num_best: int = 5,
-    lr = 1.0, rtol: float = 1e-4, atol: float = 1e-4,
+    num_vals = 10, max_evals = 20, num_best: int = 5, collect_inner_binding: bool = False,
+    lr = 1.0, rtol: float = 1e-4, atol: float = 1e-4, loss_threshold: float = 0.1,
     torch_gen: torch.Generator | None = None) -> tuple[int, int]:
     ''' Searches for the term const values that would bring it closer to the target outputs.
         Restarts will reinitialize the constants.
@@ -713,7 +732,9 @@ def optimize_positions(optim_state: OptimState,
             binding[opt_id] = start_to_attempt[op_id]
         binding.requires_grad = True
 
-    optim_res = optimize(optim_state, target, given_ops, get_binding, eval_fn, loss_fn,
+    optim_res = optimize(optim_state, target, given_ops, get_binding, 
+                         eval_fn = eval_fn, loss_fn = loss_fn, loss_threshold = loss_threshold,
+                         collect_inner_binding = collect_inner_binding,
                          lr=lr, max_evals=max_evals, num_best=num_best, atol=atol, rtol=rtol)
 
     return optim_res

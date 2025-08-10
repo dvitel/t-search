@@ -571,7 +571,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         return None
 
     
-    def _get_binding(self, root: Term, term: Term, **_) -> Optional[torch.Tensor]:        
+    def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:        
         res_in_cache = self.get_cached_output(term)      
 
         if res_in_cache is None:
@@ -581,7 +581,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         return res_in_cache
 
-    def _set_binding(self, root: Term, term: Term, value: torch.Tensor, **_):
+    def _set_binding(self, root: Term, term: Term, value: torch.Tensor):
         self.evals += 1
         if root == term:
             self.root_evals += 1
@@ -805,7 +805,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         
         _, var_binding = self.get_vars(X)
         
-        def get_binding(root: Term, term: Term, **_) -> Optional[torch.Tensor]:
+        def get_binding(root: Term, term: Term) -> Optional[torch.Tensor]:
             if isinstance(term, Variable):
                 return var_binding[term.var_id]
             if isinstance(term, Value):
@@ -813,7 +813,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 return term.value
             return None
         
-        def set_binding(*_, **__):
+        def set_binding(*_):
             pass 
         
         output = self.eval_fn(self.best_term, self.ops, get_binding, set_binding)
@@ -892,6 +892,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
 # TODO: think about terms that are optimized to consts --> invalid_terms vs const_terms store
 # TODO: unification of terms without meta variables to find most abstract common pattern???
 
+# TODO: Debug fail term gen when Finite is disabled, Deduplicate is disabled and Const Optim num_evals = 7,
+
 if __name__ == "__main__":
 
     from torch_alg import alg_ops, koza_1
@@ -908,14 +910,17 @@ if __name__ == "__main__":
                         with_inner_evals=True,
                         init=RHH(),
                         #(num_tries=1, lr=0.1)],
-                        pipeline=[Finite(),
-                                  ConstOptimization(num_vals = 10, lr=1.0),
-                                  Elitism(size = 10),
-                                  TournamentSelection(), 
-                                  PointRandMutation(), 
-                                  PointRandCrossover(), 
-                                  Deduplicate(), 
-                                #   PointOptimization(num_vals = 10, lr=1.0),
+                        pipeline=[
+                                    Finite(), 
+                                    ConstOptimization(num_vals = 20, lr=1.0,
+                                                        num_evals = 7,
+                                                        loss_threshold = 1e-2),
+                                    Elitism(size = 10),
+                                    TournamentSelection(), 
+                                    PointRandMutation(), 
+                                    PointRandCrossover(), 
+                                    Deduplicate(), 
+                                    # PointOptimization(num_vals = 10, lr=1.0),
                                   ],
                         # mutations=[PointRandMutation(), PointRandCrossover(), Deduplicate(), ConstOptimization1(lr=1.0)],
                         # commutative_ops=["add", "mul"],

@@ -392,7 +392,9 @@ class ConstOptimization(Mutation):
                  num_vals: int = 1,
                  max_tries: int = 1,
                  num_evals: int = 10, lr = 1.0,
-                 rtol: float = 1e-5, atol: float = 1e-5):
+                 rtol: float = 1e-5, atol: float = 1e-5,
+                 loss_threshold: Optional[float] = 0.1,
+                 collect_inner_binding: bool = False):
         super().__init__(name)
         self.frac = frac
         self.num_vals = num_vals
@@ -404,18 +406,21 @@ class ConstOptimization(Mutation):
         self.term_values_cache: dict[Term, list[Value]] = {}
         self.optim_term_cache: dict[Term, Term] = {}
         self.optim_state_cache: dict[Term, OptimState] = {}
+        self.loss_threshold = loss_threshold
+        self.collect_inner_binding = collect_inner_binding
 
     def _optimize_consts(self, solver: 'GPSolver', term: Term, term_loss: torch.Tensor) -> Optional[Term]:
         # start_opt = perf_counter()
         optim_res = optimize_consts(term, term_loss, solver.target, solver.builders,
                                     solver.ops, solver._get_binding,
                                     solver.const_range, 
-                                    solver.eval_fn, solver.fitness_fn,
+                                    eval_fn = solver.eval_fn, loss_fn = solver.fitness_fn,
                                     num_vals = self.num_vals,
                                     max_tries=self.max_tries,
                                     max_evals=self.num_evals,
-                                    lr = self.lr,
+                                    lr = self.lr, loss_threshold = self.loss_threshold,
                                     rtol = self.rtol, atol = self.atol,
+                                    collect_inner_binding = self.collect_inner_binding,
                                     torch_gen=solver.torch_gen,
                                     term_values_cache=self.term_values_cache,
                                     optim_term_cache=self.optim_term_cache,
@@ -429,7 +434,7 @@ class ConstOptimization(Mutation):
             solver.report_evals(num_evals, num_root_evals)                        
 
             # print(f"<<< {optim_res.optim_state.final_term} | {term_loss:.2f} --> {optim_res.optim_state.best_loss.item():.2f} >>>")
-            if term_loss < optim_state.best_loss[0]:
+            if optim_state.best_loss is not None and (term_loss < optim_state.best_loss[0]):
                 return None # can happen when we exhaust all attempts of optimization 
             return optim_state.best_term
         return None
@@ -545,7 +550,8 @@ class PointOptimization(Mutation):
                  num_evals: int = 10, lr = 1.0, delta: float = 0.1,
                  num_best: int = 5,
                  loss_threshold: Optional[float] = 0.1,
-                 rtol: float = 1e-5, atol: float = 1e-5):
+                 rtol: float = 1e-5, atol: float = 1e-5,
+                 collect_inner_binding: bool = True):
         super().__init__(name)
         self.frac = frac
         self.num_vals = num_vals
@@ -560,6 +566,7 @@ class PointOptimization(Mutation):
         self.optim_term_cache: dict[tuple[Term, tuple[Term, int]], Term] = {}
         self.optim_state_cache: dict[Term, OptimState] = {}
         self.loss_threshold = loss_threshold
+        self.collect_inner_binding = collect_inner_binding
 
     def _select_pos_optim_state(self, solver: 'GPSolver', term: Term) -> Optional[tuple[TermPos, OptimState]]:
         if term not in self.tries_pos:
@@ -622,12 +629,12 @@ class PointOptimization(Mutation):
                 max_tries=self.max_tries,
                 max_evals=self.num_evals,
                 num_best = self.num_best,
-                lr = self.lr,
+                lr = self.lr, loss_threshold = self.loss_threshold,
                 rtol = self.rtol, atol = self.atol,
+                collect_inner_binding = self.collect_inner_binding,
                 torch_gen=solver.torch_gen)
         solver.report_evals(num_evals, num_root_evals)
-        fit_ids, = torch.where(optim_state.best_loss < self.loss_threshold)
-        if len(fit_ids) > 0: # good semantics to add to the hole index
+        if optim_state.best_loss is not None: # good semantics to add to the hole index
 
             holes = []
             semantics = []
