@@ -7,17 +7,16 @@
 '''
 
 from functools import partial
-import math
 from typing import Callable, Literal, Optional, Sequence
 from time import perf_counter
 import numpy as np
 import torch
 from initialization import RHH, Initialization
-from mutation import ConstOptimization, Deduplicate, Mutation, PointOptimization, PointRandCrossover, PointRandMutation
+from mutation import ConstOptimization, Deduplicate, Mutation, PointRandCrossover, PointRandMutation
 from selection import Elitism, Finite, TournamentSelection
-from spatial import SpatialIndex, VectorStorage
-from term import Builder, Builders, Op, Term, Value, Variable, evaluate, get_counts, get_depth, \
-                    get_fn_arity, match_root, parse_term
+from spatial import VectorStorage
+from term import Builder, Builders, Op, Term, TermPos, Value, Variable, evaluate, get_counts, get_depth, \
+                    get_fn_arity, match_root, parse_term, replace_pos_protected
 from sklearn.base import BaseEstimator, RegressorMixin
 
 from torch_alg import mse_loss
@@ -86,11 +85,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 # cache_terms: bool = True,
                 # cache_evals: bool = True, # outputs and fitness
                 # compute_output_range = True,
+                index_type = VectorStorage, # semantics storage
+                const_range: Optional[tuple[float, float]] = None, # if not set, computed from X, y
                 rtol = 1e-04, atol = 1e-03, # NOTE: these are for semantic/outputs comparison, not for fitness, see fit_0
                 rnd_seed: Optional[int] = None,
                 torch_rnd_seed: Optional[int] = None,
                 device = "cpu", dtype = torch.float32,
-                index_type = VectorStorage, # semantics storage
                 ):
         
         self.ops = ops
@@ -113,6 +113,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 
         # self.const_binding: list[torch.Tensor] = []
         self.const_range: torch.Tensor | None = None # detected from y on reset
+        if const_range is not None:
+            self.const_range = torch.tensor(const_range, dtype=dtype, device=device)
         # NOTE: variables and consts are stored separately from tree - abstract shapes x * x + c * x + c 
         #       in this approach we have a problem with caching semantics of intermediate terms, as for different c and x, the results are different
         #       solution: make term_output as dictionary with keys (root, term). Root should be a part of all keys to identify concrete selection of c, x
@@ -161,11 +163,15 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.sign_syntax: dict[tuple[str, ...], Term] = {}
         self.term_repr: dict[Term, Term] = {} # unifies terms to same instance - to use in other caches
         self.index: VectorStorage | None = None
+        self.hole_index: VectorStorage | None = None
         self.index_type = index_type
-        self.term_outputs: dict[Term, int] = {} # int if storage is provided
+        self.term_outputs: dict[Term, int] = {}
+        # self.hole_outputs: dict[tuple[Term, Term, int], set[int]] = {}
         self.output_terms: dict[int, Term] = {}
+        self.output_holes: dict[int, list[tuple[Term, TermPos]]] = {}
         self.new_term_outputs: dict[Term, torch.Tensor] = {}
         self.invalid_term_outputs: dict[Term, torch.Tensor] = {} # terms with nans or infs in output, some indices do not support them 
+        self.const_term_outputs: dict[Term, torch.Tensor] = {}
         self.output_fitness: dict[int, torch.Tensor] = {}
         # self.term_counts: dict[Term, np.ndarray] = {}
         self.pos_cache = {}
@@ -212,9 +218,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.target = None 
         self.syntax: dict[tuple[str, ...], Term] = {}
         self.term_outputs: dict[Term, int] = {}
+        # self.hole_outputs: dict[tuple[Term, Term, int], set[int]] = {}
         self.output_terms: dict[int, Term] = {}
+        self.output_holes: dict[int, list[tuple[Term, TermPos]]] = {}
         self.new_term_outputs: dict[Term, torch.Tensor] = {} # to be registered in index - new semantics
         self.invalid_term_outputs: dict[Term, torch.Tensor] = {}
+        self.const_term_outputs: dict[Term, torch.Tensor] = {}
         self.output_fitness: dict[int, torch.Tensor] = {}
         self.pos_cache = {}
         self.pos_context_cache = {}
@@ -243,7 +252,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             vars, var_binding = self.get_vars(free_vars)
             self.var_binding = var_binding
             self.vars = vars
-            var_builder = Builder("X", self._alloc_var, 0, self.min_vars, self.max_vars)
+            var_builder = Builder("x", self._alloc_var, 0, self.min_vars, self.max_vars)
             builders[Variable] = var_builder
 
         builders.update(self.op_builders)
@@ -291,23 +300,24 @@ class GPSolver(BaseEstimator, RegressorMixin):
             else:
                 self.target = target.to(device = self.device, dtype = self.dtype)
             
-            min_value = self.target.min()
-            max_value = self.target.max()
-            if torch.isclose(min_value, max_value, rtol=self.rtol, atol=self.atol):
-                min_value = min_value - 0.1
-                max_value = max_value + 0.1
-            dist = max_value - min_value
-            min_value = min_value - 0.1 * dist
-            max_value = max_value + 0.1 * dist
-            self.const_range = torch.tensor([min_value, max_value], dtype= self.dtype, device=self.device)
-            if torch.is_tensor(free_vars):
-                min_fv = torch.min(free_vars)
-                max_fv = torch.max(free_vars)
-            else:
-                min_fv = min(torch.min(xv).item() for xv in free_vars)
-                max_fv = max(torch.max(xv).item() for xv in free_vars)
-            self.const_range[0] = torch.minimum(self.const_range[0], min_fv)
-            self.const_range[1] = torch.maximum(self.const_range[1], max_fv)
+            if self.const_range is None:
+                min_value = self.target.min()
+                max_value = self.target.max()
+                if torch.isclose(min_value, max_value, rtol=self.rtol, atol=self.atol):
+                    min_value = min_value - 0.1
+                    max_value = max_value + 0.1
+                dist = max_value - min_value
+                min_value = min_value - 0.1 * dist
+                max_value = max_value + 0.1 * dist
+                self.const_range = torch.tensor([min_value, max_value], dtype= self.dtype, device=self.device)
+                if torch.is_tensor(free_vars):
+                    min_fv = torch.min(free_vars)
+                    max_fv = torch.max(free_vars)
+                else:
+                    min_fv = min(torch.min(xv).item() for xv in free_vars)
+                    max_fv = max(torch.max(xv).item() for xv in free_vars)
+                self.const_range[0] = torch.minimum(self.const_range[0], min_fv)
+                self.const_range[1] = torch.maximum(self.const_range[1], max_fv)
 
         # self.output_range = torch.stack([self.target, self.target], dim=0)
         # abs_target = torch.abs(self.target)
@@ -319,8 +329,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.index = self.index_type(capacity = self.max_evals, dims = self.target.shape[0], 
                                 dtype = self.dtype, device = self.device,
                                 rtol = self.rtol, atol = self.atol)
+        if self.hole_index is not None:
+            del self.hole_index
+        
+        for x in self.vars:
+            binding = self.var_binding[x.var_id]
+            semantics_id = self.index.insert(binding.unsqueeze(0))
+            self.term_outputs[x] = semantics_id
         pass
-
         
     def get_vars(self, free_vars):
         vars = []
@@ -366,6 +382,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         
     def eval(self, terms: list[Term]):        
             
+        hole_terms = []
         outputs = []
         for term in terms:
             output = self.eval_fn(term, self.ops, self._get_binding, self._set_binding)
@@ -389,9 +406,26 @@ class GPSolver(BaseEstimator, RegressorMixin):
             new_semantics = semantics[valid_ids]
             valid_terms = [new_terms[i] for i in valid_ids.tolist()]
             del semantics, finite_semantics_mask, infinite_ids, valid_ids 
+
+            # check for const semantics 
+            # if len(valid_terms) > 0:
+            #     semantics = new_semantics
+            #     semantics_mean = semantics.mean(dim=-1, keepdim=True)
+            #     const_el_mask = torch.isclose(semantics, semantics_mean, rtol = self.rtol, atol = self.atol)    
+            #     const_mask = const_el_mask.all(dim=-1)
+            #     const_ids, = torch.where(const_mask)
+            #     nonconst_ids, = torch.where(~const_mask)
+            #     for const_id in const_ids.tolist():
+            #         const_term = valid_terms[const_id]
+            #         self.const_term_outputs[const_term] = semantics_mean[const_id]
+            #     new_semantics = semantics[nonconst_ids]
+            #     valid_terms = [valid_terms[i] for i in nonconst_ids.tolist()]
+            #     del semantics, semantics_mean, const_el_mask, const_mask, const_ids, nonconst_ids
+            
             if len(valid_terms) > 0:
                 semantics = new_semantics
-                semantic_ids = self.index.insert(semantics)
+                semantic_ids, hole_terms = self.register_terms(valid_terms, semantics)
+
                 # if self.compute_output_range:
                 #     finite_predictions_mask = torch.isfinite(predictions).all(dim=-1)
                 #     if torch.any(finite_predictions_mask):
@@ -401,16 +435,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 #         torch.minimum(self.output_range[0], min_outputs, out=self.output_range[0])
                 #         torch.maximum(self.output_range[1], max_outputs, out=self.output_range[1])
                 new_fitness: torch.Tensor = self.fitness_fn(semantics, self.target)
-                for t, sid, f in zip(valid_terms, semantic_ids, new_fitness):
-                    self.term_outputs[t] = sid
-                    if sid not in self.output_terms:
-                        self.output_terms[sid] = t
-                    else:
-                        cur_t = self.output_terms[sid]
-                        cur_t_depth = get_depth(cur_t, self.depth_cache)
-                        t_depth = get_depth(t, self.depth_cache)
-                        if t_depth < cur_t_depth:
-                            self.output_terms[sid] = t
+                for sid, f in zip(semantic_ids, new_fitness):
                     self.output_fitness[sid] = f
                 del semantics
 
@@ -424,7 +449,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         self.new_term_outputs.clear()
 
-        # self.gen_metrics["pop_size"] = len(terms)
+        if len(hole_terms) == 0:
+            return 
+        
+        print(f"Filling {len(hole_terms)} holes.")
+
+        self.eval(hole_terms)
+        pass
 
     def get_term_fitness(self, term: Term) -> Optional[torch.Tensor]:
         if term in self.term_outputs:
@@ -500,6 +531,16 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 self.syntax.pop(signature, None)
                 return None
             self.metrics[key] = self.metrics.get(key, 0) + 1
+            if term in self.invalid_term_outputs:
+                self.metrics["syntax_invalid"] = self.metrics.get("syntax_invalid", 0) + 1
+                return None # do not output known invalid terms
+            elif term in self.const_term_outputs:
+                self.metrics["syntax_const"] = self.metrics.get("syntax_const", 0) + 1
+                # return Value(self.const_term_outputs[term]) # return const value
+                # return None 
+                pass
+                # NOTE: returning value could ruin constraints. Instead, we disallow constant terms because constant leaf could be used instead.
+                # TODO: separate operator that transforms terms to simple forms with removed constants
             return term 
         # else:
         #     def _alloc_op(*args):
@@ -517,18 +558,20 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if isinstance(term, Value):
             # return self.const_binding[term.value]
             return term.value     
-        if term in self.new_term_outputs:
-            return self.new_term_outputs[term]       
         if term in self.term_outputs:
             semantics_id = self.term_outputs[term]
             semantics = self.index.get_vectors(semantics_id)
             return semantics
+        if term in self.new_term_outputs:
+            return self.new_term_outputs[term]       
         if term in self.invalid_term_outputs:
             return self.invalid_term_outputs[term]
+        if term in self.const_term_outputs:
+            return self.const_term_outputs[term]
         return None
 
     
-    def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:        
+    def _get_binding(self, root: Term, term: Term, **_) -> Optional[torch.Tensor]:        
         res_in_cache = self.get_cached_output(term)      
 
         if res_in_cache is None:
@@ -538,7 +581,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         return res_in_cache
 
-    def _set_binding(self, root: Term, term: Term, value: torch.Tensor):
+    def _set_binding(self, root: Term, term: Term, value: torch.Tensor, **_):
         self.evals += 1
         if root == term:
             self.root_evals += 1
@@ -546,7 +589,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
             raise EvSearchTermination("MAX_EVAL")
         if self.root_evals == self.max_root_evals:
             raise EvSearchTermination("MAX_ROOT_EVAL")
-        # semantics_id = self.index.alloc_vectors(value)
         self.new_term_outputs[term] = value
 
     def _checkpoint_metrics(self):
@@ -626,40 +668,103 @@ class GPSolver(BaseEstimator, RegressorMixin):
             return True
         return False 
     
-    def get_close_known_terms(self, outputs: torch.Tensor,
-                                start_delta = 0.01,
-                                delta_increase = 10,
-                                num_tries = 3) -> list[Term]:
-        const_val = self.find_any_const(outputs)
-        if const_val is not None:
-            return [Value(const_val)]
-        
-        var = self.find_any_var(outputs)
-        if var is not None:
-            return [var]
-
-        best_found_semantic_ids = None
-        cur_delta = start_delta
-        while num_tries > 0:
-            found_semantic_ids = set()
-            for output in outputs:
-                range = torch.stack([output - cur_delta, output + cur_delta], dim=0)
-                output_semantic_ids = self.index.query_range(range)
-                found_semantic_ids.update(output_semantic_ids)
-            if best_found_semantic_ids is None or \
-                ((len(found_semantic_ids) > 0) and \
-                    (len(found_semantic_ids) < len(best_found_semantic_ids))):
-                best_found_semantic_ids = found_semantic_ids
-            if len(found_semantic_ids) > 10:
-                cur_delta /= delta_increase
-            elif len(found_semantic_ids) == 0:
-                cur_delta *= delta_increase
-            num_tries -= 1
-
-        if best_found_semantic_ids is None:
+    def register_holes(self, holes: list[tuple[Term, TermPos]], semantics: list[torch.Tensor]) -> list[Term]:
+        ''' Adds hole and its semantics to index and outputs currently present fillings '''
+        if len(semantics) == 0:
             return []
-        found_terms = [self.output_terms[sem_id] for sem_id in best_found_semantic_ids]
-        return found_terms
+        if self.hole_index is None:
+            self.hole_index = self.index_type(capacity = self.max_evals, dims = self.target.shape[0], 
+                                    dtype = self.dtype, device = self.device,
+                                    rtol = self.rtol, atol = self.atol)
+        stacked_semantics = stack_rows(semantics, target_size=self.target.shape[0])
+        all_hole_ids = self.hole_index.insert(stacked_semantics)
+        query_ids = self._query_index(self.index, stacked_semantics)
+
+        cur_start = 0
+        all_new_terms = []
+        for (hole_root, hole), hole_semantics in zip(holes, semantics):
+            hole_query_ids = list(range(cur_start, cur_start + hole_semantics.shape[0]))
+            cur_start += hole_semantics.shape[0]
+            hole_terms = []
+            for qid in hole_query_ids:
+                self.output_holes.setdefault(all_hole_ids[qid], []).append((hole_root, hole))
+                for term_id in query_ids.get(qid, []):
+                    hole_terms.append(self.output_terms[term_id])
+            new_terms = self._fill_hole(hole_root, hole, hole_terms)
+            all_new_terms.extend(new_terms)
+        del stacked_semantics
+        return all_new_terms
+    
+    def register_terms(self, terms: list[Term], semantics: torch.Tensor) -> tuple[list[int], list[Term]]:
+        if len(terms) == 0:
+            return [], []
+        semantic_ids = self.index.insert(semantics)
+        for term, sid in zip(terms, semantic_ids):
+            self.term_outputs[term] = sid
+            if sid not in self.output_terms:
+                self.output_terms[sid] = term
+            else:
+                cur_t = self.output_terms[sid]
+                cur_t_depth = get_depth(cur_t, self.depth_cache)
+                t_depth = get_depth(term, self.depth_cache)
+                if t_depth < cur_t_depth:
+                    self.output_terms[sid] = term
+        # finding close holes
+        if self.hole_index is not None:
+            query_ids = self._query_index(self.hole_index, semantics)
+            closest_pairs = [(hr, h, terms[tid]) 
+                             for tid, hids in query_ids.items()
+                             for hid in hids 
+                             for hr, h in self.output_holes.get(hid, [])]
+            new_terms = [ new_term for hr, h, t in closest_pairs for new_term in self._fill_hole(hr, h, [t]) ]
+            return semantic_ids, new_terms
+        return semantic_ids, []
+
+    def _fill_hole(self, root: Term, hole: TermPos, with_terms: list[Term]) -> list[Term]:
+        new_terms = []
+        hole_context_cache = self.pos_context_cache.setdefault(root, {})
+        for hole_term in with_terms:
+            new_term = replace_pos_protected(hole, hole_term, self.builders,
+                                            depth_cache=self.depth_cache,
+                                            counts_cache=self.counts_cache,
+                                            pos_context_cache=hole_context_cache,
+                                            max_depth=self.max_term_depth)
+            if new_term is not None:
+                new_terms.append(new_term)
+        return new_terms
+
+    def _query_index(self, idx: VectorStorage, 
+                            query: torch.Tensor,
+                            qtype: Literal["point", "range"] = "point",
+
+                            # params for iterative range query
+                            deltas = [0.001, 0.01, 0.1],) -> dict[int, list[int]]:
+        ''' Either point query or more complelx iterative range query 
+            Returns map: query id to found ids in index (list)
+        '''
+        
+        if qtype == "point":
+            found_ids = idx.query_points(query)
+            res = {qid:[v] for qid, v in enumerate(found_ids) if v >= 0}
+            return res 
+        
+        # qtype == "range":
+
+        # const_val = self.find_any_const(query)
+        # if const_val is not None:
+        #     return [Value(const_val)]
+    
+        res = {}
+        for delta in deltas:
+            for qid, q in enumerate(query):
+                range = torch.stack([q - delta, q + delta], dim=0)
+                found_ids = idx.query_range(range)
+                if len(found_ids) > 0:
+                    res[qid] = found_ids
+            if len(res) > 0:
+                break
+            
+        return res
 
     def fit(self, X: np.ndarray | torch.Tensor, y: np.ndarray | torch.Tensor) -> 'GPSolver':
         """
@@ -700,7 +805,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         
         _, var_binding = self.get_vars(X)
         
-        def get_binding(root: Term, term: Term, *_) -> Optional[torch.Tensor]:
+        def get_binding(root: Term, term: Term, **_) -> Optional[torch.Tensor]:
             if isinstance(term, Variable):
                 return var_binding[term.var_id]
             if isinstance(term, Value):
@@ -708,7 +813,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 return term.value
             return None
         
-        def set_binding(*_):
+        def set_binding(*_, **__):
             pass 
         
         output = self.eval_fn(self.best_term, self.ops, get_binding, set_binding)

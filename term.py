@@ -554,21 +554,21 @@ def evaluate(root: Term, ops: dict[str, Callable],
     ''' Fully or partially evaluates term (concrete or abstract) '''
     
     args_stack = [[]]
-    def _enter_args(term: Term, *_):
-        res = get_binding(root, term)
+    def _enter_args(term: Term, term_i: int, parent: Optional[Term]):
+        res = get_binding(root, term, parent = parent)
         if res is not None:
             args_stack[-1].append(res)
             return TRAVERSAL_EXIT_NODE
         args_stack.append([])
         
-    def _exit_term(term: Term, *_):
+    def _exit_term(term: Term, term_i: int, parent: Optional[Term]):
         args = args_stack.pop()
         res = None
         if isinstance(term, Op) and all(arg is not None for arg in args):
             op_fn = ops[term.op_id]
             res = op_fn(*args)
         if res is not None:            
-            set_binding(root, term, res)
+            set_binding(root, term, res, parent = parent)
         # else:
         #     pass
         args_stack[-1].append(res)
@@ -1054,6 +1054,9 @@ def gen_term(builders: Builders,
                 tape_values[op_id] = inf
                 continue
 
+            # real_term_builder = builders.get_term_builder(new_term)
+            # real_term_builder.id
+
             counts += new_counts
             arg_counts[op_id] += 1
 
@@ -1191,6 +1194,25 @@ def replace_pos(pos: TermPos, with_term: Term, builders: Builders) -> Optional[T
 
     return new_term
 
+def replace_pos_protected(pos: TermPos, with_term: Term, builders: Builders,
+                            depth_cache: dict[Term, int], counts_cache: dict[Term, np.ndarray],
+                            pos_context_cache: dict[tuple[Term, int], TermGenContext],
+                            max_term_depth: int = 17) -> Optional[Term]:
+
+    if pos.at_depth + get_depth(with_term, depth_cache) > max_term_depth:
+        return None 
+
+    pos_context = get_pos_constraints(pos, builders, counts_cache, pos_context_cache)
+
+    if not is_valid(with_term, builders=builders, 
+                            counts_cache=counts_cache,
+                            root_context=pos_context):
+        return None
+
+    new_term = replace_pos(pos, with_term, builders)
+
+    return new_term
+
 
 def replace_fn(root: Term,
             get_replacement_fn: Callable[[Term, int], Optional[Term]],
@@ -1220,6 +1242,9 @@ def replace_fn(root: Term,
         new_args = arg_stack.pop()
         builder = builders.get_term_builder(term)
         new_term = builder.fn(*new_args)
+        if new_term is None:
+            arg_stack.clear()
+            return TRAVERSAL_EXIT
         arg_stack[-1][term_i] = new_term
         occurs[term] += 1
 
