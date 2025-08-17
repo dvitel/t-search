@@ -790,74 +790,27 @@ class TermGenContext:
 
         return TermGenContext(arg_min_counts, arg_max_counts, term_arg_limits)
 
-    # def dec(self, op_id: int, is_leaf: bool) -> None:
-    #     self.max_counts[op_id] -= 1
-    #     # self.context_limits[op_id] -= 1
-    #     # self.arg_limits[op_id] -= 1
-    #     if is_leaf:
-    #         if self.min_leaf_counts is not None and self.min_leaf_counts[op_id] > 0:
-    #             self.min_leaf_counts[op_id] -= 1
-    #     else:
-    #         if self.min_nonleaf_counts is not None and self.min_nonleaf_counts[op_id] > 0:
-    #             self.min_nonleaf_counts[op_id] -= 1
-
-    # def inc(self, op_id: int, is_leaf: bool) -> None:
-    #     self.max_counts[op_id] += 1
-    #     # self.context_limits[op_id] += 1
-    #     # self.arg_limits[op_id] += 1
-    #     if is_leaf:
-    #         if self.min_leaf_counts is not None:
-    #             self.min_leaf_counts[op_id] += 1
-    #     else:
-    #         if self.min_nonleaf_counts is not None:
-    #             self.min_nonleaf_counts[op_id] += 1
-
-    # def total_min_nonleaf_count(self):
-    #     if self.min_nonleaf_counts is None:
-    #         return 0
-    #     return self.min_nonleaf_counts.sum()
-    
-    # def total_min_leaf_count(self):
-    #     if self.min_leaf_counts is None:
-    #         return 0
-    #     return self.min_leaf_counts.sum()
-    
-    # def copy(self) -> 'TermGenContext':
-    #     res = TermGenContext(
-    #         min_counts=self.min_counts.copy(),
-    #         max_counts=self.max_counts.copy(),
-    #         context_limits=self.context_limits.copy(),
-    #         arg_limits=self.arg_limits
-    #     )
-    #     return res
-    
-    # def supports_leaf(self, leaf_ids, nonleaf_ids):
-    #     if self.leaf_min_counts is None:
-    #         leaf_min_counts = self.min_counts[leaf_ids].sum()
-    #         nonleaf_min_counts = self.min_counts[nonleaf_ids].sum()
-    #         self._supports_leaf = (leaf_min_counts == 1) and (nonleaf_min_counts == 0)
-    #     return self._supports_leaf
-    
-    # def sat(self, counts: np.ndarray) -> bool:
+    def max_split(self, term_id: int, term_counts: np.ndarray, term_left_args: int,
+                term_context_limits: np.ndarray | None = None, term_arg_limits: np.ndarray | None = None) -> 'TermGenContext':
         
-    #     min_sat = np.all(counts >= self.min_counts)
-    #     if not min_sat:
-    #         return False
-    #     max_sat = np.all(self.max_counts >= counts)
-    #     if not max_sat:
-    #         return False
-    #     context_sat = np.all(self.context_limits >= counts)
-    #     if not context_sat:
-    #         return False
-        
-    #     return True
+        left_min_counts = self.min_counts - term_counts # term counts - num of nodes in term including root
+        left_max_counts = self.max_counts - term_counts
+        if term_context_limits is not None:
+            term_context_limits_with_root = term_context_limits.copy()
+            term_context_limits_with_root[term_id] += 1
+            arg_context_limits = term_context_limits_with_root - term_counts
+            left_max_counts = np.minimum(left_max_counts, arg_context_limits)
+            
+        left_min_counts[left_min_counts < 0] = 0
+        if term_left_args == 1:
+            arg_min_counts = left_min_counts
+            arg_max_counts = left_max_counts
+        else:
+            arg_min_counts = np.zeros_like(left_min_counts)
 
-    # def sat_args(self, arg_counts: np.ndarray) -> bool:        
-        
-    #     arg_sat = np.all(self.arg_limits >= arg_counts)
-    #     if not arg_sat:
-    #         return False
-    #     return True
+            arg_max_counts = left_max_counts # // term_left_args
+
+        return TermGenContext(arg_min_counts, arg_max_counts, term_arg_limits)
 
 # @dataclass(eq=False, unsafe_hash=False)
 @dataclass(frozen=False, eq=False, unsafe_hash=False)
@@ -920,7 +873,7 @@ def gen_term(builders: Builders,
                 return None 
             
             if leaf_min_count == 1: # exactly one leaf is required
-                op_id_ids, = np.where(gen_context.min_leaf_counts == 1)
+                op_id_ids, = np.where(gen_context.min_counts[builders.leaf_ids] == 1)
                 op_id = builders.leaf_ids[op_id_ids[0]]
 
                 if not gen_context.can_alloc(op_id, counts, arg_counts):
@@ -996,7 +949,7 @@ def gen_term(builders: Builders,
             if op_arity == 0: # leaf selected
                 
                 if leaf_min_count == 1: # exactly one leaf is required
-                    op_id_ids, = np.where(gen_context.min_leaf_counts == 1)
+                    op_id_ids, = np.where(gen_context.min_counts[builders.leaf_ids] == 1)
                     op_id = builders.leaf_ids[op_id_ids[0]]
 
                     new_term = builders.builders[op_id].fn()
@@ -1089,6 +1042,173 @@ def gen_term(builders: Builders,
         gen_metrics['gen_fails'] = gen_metrics.get('gen_fails', 0) + gen_fails
 
     return new_term
+
+def gen_all_terms(builders: Builders, depth = 3,
+            start_context: TermGenContext | None = None,
+            arg_counts: np.ndarray | None = None
+         ) -> list[Term]:
+    ''' Generate all terms up to given depth under given constraints. '''
+        
+    def _gen_all_rec(
+        gen_context: TermGenContext,
+        counts: np.ndarray,
+        arg_counts: np.ndarray,
+        at_depth: int) -> list[tuple[Term, np.ndarray, np.ndarray]]:
+        
+        leaf_min_count = 0 if builders.has_leaf_min_counts else gen_context.min_counts[builders.leaf_ids].sum()
+        nonleaf_min_count = 0 if builders.has_nonleaf_min_counts else gen_context.min_counts[builders.nonleaf_ids].sum()
+        
+        if at_depth == depth: # leaf forced
+
+            if nonleaf_min_count > 0 or leaf_min_count > 1:
+                # allocating leaf will not sat min requirements
+                return [] 
+            
+            if leaf_min_count == 1: # exactly one leaf is required
+                op_id_ids, = np.where(gen_context.min_counts[builders.leaf_ids] == 1)
+                op_id = builders.leaf_ids[op_id_ids[0]]
+
+                if not gen_context.can_alloc(op_id, counts, arg_counts):
+                    return []
+
+                new_term = builders.builders[op_id].fn()
+                if new_term is not None: # on success we dec all requirements to tighten the following generations
+                    counts[op_id] += 1
+                    arg_counts[op_id] += 1
+                    return [(new_term, counts, arg_counts)] 
+                
+                return []
+            
+            else: # at depth, leaf, no min requirements
+                            
+                new_term_ops = []
+
+                for op_id in builders.leaf_ids:
+                    if not gen_context.can_alloc(op_id, counts, arg_counts):
+                        continue
+                
+                    new_term = builders.builders[op_id].fn()
+                    if new_term is not None: 
+                        new_term_ops.append((new_term, op_id))
+
+                new_terms = []
+                for i, (new_term, op_id) in enumerate(new_term_ops):
+                    if i < len(new_term_ops) - 1:
+                        new_counts = counts.copy()
+                        new_arg_counts = arg_counts.copy()
+                        new_counts[op_id] += 1
+                        new_arg_counts[op_id] += 1
+                        new_terms.append((new_term, new_counts, new_arg_counts))
+                    else: # last term, no need to copy
+                        counts[op_id] += 1
+                        arg_counts[op_id] += 1
+                        new_terms.append((new_term, counts, arg_counts))
+
+                return new_terms
+        
+        # not at max depth, non-leaf possible
+
+        # we estimate minimal arity to filter out non-leafs that would not satisfy
+        min_arity = math.ceil(leaf_min_count / builders.max_leaf_count_per_depth[depth - at_depth - 1])
+
+        max_leaf_count = gen_context.max_counts[builders.leaf_ids].sum()        
+
+        # NOTE: for future, we also can constrain min_arity by maximal possible non-leaves in the tree
+        # min_arity = math.ceil(nonleaf_min_count / max_nonleaf_count_per_depth[max_depth - at_depth - 1])
+
+        # max arity - assuming instant leaves, op arity cannot be greater than leaf max allowed count
+        
+        # arity cannot be higher of max requirements 
+
+        # for arity in range(builders.max_arity):
+        #     if arity < min_arity:
+        #         tape_values[builders.arity_builder_ids[arity]] = inf
+            
+        op_ids = [*builders.nonleaf_ids]
+
+        if not(nonleaf_min_count > 0 or leaf_min_count > 1):
+            if leaf_min_count == 1:
+                op_id_ids, = np.where(gen_context.min_counts[builders.leaf_ids] == 1)
+                op_id = builders.leaf_ids[op_id_ids[0]]
+                op_ids.append(op_id)
+            else:
+                op_ids.extend(builders.leaf_ids)
+
+        new_terms = []
+
+        for op_i, op_id in enumerate(op_ids):
+
+            builder = builders.builders[op_id]
+            op_arity = builder.arity()
+
+            if not gen_context.can_alloc(op_id, counts, arg_counts):
+                continue
+
+            if op_arity == 0: # leaf selected                
+                                                        
+                new_term = builders.builders[op_id].fn()
+                if new_term is not None: 
+                    if op_i == len(op_ids) - 1: # last term, no need to copy
+                        counts[op_id] += 1
+                        arg_counts[op_id] += 1
+                        new_terms.append((new_term, counts, arg_counts))
+                    else:
+                        new_counts = counts.copy()
+                        new_arg_counts = arg_counts.copy()
+                        new_counts[op_id] += 1
+                        new_arg_counts[op_id] += 1
+                        new_terms.append((new_term, new_counts, new_arg_counts))
+                continue
+            
+            # non-leaf selected, we estimate if min leaf requirements could be satisfied with op arity, max arity, depth and given count
+        
+            if op_arity < min_arity: # we cannot satisfy min leaf count with this arity
+                continue
+
+            if op_arity > max_leaf_count:
+                continue
+            
+            new_counts = np.zeros_like(counts)
+            new_arg_counts = np.zeros_like(counts)
+            new_counts[op_id] += 1
+            # arg_ops = []
+            arg_q = deque([([], new_counts, new_arg_counts)])
+            while len(arg_q) > 0:
+                cur_args, cur_counts, cur_arg_counts = arg_q.popleft()
+                if len(cur_args) == op_arity:
+                    new_term = builder.fn(*cur_args)
+                    if new_term is not None:
+                        all_counts = counts + cur_counts
+                        all_arg_counts = arg_counts.copy()
+                        all_arg_counts[op_id] += 1
+                        new_terms.append((new_term, all_counts, all_arg_counts))
+                else: # need new arg
+                    arg_gen_context = gen_context.max_split(op_id, cur_counts, 
+                                                            op_arity - len(cur_args), 
+                                                            builder.context_limits, builder.arg_limits)
+                    arg_terms = _gen_all_rec(arg_gen_context, cur_counts, cur_arg_counts, at_depth + 1)
+                    for arg_i_term, arg_i_counts, arg_i_arg_counts in arg_terms:
+                        new_args = [*cur_args, arg_i_term]
+                        arg_q.append((new_args, arg_i_counts, arg_i_arg_counts))
+
+        return new_terms
+
+    if start_context is None:
+        start_context = builders.default_gen_context
+
+    counts = builders.zero.copy()
+    if arg_counts is None:
+        arg_counts = counts.copy()
+
+    new_terms_w_counts = _gen_all_rec(start_context, counts, arg_counts, 0)
+    new_terms = []
+    for new_term, counts, arg_counts in new_terms_w_counts:
+        assert np.all(counts >= start_context.min_counts)
+        assert np.all(counts <= start_context.max_counts)
+        assert (start_context.arg_limits is None) or np.all(arg_counts <= start_context.arg_limits), f"Args counts violaton: {arg_counts} > {start_context.arg_limits}"
+        new_terms.append(new_term)
+
+    return new_terms
 
 def grow(builders: Builders,
          grow_depth = 5, grow_leaf_prob: Optional[float] = 0.1,

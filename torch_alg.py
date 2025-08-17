@@ -12,13 +12,13 @@ from term import Builders, Term, TermPos, Value, Variable, collect_terms, evalua
 alg_ops = {
     "add": lambda a, b: a + b,
     "mul": lambda a, b: a * b,
-    "pow": lambda a, b: a ** b,
+    # "pow": lambda a, b: a ** b,
     "neg": lambda a: -a,
-    "inv": lambda a: 1 / a,
-    "exp": lambda a: torch.exp(a),
-    "log": lambda a: torch.log(a),
-    "sin": lambda a: torch.sin(a),
-    "cos": lambda a: torch.cos(a),
+    # "inv": lambda a: 1 / a,
+    # "exp": lambda a: torch.exp(a),
+    # "log": lambda a: torch.log(a),
+    # "sin": lambda a: torch.sin(a),
+    # "cos": lambda a: torch.cos(a),
 }
 
 def lexsort(tensor: torch.Tensor) -> torch.Tensor:
@@ -336,20 +336,25 @@ class OptimState:
             for v in self.binding.values():
                 del v
             self.binding.clear()
-            self.optim_points.clear()
+            # self.optim_points.clear()
     
 class LRAdjust(Exception):
     pass
 
+optim_id = -1 # for debugging
 def optimize(optim_state: OptimState,
                 target: torch.Tensor, given_ops: dict[str, Callable], 
                 get_binding: Callable, *, eval_fn = evaluate, loss_fn = mse_loss,
                 num_best: int = 1, lr: float = 1.0, max_evals: int = 10, 
                 atol: float = 1e-4, rtol: float = 1e-4, collect_inner_binding: bool = False,
                 loss_threshold: float = 0.1,):
-    
+    global optim_id
+    optim_id += 1
+
     num_evals = 0
     num_root_evals = 0
+
+    # print(f">>> [{optim_id}] {optim_state.optim_term}")
     
     # print(f"--- {term}")
         
@@ -535,7 +540,6 @@ def optimize(optim_state: OptimState,
 
     return num_evals, num_root_evals
 
-optim_id = -1 # for debugging
 def optimize_consts(term: Term, term_loss: torch.Tensor,
     target: torch.Tensor, builders: Builders,
     given_ops: dict[str, Callable], get_binding: Callable, start_range: torch.Tensor,
@@ -543,7 +547,7 @@ def optimize_consts(term: Term, term_loss: torch.Tensor,
     eval_fn = evaluate, loss_fn = mse_loss,
     num_vals = 10, max_tries = 1, max_evals = 20, num_best: int = 1,
     lr = 0.1, rtol: float = 1e-4, atol: float = 1e-4,
-    loss_threshold: float = 0.1, collect_inner_binding: bool = False,
+    loss_threshold: float = 0.1,
     torch_gen: torch.Generator | None = None,
     term_values_cache: dict[Term, list[Value]],
     optim_term_cache: dict[Term, Term | None],
@@ -551,8 +555,6 @@ def optimize_consts(term: Term, term_loss: torch.Tensor,
     ''' Searches for the term const values that would bring it closer to the target outputs.
         Restarts will reinitialize the constants.
     '''
-    global optim_id
-    optim_id += 1
     
     if term not in optim_term_cache: # need to build optim term with optim points
 
@@ -630,14 +632,12 @@ def optimize_consts(term: Term, term_loss: torch.Tensor,
         binding.copy_(cv) # copy new value to optim point
         binding.requires_grad = True
 
-    # print(f">>> [{optim_id}] {term}")
-
     best_loss_before = optim_state.best_loss if optim_state.best_loss is not None else None
     
     num_evals, num_root_evals = \
         optimize(optim_state, target, given_ops, get_binding, 
                  eval_fn = eval_fn, loss_fn = loss_fn, loss_threshold = loss_threshold,
-                 collect_inner_binding = collect_inner_binding,
+                 collect_inner_binding = False,
                  lr=lr, max_evals=max_evals, num_best = num_best, atol=atol, rtol=rtol)
 
     if optim_state.best_loss is not None and \
@@ -654,7 +654,7 @@ def optimize_consts(term: Term, term_loss: torch.Tensor,
     return optim_state, num_evals, num_root_evals
 
 def get_pos_optim_state(term: Term, positions: list[TermPos], *,
-    optim_term_cache: dict[tuple[Term, tuple[Term, int]], Term],
+    optim_term_cache: dict[tuple[Term, tuple[Term, int]], Term | None],
     optim_state_cache: dict[Term, OptimState], builders: Builders,
     num_vals: int = 10, output_size: int = 1, max_tries: int = 1,
     dtype = torch.float16, device = "cuda") -> Optional[OptimState]:
@@ -714,7 +714,7 @@ def optimize_positions(optim_state: OptimState,
         Restarts will reinitialize the constants.
     '''
     
-    starts_to_attempt = list(pos_outputs)
+    starts_to_attempt = [pos_outputs]
 
     rand_points_to_attempt = num_vals - len(starts_to_attempt)
     if rand_points_to_attempt > 0: # we use grid sampling with rand shifts 
@@ -730,7 +730,7 @@ def optimize_positions(optim_state: OptimState,
         for opt_id, start_to_attempt in enumerate(starts_to_attempt):
             # for att_id, att in enumerate(start_to_attempt):                
             binding[opt_id] = start_to_attempt[op_id]
-        binding.requires_grad = True
+        binding.requires_grad = True    
 
     optim_res = optimize(optim_state, target, given_ops, get_binding, 
                          eval_fn = eval_fn, loss_fn = loss_fn, loss_threshold = loss_threshold,

@@ -12,6 +12,15 @@ def stack_rows(tensors: Sequence[torch.Tensor], target_size: int | None = None) 
         res[i] = ti # assuming broadcastable
     return res  
 
+def stack_rows_2d(tensors: Sequence[torch.Tensor], target_size: int) -> torch.Tensor:
+    sz = (sum(t.shape[0] for t in tensors), target_size)
+    res = torch.empty(sz, dtype=tensors[0].dtype, device=tensors[0].device)
+    cur_start = 0
+    for ti in tensors:
+        res[cur_start:cur_start + ti.shape[0]] = ti
+        cur_start += ti.shape[0]
+    return res  
+
 class Operator:
     def __init__(self, name: str):
         self.name = name 

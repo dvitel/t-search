@@ -1,7 +1,7 @@
 ''' Population initialization operators '''
 
 from typing import Optional
-from term import Term, grow
+from term import Term, TermGenContext, gen_all_terms, grow
 
 from typing import TYPE_CHECKING
 
@@ -49,6 +49,30 @@ class RHH(Initialization):
             # print(str(term))
             if term is not None:
                 population.append(term)
+        return population
+    
+class UpToDepth(Initialization):
+    ''' All trees (without constants) up to specified size '''
+
+    def __init__(self, name: str = "up2depth", *, depth = 3, force_pop_size: bool = False):
+        super().__init__(name)
+        self.depth = depth
+        self.gen_context: TermGenContext | None = None
+        self.force_pop_size = force_pop_size
+
+    def _init(self, solver: 'GPSolver', pop_size: int) -> list[Term]:
+        if self.gen_context is None:
+            self.gen_context = TermGenContext(solver.builders.default_gen_context.min_counts,
+                                            solver.builders.default_gen_context.max_counts.copy(),
+                                            solver.builders.default_gen_context.arg_limits)
+            self.gen_context.max_counts[solver.const_builder.id] = 0  # no constants
+        population = gen_all_terms(solver.builders, depth=self.depth, start_context=self.gen_context)
+        if self.force_pop_size:
+            if len(population) > pop_size:
+                population = solver.rnd.choice(population, size=pop_size, replace=False).tolist()
+            elif len(population) < pop_size:
+                pop_extend = pop_size - len(population)
+                population.extend(solver.rnd.choice(population, size=pop_extend, replace=True))
         return population
     
 class CachedRHH(RHH):

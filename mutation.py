@@ -8,7 +8,7 @@ import torch
 
 from spatial import VectorStorage
 from term import Term, TermPos, Value, get_depth, get_inner_terms, get_pos_constraints, get_pos_sibling_counts, get_positions, grow, is_valid, replace_pos, replace_pos_protected, shuffle_positions
-from torch_alg import OptimState, OptimState, get_pos_optim_state, optimize_consts, optimize_positions
+from torch_alg import OptimPoint, OptimState, OptimState, get_pos_optim_state, optimize_consts, optimize_positions
 
 from typing import TYPE_CHECKING
 
@@ -393,8 +393,7 @@ class ConstOptimization(Mutation):
                  max_tries: int = 1,
                  num_evals: int = 10, lr = 1.0,
                  rtol: float = 1e-5, atol: float = 1e-5,
-                 loss_threshold: Optional[float] = 0.1,
-                 collect_inner_binding: bool = False):
+                 loss_threshold: Optional[float] = None,):
         super().__init__(name)
         self.frac = frac
         self.num_vals = num_vals
@@ -407,7 +406,6 @@ class ConstOptimization(Mutation):
         self.optim_term_cache: dict[Term, Term] = {}
         self.optim_state_cache: dict[Term, OptimState] = {}
         self.loss_threshold = loss_threshold
-        self.collect_inner_binding = collect_inner_binding
 
     def _optimize_consts(self, solver: 'GPSolver', term: Term, term_loss: torch.Tensor) -> Optional[Term]:
         # start_opt = perf_counter()
@@ -418,9 +416,8 @@ class ConstOptimization(Mutation):
                                     num_vals = self.num_vals,
                                     max_tries=self.max_tries,
                                     max_evals=self.num_evals,
-                                    lr = self.lr, loss_threshold = self.loss_threshold,
+                                    lr = self.lr, loss_threshold = (solver.best_fitness if self.loss_threshold is None else self.loss_threshold),
                                     rtol = self.rtol, atol = self.atol,
-                                    collect_inner_binding = self.collect_inner_binding,
                                     torch_gen=solver.torch_gen,
                                     term_values_cache=self.term_values_cache,
                                     optim_term_cache=self.optim_term_cache,
@@ -549,7 +546,7 @@ class PointOptimization(Mutation):
                  frac = 0.2, num_vals: int = 1, max_tries: int = 1,
                  num_evals: int = 10, lr = 1.0, delta: float = 0.1,
                  num_best: int = 5,
-                 loss_threshold: Optional[float] = 0.1,
+                 loss_threshold: Optional[float] = None,
                  rtol: float = 1e-5, atol: float = 1e-5,
                  collect_inner_binding: bool = True):
         super().__init__(name)
@@ -563,24 +560,26 @@ class PointOptimization(Mutation):
         self.atol = atol
         self.num_best = num_best
         self.tries_pos: dict[Term, OptimizedPos] = {}
-        self.optim_term_cache: dict[tuple[Term, tuple[Term, int]], Term] = {}
+        self.optim_term_cache: dict[tuple[Term, tuple[Term, int]], Term | None] = {}
         self.optim_state_cache: dict[Term, OptimState] = {}
+        self.optim_point_pos_cache: dict[Term, TermPos] = {}
         self.loss_threshold = loss_threshold
         self.collect_inner_binding = collect_inner_binding
 
     def _select_pos_optim_state(self, solver: 'GPSolver', term: Term) -> Optional[tuple[TermPos, OptimState]]:
         if term not in self.tries_pos:
             positions = get_positions(term, solver.pos_cache)
-            valid_positions = [pos for pos in positions if pos not in solver.invalid_term_outputs]
+            positions = [pos for pos in positions if pos not in solver.invalid_term_outputs]
             # DECISION 1: how to pick term pos?? shuffle, sorted by depth?
-            # positions.sort(key=lambda pos: pos.at_depth) # start with shallowest positions
-            positions = solver.rnd.permutation(valid_positions)
+            positions.sort(key=lambda pos: pos.at_depth) # start with shallowest positions
+            # positions = solver.rnd.permutation(positions)
             self.tries_pos[term] = OptimizedPos(term_pos=positions, cur_id=0)
 
         term_pos = self.tries_pos[term]
         end_id = term_pos.cur_id - 1 
         if end_id < 0:
             end_id = len(term_pos.term_pos) - 1
+        cur_pos = None
         optim_state = None
         # pos_to_remove = set()
         while term_pos.cur_id <= end_id:
@@ -599,6 +598,7 @@ class PointOptimization(Mutation):
                 # pos_to_remove.add((cur_pos.term, cur_pos.occur))
                 continue
             if optim_state.max_tries <= 0:
+                optim_state = None
                 # point was already optimized and is in the hole index
                 continue # try next pos // or should we try next term??? return None
                 # return None ???
@@ -612,13 +612,20 @@ class PointOptimization(Mutation):
         #     term_pos.cur_id = term_pos.cur_id % len(term_pos.term_pos)
         return cur_pos, optim_state
     
-    def _optimize_pos_inner(self, solver: 'GPSolver', term: Term,  pos: TermPos, optim_state: OptimState) -> list[Term]:
+    def _optimize_pos(self, solver: 'GPSolver', term: Term) -> list[Term]:
+        
+        pos, optim_state = self._select_pos_optim_state(solver, term)        
+        
+        if optim_state is None:
+            return [] 
+        
         pos_output = solver.get_cached_output(pos.term)
-        output_range = torch.stack([pos_output, solver.target], dim=0)
+        output_range = stack_rows([pos_output, solver.target], target_size=solver.target.shape[0])
         range_mins = torch.minimum(output_range[0], output_range[1])
         range_maxs = torch.maximum(output_range[0], output_range[1])
         output_range[0] = range_mins - self.delta
         output_range[1] = range_maxs + self.delta
+
         num_evals, num_root_evals = \
             optimize_positions(optim_state, solver.target,
                 solver.ops, solver._get_binding,
@@ -626,40 +633,48 @@ class PointOptimization(Mutation):
                 solver.eval_fn, solver.fitness_fn,
                 pos_outputs=(pos_output,),
                 num_vals = self.num_vals,
-                max_tries=self.max_tries,
                 max_evals=self.num_evals,
                 num_best = self.num_best,
-                lr = self.lr, loss_threshold = self.loss_threshold,
+                lr = self.lr, loss_threshold = (solver.best_fitness if self.loss_threshold is None else self.loss_threshold),
                 rtol = self.rtol, atol = self.atol,
                 collect_inner_binding = self.collect_inner_binding,
                 torch_gen=solver.torch_gen)
+        
         solver.report_evals(num_evals, num_root_evals)
         if optim_state.best_loss is not None: # good semantics to add to the hole index
 
-            holes = []
-            semantics = []
+            holes: list[tuple[Term, TermPos]] = []
+            semantics: list[torch.Tensor] = []
 
-            while pos is not None:
-                holes.append(pos)
-                semantics.append(optim_state.best_binding[pos.term][fit_ids])
-                pos = pos.parent
+            if self.collect_inner_binding:
+
+                if optim_state.optim_term not in self.optim_point_pos_cache:
+                    optim_term_poss = get_positions(optim_state.optim_term, solver.pos_cache)
+                    optim_point_pos = next(pos for pos in optim_term_poss if isinstance(pos.term, OptimPoint))
+                    self.optim_point_pos_cache[optim_state.optim_term] = optim_point_pos
+
+                optim_point_pos = self.optim_point_pos_cache[optim_state.optim_term]
+                
+                # now we have pos (in term) and optim_point_pos (in optim_term)
+                # we can build chains in both terms to the root 
+
+                cur_pos = pos 
+                cur_optim_pos = optim_point_pos
+                while cur_pos.term != term:
+                    cur_binding = optim_state.best_binding[cur_optim_pos.term]
+                    holes.append((term, cur_pos))
+                    semantics.append(cur_binding)
+                    cur_pos = cur_pos.parent
+                    cur_optim_pos = cur_optim_pos.parent
+            else: # we collected only point binding 
+                holes.append((term, pos))
+                semantics.append(optim_state.best_binding[optim_state.optim_points[0]])
 
             new_terms = solver.register_holes(holes, semantics)
             
             return new_terms 
         
         return [] # no good terms that match pos semantics
-
-    def _optimize_pos(self, solver: 'GPSolver', term: Term) -> list[Term]:
-        
-        cur_pos, optim_state = self._select_pos_optim_state(solver, term)        
-        
-        if optim_state is None:
-            return [] 
-        
-        final_terms = self._optimize_pos_inner(solver, term, cur_pos, optim_state)
-
-        return final_terms 
 
     def _mutate(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
         children = []

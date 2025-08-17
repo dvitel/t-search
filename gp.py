@@ -11,8 +11,8 @@ from typing import Callable, Literal, Optional, Sequence
 from time import perf_counter
 import numpy as np
 import torch
-from initialization import RHH, Initialization
-from mutation import ConstOptimization, Deduplicate, Mutation, PointRandCrossover, PointRandMutation
+from initialization import RHH, Initialization, UpToDepth
+from mutation import ConstOptimization, Deduplicate, Mutation, PointOptimization, PointRandCrossover, PointRandMutation
 from selection import Elitism, Finite, TournamentSelection
 from spatial import VectorStorage
 from term import Builder, Builders, Op, Term, TermPos, Value, Variable, evaluate, get_counts, get_depth, \
@@ -20,7 +20,7 @@ from term import Builder, Builders, Op, Term, TermPos, Value, Variable, evaluate
 from sklearn.base import BaseEstimator, RegressorMixin
 
 from torch_alg import mse_loss
-from util import stack_rows  
+from util import stack_rows, stack_rows_2d  
 
 GPSolverStatus = Literal["INIT", "MAX_GEN", "MAX_EVAL", "MAX_ROOT_EVAL", "SOLVED"]
 
@@ -244,16 +244,18 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.is_fitted_ = False
         builders = {}
 
+        self.const_builder = None
         if self.max_consts > 0:
-            const_builder = Builder("C", self._alloc_const, 0, self.min_consts, self.max_consts)
-            builders[Value] = const_builder
+            self.const_builder = Builder("C", self._alloc_const, 0, self.min_consts, self.max_consts)
+            builders[Value] = self.const_builder
 
+        self.var_builder = None
         if free_vars is not None and len(free_vars) > 0 and (self.max_vars > 0):
             vars, var_binding = self.get_vars(free_vars)
             self.var_binding = var_binding
             self.vars = vars
-            var_builder = Builder("x", self._alloc_var, 0, self.min_vars, self.max_vars)
-            builders[Variable] = var_builder
+            self.var_builder = Builder("x", self._alloc_var, 0, self.min_vars, self.max_vars)
+            builders[Variable] = self.var_builder
 
         builders.update(self.op_builders)
 
@@ -275,7 +277,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         for op_id, op_dict in self.immediate_arg_limits.items():
             if op_id not in self.op_builders:
-                raise ValueError(f"Operator {op_id} not found in op_builders")
+                continue
+                # raise ValueError(f"Operator {op_id} not found in op_builders")
             b = self.op_builders[op_id]
             if b not in arg_limits:
                 arg_limits[b] = {}
@@ -676,7 +679,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             self.hole_index = self.index_type(capacity = self.max_evals, dims = self.target.shape[0], 
                                     dtype = self.dtype, device = self.device,
                                     rtol = self.rtol, atol = self.atol)
-        stacked_semantics = stack_rows(semantics, target_size=self.target.shape[0])
+        stacked_semantics = stack_rows_2d(semantics, target_size=self.target.shape[0])
         all_hole_ids = self.hole_index.insert(stacked_semantics)
         query_ids = self._query_index(self.index, stacked_semantics)
 
@@ -724,11 +727,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
         new_terms = []
         hole_context_cache = self.pos_context_cache.setdefault(root, {})
         for hole_term in with_terms:
+            if hole.term == hole_term:
+                continue
             new_term = replace_pos_protected(hole, hole_term, self.builders,
                                             depth_cache=self.depth_cache,
                                             counts_cache=self.counts_cache,
                                             pos_context_cache=hole_context_cache,
-                                            max_depth=self.max_term_depth)
+                                            max_term_depth=self.max_term_depth)
             if new_term is not None:
                 new_terms.append(new_term)
         return new_terms
@@ -908,19 +913,20 @@ if __name__ == "__main__":
                         max_consts=5,
                         max_ops = {"inv": 5, "neg": 5},
                         with_inner_evals=True,
-                        init=RHH(),
+                        # init=RHH(),
+                        init=UpToDepth(depth = 3),
                         #(num_tries=1, lr=0.1)],
                         pipeline=[
                                     Finite(), 
-                                    ConstOptimization(num_vals = 20, lr=1.0,
-                                                        num_evals = 7,
-                                                        loss_threshold = 1e-2),
+                                    PointOptimization(num_vals = 10, lr=1.0),
+                                    # ConstOptimization(num_vals = 20, lr=1.0,
+                                    #                     num_evals = 7,
+                                    #                     loss_threshold = 1e-2),
                                     Elitism(size = 10),
                                     TournamentSelection(), 
                                     PointRandMutation(), 
                                     PointRandCrossover(), 
                                     Deduplicate(), 
-                                    # PointOptimization(num_vals = 10, lr=1.0),
                                   ],
                         # mutations=[PointRandMutation(), PointRandCrossover(), Deduplicate(), ConstOptimization1(lr=1.0)],
                         # commutative_ops=["add", "mul"],
