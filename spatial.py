@@ -260,9 +260,10 @@ class VectorStorage:
         #     self.stats.recompute(dim_delta = self.dim_delta)
         return vector_ids
     
-    def query_points(self, points: torch.Tensor) -> list[int]:
+    def query_points(self, points: torch.Tensor, 
+                     atol: float | None = None, rtol: float | None = None) -> list[int]:
         ''' O(n). Return id of vectors in index if present. Empty tensor otherwise. '''
-        return self.find_close(None, points) # q here is one point among N points of all_vectors of shape (N, ..., dims)
+        return self.find_close(None, points, atol=atol, rtol=rtol) # q here is one point among N points of all_vectors of shape (N, ..., dims)
     
     def query_range(self, qrange: torch.Tensor) -> list[int]:
         ''' O(n). Returns ids stored in the index, shape (N), N >= 0 is most cases.
@@ -286,9 +287,10 @@ class VectorStorage:
     #                         permute_dim_id = permute_dim_id)
     #     return found_ids
     
-    def find_close(self, ids: None | tuple[int, int] | list[int], q: torch.Tensor) -> list[int]:
+    def find_close(self, ids: None | tuple[int, int] | list[int], q: torch.Tensor,
+                    atol: float | None = None, rtol: float | None = None) -> list[int]:
         selection = self.get_vectors(ids)
-        found_ids = find_close(selection, q, rtol=self.rtol, atol=self.atol,
+        found_ids = find_close(selection, q, rtol=(rtol or self.rtol), atol=(atol or self.atol),
                                store_batch_size=self.store_batch_size, 
                                query_batch_size=self.query_batch_size, 
                                dim_batch_size=self.dim_batch_size)
@@ -547,7 +549,8 @@ class BinIndex(SpatialIndex):
             self.rebuild(trigger_bin_id)
         return found_ids
     
-    def query_points(self, query: torch.Tensor) -> list[int]:
+    def query_points(self, query: torch.Tensor, 
+                     atol: float | None = None, rtol: float | None = None) -> list[int]:
         ''' O(1) '''
         bin_indices = self.get_bin_index(query)
         bin_ids = set([tuple(row) for row in bin_indices.tolist()])
@@ -557,7 +560,7 @@ class BinIndex(SpatialIndex):
         bin_entries = [e for bin_index in bin_ids for e in self.bins.get(bin_index, [])]
         if len(bin_entries) > self.switch_to_all_cap * self.cur_id:
             bin_entries = None
-        found_ids = self.find_close(bin_entries, query) # recompute stats if needed
+        found_ids = self.find_close(bin_entries, query, atol = atol, rtol = rtol) # recompute stats if needed
         # qid_found_ids = {}
         # for bin_id, qids in bin_ids.items():
         #     present_ids = self.bins.get(bin_id, [])
@@ -996,11 +999,12 @@ class RTreeIndex(SpatialIndex):
                 del point_ids
             del in_range_mask, any_point_mask, child_ids
 
-    def query_points(self, query: torch.Tensor) -> list[int]:
+    def query_points(self, query: torch.Tensor,
+                     atol: float | None = None, rtol: float | None = None) -> list[int]:
         point_ids = list(self._query_point_ids(self.root, query))
         if len(point_ids) == 0:
             return [-1] * query.shape[0]
-        found_ids = self.find_close(point_ids, query)
+        found_ids = self.find_close(point_ids, query, atol = atol, rtol = rtol)
         return found_ids
     
     def _query_range_ids(self, node: RTreeNode, mbrs: torch.Tensor) -> Generator[int, None, None]:

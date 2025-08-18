@@ -13,7 +13,7 @@ alg_ops = {
     "add": lambda a, b: a + b,
     "mul": lambda a, b: a * b,
     # "pow": lambda a, b: a ** b,
-    "neg": lambda a: -a,
+    # "neg": lambda a: -a,
     # "inv": lambda a: 1 / a,
     # "exp": lambda a: torch.exp(a),
     # "log": lambda a: torch.log(a),
@@ -789,6 +789,8 @@ class Benchmark:
         self.sampled[set_name] = (free_vars, gold_outputs)
         return free_vars, gold_outputs
 
+test_0 = Benchmark("test_0", lambda x: 1 + x,
+                   get_rand_points, {"num_samples": 20, "ranges": [(-1.0, 1.0)]})
 
 koza_1 = Benchmark("koza_1", lambda x: x*x*x*x + x*x*x + x*x + x,
                    get_rand_points, {"num_samples": 20, "ranges": [(-1.0, 1.0)]})

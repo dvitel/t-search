@@ -48,9 +48,11 @@ def timed(fn: Callable, key: str, metrics: dict) -> Callable:
     ''' Decorator to time function execution '''
     def wrapper(*args, **kwargs):
         start_time = perf_counter()
-        result = fn(*args, **kwargs)
-        elapsed_time = round((perf_counter() - start_time) * 1000)
-        metrics[key] = elapsed_time
+        try:
+            result = fn(*args, **kwargs)
+        finally:
+            elapsed_time = round((perf_counter() - start_time) * 1000)
+            metrics[key] = metrics.get(key, 0) + elapsed_time
         return result
     return wrapper
 
@@ -241,6 +243,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.status: GPSolverStatus = "INIT"
         self.start_time: float = perf_counter()
         self.gen_metrics = {}
+        self.metrics["gens"] = [self.gen_metrics]
         self.is_fitted_ = False
         builders = {}
 
@@ -444,9 +447,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
                 best_id, best_found = self.fit_condition(new_fitness, self.best_fitness)
                 if best_id is not None:
-                    self.best_term = valid_terms[best_id]
-                    self.best_outputs = outputs[best_id].clone()
-                    self.best_fitness = new_fitness[best_id].clone()            
+                    self._set_best_term(valid_terms[best_id], outputs[best_id].clone(), new_fitness[best_id].clone())
                     if best_found:
                         raise(EvSearchTermination("SOLVED"))
 
@@ -595,37 +596,24 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.new_term_outputs[term] = value
 
     def _checkpoint_metrics(self):
-        if len(self.gen_metrics) > 0:
-            if self.best_fitness is not None:
-                best_fitness = self.best_fitness.unsqueeze(-1) if len(self.best_fitness.shape) == 0 else self.best_fitness
-                for fi, fv in enumerate(best_fitness):
-                    fk = f"fitness_{fi}"
-                    self.gen_metrics[fk] = fv.item()
+        self.gen_metrics = {}
+        self.metrics["gens"].append(self.gen_metrics)
 
-            if self.best_term is not None: # best term stats 
-                best_depth = get_depth(self.best_term, self.depth_cache)
-                best_counts = get_counts(self.best_term, self.builders, self.counts_cache)
-                best_size = best_counts.sum().item()
-                self.gen_metrics["best_term_depth"] = best_depth
-                self.gen_metrics["best_term_size"] = best_size
-                self.gen_metrics["best_counts"] = best_counts.tolist()
-
-            self.metrics.setdefault("gens", []).append(self.gen_metrics)
-            self.gen_metrics = {}
+    def timed_eval(self, population):
+        return timed(self.eval, "eval_time", self.gen_metrics)(population)
 
     def _loop(self):   
         population = timed(self.init, "init_time", self.gen_metrics)(self, self.pop_size)
         self.gen_metrics.update(self.init.metrics)
-        timed(self.eval, "eval_time", self.gen_metrics)(population)
+        self.timed_eval(population)
         self._checkpoint_metrics()
         while self.gen < self.max_gen and self.evals < self.max_evals and self.root_evals < self.max_root_evals:
             population = self.breed(population) 
-            timed(self.eval, "eval_time", self.gen_metrics)(population)
+            self.timed_eval(population)
             self.gen += 1
             self._checkpoint_metrics()
 
     def _add_final_metrics(self):
-        self._checkpoint_metrics()
         self.metrics['gen'] = self.gen
         self.metrics['evals'] = self.evals
         self.metrics['root_evals'] = self.root_evals
@@ -634,10 +622,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if self.best_term is not None:
             self.metrics["solution"] = self.best_term
 
-    def find_any_const(self, outputs: torch.Tensor) -> Optional[torch.Tensor]:
+    def find_any_const(self, outputs: torch.Tensor, atol: float | None = None, rtol: float | None = None) -> Optional[torch.Tensor]:
         ''' Check if output is const or very slow function '''
         means = outputs.mean(dim=-1, keepdim=True)
-        close_el_mask = torch.isclose(outputs, means, rtol = self.rtol, atol = self.atol)
+        close_el_mask = torch.isclose(outputs, means, rtol = rtol or self.rtol, atol = atol or self.atol)
         close_mask = close_el_mask.all(dim=-1)
         const_ids, = torch.where(close_mask)
         if len(const_ids) > 0:
@@ -654,19 +642,37 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 return x
         return None
     
+    def _set_best_term(self, best_term: Term, best_outputs: torch.Tensor, best_fitness: torch.Tensor):
+        self.best_term = best_term
+        self.best_outputs = best_outputs
+        self.best_fitness = best_fitness
+        best_fitness = best_fitness.unsqueeze(-1) if len(best_fitness.shape) == 0 else best_fitness
+        for fi, fv in enumerate(best_fitness):
+            fk = f"fitness_{fi}"
+            self.gen_metrics[fk] = fv.item()
+
+        best_depth = get_depth(best_term, self.depth_cache)
+        best_counts = get_counts(best_term, self.builders, self.counts_cache)
+        best_size = best_counts.sum().item()
+        self.gen_metrics["best_term_depth"] = best_depth
+        self.gen_metrics["best_term_size"] = best_size
+        self.gen_metrics["best_counts"] = best_counts.tolist()
+    
     def check_trivial(self): 
         const_val = self.find_any_const(self.target.unsqueeze(0))
         if const_val is not None: # NOTE: or torch.any ??? config option 
-            self.best_term = Value(const_val) #len(self.const_binding))
-            self.best_fitness = torch.tensor(0, device=self.device, dtype=self.dtype)
-            self.best_outputs = const_val
+            best_term = Value(const_val) #len(self.const_binding))
+            best_fitness = torch.tensor(0, device=self.device, dtype=self.dtype)
+            best_outputs = const_val
+            self._set_best_term(best_term, best_outputs, best_fitness)
             self.status = "SOLVED"
             return True 
         x = self.find_any_var(self.target.unsqueeze(0))
         if x is not None:
-            self.best_term = x
-            self.best_fitness = torch.tensor(0, device=self.device, dtype=self.dtype)
-            self.best_outputs = self.var_binding[x.var_id]
+            best_term = x
+            best_fitness = torch.tensor(0, device=self.device, dtype=self.dtype)
+            best_outputs = self.var_binding[x.var_id]
+            self._set_best_term(best_term, best_outputs, best_fitness)
             self.status = "SOLVED"
             return True
         return False 
@@ -680,11 +686,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
                                     dtype = self.dtype, device = self.device,
                                     rtol = self.rtol, atol = self.atol)
         stacked_semantics = stack_rows_2d(semantics, target_size=self.target.shape[0])
+        const_val = self.find_any_const(stacked_semantics)
         all_hole_ids = self.hole_index.insert(stacked_semantics)
         query_ids = self._query_index(self.index, stacked_semantics)
 
         cur_start = 0
         all_new_terms = []
+        present_terms = set()
         for (hole_root, hole), hole_semantics in zip(holes, semantics):
             hole_query_ids = list(range(cur_start, cur_start + hole_semantics.shape[0]))
             cur_start += hole_semantics.shape[0]
@@ -694,7 +702,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 for term_id in query_ids.get(qid, []):
                     hole_terms.append(self.output_terms[term_id])
             new_terms = self._fill_hole(hole_root, hole, hole_terms)
-            all_new_terms.extend(new_terms)
+            for t in new_terms:
+                if t not in present_terms:
+                    present_terms.add(t)
+                    all_new_terms.append(t)
         del stacked_semantics
         return all_new_terms
     
@@ -719,7 +730,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
                              for tid, hids in query_ids.items()
                              for hid in hids 
                              for hr, h in self.output_holes.get(hid, [])]
-            new_terms = [ new_term for hr, h, t in closest_pairs for new_term in self._fill_hole(hr, h, [t]) ]
+            new_terms = []
+            present_terms = set()
+            for hr, h, t in closest_pairs:
+                for new_term in self._fill_hole(hr, h, [t]):
+                    if new_term not in present_terms:
+                        present_terms.add(new_term)
+                        new_terms.append(new_term)
             return semantic_ids, new_terms
         return semantic_ids, []
 
@@ -741,15 +758,15 @@ class GPSolver(BaseEstimator, RegressorMixin):
     def _query_index(self, idx: VectorStorage, 
                             query: torch.Tensor,
                             qtype: Literal["point", "range"] = "point",
-
-                            # params for iterative range query
+                            atol: float | None = None,
+                            rtol: float | None = None,
                             deltas = [0.001, 0.01, 0.1],) -> dict[int, list[int]]:
         ''' Either point query or more complelx iterative range query 
             Returns map: query id to found ids in index (list)
         '''
         
         if qtype == "point":
-            found_ids = idx.query_points(query)
+            found_ids = idx.query_points(query, atol=atol or self.atol, rtol=rtol or self.rtol)
             res = {qid:[v] for qid, v in enumerate(found_ids) if v >= 0}
             return res 
         
@@ -899,9 +916,11 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
 # TODO: Debug fail term gen when Finite is disabled, Deduplicate is disabled and Const Optim num_evals = 7,
 
+# gen_term should pick op_id based on arity and estimated number of child terms --> create this estimation in Builders, UpToDepth automatic depth calc
+
 if __name__ == "__main__":
 
-    from torch_alg import alg_ops, koza_1
+    from torch_alg import alg_ops, koza_1, test_0
     import json
     
     device = "cuda"
@@ -914,19 +933,19 @@ if __name__ == "__main__":
                         max_ops = {"inv": 5, "neg": 5},
                         with_inner_evals=True,
                         # init=RHH(),
-                        init=UpToDepth(depth = 3),
+                        init=UpToDepth(depth = 1),
                         #(num_tries=1, lr=0.1)],
                         pipeline=[
-                                    Finite(), 
+                                    # Finite(), 
                                     PointOptimization(num_vals = 10, lr=1.0),
                                     # ConstOptimization(num_vals = 20, lr=1.0,
                                     #                     num_evals = 7,
                                     #                     loss_threshold = 1e-2),
-                                    Elitism(size = 10),
-                                    TournamentSelection(), 
-                                    PointRandMutation(), 
-                                    PointRandCrossover(), 
-                                    Deduplicate(), 
+                                    # Elitism(size = 10),
+                                    # TournamentSelection(), 
+                                    # PointRandMutation(), 
+                                    # PointRandCrossover(), 
+                                    # Deduplicate(), 
                                   ],
                         # mutations=[PointRandMutation(), PointRandCrossover(), Deduplicate(), ConstOptimization1(lr=1.0)],
                         # commutative_ops=["add", "mul"],
@@ -955,7 +974,7 @@ if __name__ == "__main__":
                         },
                         )
 
-    free_vars, target = koza_1.sample_set("train", device = device, dtype = dtype,
+    free_vars, target = test_0.sample_set("train", device = device, dtype = dtype,
                                             generator=solver.torch_gen,
                                             sorted=True)
 

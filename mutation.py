@@ -457,7 +457,7 @@ class ConstOptimization(Mutation):
                 new_terms.append(optimized_term)
                 max_count -= 1
         if len(new_terms) > 0:
-            solver.eval(new_terms)
+            solver.timed_eval(new_terms)
         return children    
     
 class Deduplicate(Mutation):
@@ -678,7 +678,7 @@ class PointOptimization(Mutation):
 
     def _mutate(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
         children = []
-        max_count = int(len(population) * self.frac)
+        max_count = max(1, int(len(population) * self.frac))
         new_terms = []
         if max_count == len(population):
             term_ids = range(len(population))
@@ -698,5 +698,5 @@ class PointOptimization(Mutation):
             else:
                 children.append(term)
         if len(new_terms) > 0:
-            solver.eval(new_terms)
+            solver.timed_eval(new_terms)
         return children

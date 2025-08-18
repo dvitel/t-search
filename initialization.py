@@ -54,7 +54,7 @@ class RHH(Initialization):
 class UpToDepth(Initialization):
     ''' All trees (without constants) up to specified size '''
 
-    def __init__(self, name: str = "up2depth", *, depth = 3, force_pop_size: bool = False):
+    def __init__(self, name: str = "up2depth", *, depth = 2, force_pop_size: bool = False):
         super().__init__(name)
         self.depth = depth
         self.gen_context: TermGenContext | None = None
@@ -76,7 +76,7 @@ class UpToDepth(Initialization):
         return population
     
 class CachedRHH(RHH):
-    ''' Considers inner terms of solvver syntax cache '''
+    ''' Considers inner terms of solver syntax cache '''
     def _init(self, solver: 'GPSolver', pop_size: int) -> list[Term]:
         if not solver.cache_terms:
             return super()._init(solver, pop_size)
