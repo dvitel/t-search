@@ -1,6 +1,11 @@
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import torch
+
+from term import Term
+
+if TYPE_CHECKING:
+    from gp import GPSolver
 
 
 def stack_rows(tensors: Sequence[torch.Tensor], target_size: int | None = None) -> torch.Tensor:
@@ -28,3 +33,16 @@ class Operator:
 
     def on_start(self):
         self.metrics = {}
+
+class InitedMixin: 
+    def __init__(self):
+        self.inited: bool = False
+    def _init(self, solver: 'GPSolver'):
+        if self.inited:
+            return
+        self.inited = True      
+
+class TermsListener: 
+    ''' Interface to listen for new terms appearing during the search. '''
+    def register_terms(self, solver: 'GPSolver', terms: list[Term], semantics: torch.Tensor) -> None: 
+        pass 

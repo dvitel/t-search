@@ -285,6 +285,11 @@ def lbfgs_optimize(term: Term, gold_outputs: torch.Tensor, semantics: torch.Tens
 def mse_loss(output, target):
     return torch.mean((output - target) ** 2, dim=-1)
 
+def nmse_loss(output, target, norm = 1.0):
+    mse = torch.mean((output - target) ** 2, dim=-1)
+    nmse = mse / norm
+    return nmse
+
 def mse_loss_nan_v(predictions, target, *, nan_error = torch.inf):
     loss = torch.mean((predictions - target) ** 2, dim=-1)
     loss = torch.where(torch.isnan(loss), torch.tensor(nan_error, device=loss.device, dtype=loss.dtype), loss)
@@ -346,15 +351,15 @@ def optimize(optim_state: OptimState,
                 target: torch.Tensor, given_ops: dict[str, Callable], 
                 get_binding: Callable, *, eval_fn = evaluate, loss_fn = mse_loss,
                 num_best: int = 1, lr: float = 1.0, max_evals: int = 10, 
-                atol: float = 1e-4, rtol: float = 1e-4, collect_inner_binding: bool = False,
-                loss_threshold: float = 0.1,):
+                collect_inner_binding: bool = False, loss_threshold: float = 0.1,
+                ):
     global optim_id
     optim_id += 1
 
     num_evals = 0
     num_root_evals = 0
 
-    # print(f">>> [{optim_id}] {optim_state.optim_term}")
+    print(f">>> [{optim_id}] {optim_state.optim_term}")
     
     # print(f"--- {term}")
         
@@ -377,8 +382,8 @@ def optimize(optim_state: OptimState,
     optimizer = torch.optim.LBFGS(params, lr=lr, max_iter=max_evals,
                                     max_eval=max_evals,
                                     # max_eval = 1.5 * num_steps,
-                                    tolerance_change=atol,
-                                    tolerance_grad=atol / 10,
+                                    tolerance_change=1e-6, # TODO - should be parameters???
+                                    tolerance_grad=1e-3,
                                     # history_size=100,
                                     line_search_fn='strong_wolfe'
                                     )
@@ -404,7 +409,6 @@ def optimize(optim_state: OptimState,
             raise LRAdjust(None)
         num_root_evals += 1
         optimizer.zero_grad()
-        max_evals -= 1
 
         def _redirected_get_binding(root: Term, term: Term):
             if isinstance(term, OptimPoint):
@@ -466,23 +470,23 @@ def optimize(optim_state: OptimState,
         
         min_loss = finite_loss.min()
 
-        # print(f"\tLoss {min_loss.item()}, evals {num_root_evals}")
+        print(f"\tLoss {min_loss.item()}, evals {num_root_evals}")
 
         if min_loss < loss_threshold:
             iter_loss.append(loss.detach().clone())
             for k,v in optim_state.binding.items():
                 iter_binding.setdefault(k, []).append(v.detach().clone())        
         
-        # TODO: experiment with early exit - seems to be benefitial
-        if best_loss is not None:
-            # if torch.allclose(new_min_loss, last_min_loss, rtol=rtol, atol=atol):
-            #     raise LRAdjust(None)
-            # elif new_min_loss > last_min_loss:
-            #     # optimizer.param_groups[0]['lr'] *= 0.5
-            #     pass
-            # if min_loss >= best_loss:
-            #     raise LRAdjust(None)
-            pass
+        # TODO: experiment more with early exit
+        # if best_loss is not None:
+        #     # if torch.allclose(new_min_loss, last_min_loss, rtol=rtol, atol=atol):
+        #     #     raise LRAdjust(None)
+        #     # elif new_min_loss > last_min_loss:
+        #     #     # optimizer.param_groups[0]['lr'] *= 0.5
+        #     #     pass
+        #     # if min_loss >= best_loss:
+        #     #     raise LRAdjust(None)
+        #     pass
 
         best_loss = min_loss
 
@@ -546,7 +550,7 @@ def optimize_consts(term: Term, term_loss: torch.Tensor,
     *,
     eval_fn = evaluate, loss_fn = mse_loss,
     num_vals = 10, max_tries = 1, max_evals = 20, num_best: int = 1,
-    lr = 0.1, rtol: float = 1e-4, atol: float = 1e-4,
+    lr = 0.1,
     loss_threshold: float = 0.1,
     torch_gen: torch.Generator | None = None,
     term_values_cache: dict[Term, list[Value]],
@@ -638,7 +642,7 @@ def optimize_consts(term: Term, term_loss: torch.Tensor,
         optimize(optim_state, target, given_ops, get_binding, 
                  eval_fn = eval_fn, loss_fn = loss_fn, loss_threshold = loss_threshold,
                  collect_inner_binding = False,
-                 lr=lr, max_evals=max_evals, num_best = num_best, atol=atol, rtol=rtol)
+                 lr=lr, max_evals=max_evals, num_best = num_best)
 
     if optim_state.best_loss is not None and \
         (best_loss_before is None or optim_state.best_loss[0] < best_loss_before[0]):
@@ -708,7 +712,7 @@ def optimize_positions(optim_state: OptimState,
     eval_fn = evaluate, loss_fn = mse_loss,
     pos_outputs: list[tuple[torch.Tensor]] = [],
     num_vals = 10, max_evals = 20, num_best: int = 5, collect_inner_binding: bool = False,
-    lr = 1.0, rtol: float = 1e-4, atol: float = 1e-4, loss_threshold: float = 0.1,
+    lr = 1.0, loss_threshold: float = 0.1,
     torch_gen: torch.Generator | None = None) -> tuple[int, int]:
     ''' Searches for the term const values that would bring it closer to the target outputs.
         Restarts will reinitialize the constants.
@@ -735,7 +739,7 @@ def optimize_positions(optim_state: OptimState,
     optim_res = optimize(optim_state, target, given_ops, get_binding, 
                          eval_fn = eval_fn, loss_fn = loss_fn, loss_threshold = loss_threshold,
                          collect_inner_binding = collect_inner_binding,
-                         lr=lr, max_evals=max_evals, num_best=num_best, atol=atol, rtol=rtol)
+                         lr=lr, max_evals=max_evals, num_best=num_best)
 
     return optim_res
 
@@ -789,7 +793,7 @@ class Benchmark:
         self.sampled[set_name] = (free_vars, gold_outputs)
         return free_vars, gold_outputs
 
-test_0 = Benchmark("test_0", lambda x: 1 + x,
+test_0 = Benchmark("test_0", lambda x: x + 152.3,
                    get_rand_points, {"num_samples": 20, "ranges": [(-1.0, 1.0)]})
 
 koza_1 = Benchmark("koza_1", lambda x: x*x*x*x + x*x*x + x*x + x,

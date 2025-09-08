@@ -1333,7 +1333,6 @@ def replace_pos_protected(pos: TermPos, with_term: Term, builders: Builders,
 
     return new_term
 
-
 def replace_fn(root: Term,
             get_replacement_fn: Callable[[Term, int], Optional[Term]],
             builders: Builders) -> Optional[Term]:
@@ -1690,11 +1689,11 @@ if __name__ == "__main__":
     pass
     # t1, _ = parse_term("(f x y x x x x x)")
     # t1, _ = parse_term("(inv (exp (mul x (cos (sin (exp (add 0.134 (exp (pow x x)))))))))")
-    t1, _ = parse_term("(pow (pow x0 1.81) (log 1.02))")
-    # p1, _ = parse_term("(f (f X X) Y Y)")
+    # t1, _ = parse_term("(pow (pow x0 1.81) (log 1.02))")
+    p1, _ = parse_term("(f (f X X) Y Y)")
     # p1, _ = parse_term("(... (f 1.42 X))")
     # p1, _ = parse_term("(exp (... (exp (... (exp .)))))")
-    p1, _ = parse_term("(... pow (pow . .))")
+    # p1, _ = parse_term("(... pow (pow . .))")
     # p1, _ = parse_term("(... exp (exp X))")
     # p1, _ = parse_term("(f x X *)")
 
