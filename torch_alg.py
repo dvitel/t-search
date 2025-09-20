@@ -221,100 +221,45 @@ def const_value_builder(term: Term, semantics: torch.Tensor,
         return output
     return (W, term_op)
 
-def default_leaf_op(term: Term):
-    X = semantics[leaf_semantic_ids[term]]
-    return X
+def mse_loss_builder(target):
+    return lambda output: torch.mean((output - target) ** 2, dim=-1)
 
-def lbfgs_optimize(term: Term, gold_outputs: torch.Tensor, semantics: torch.Tensor, 
-                leaf_semantic_ids: dict[Term, int],
-                branch_semantic_ids: dict[Term, int],
-                const_ranges: torch.Tensor,
-                epsilon: float = 1e-4, num_points = 10, num_steps = 20,
-                value_builder = lin_comb_value_builder,
-                sample_strategy = get_rand_interval_points,
-                leaves_cache = {}):
-    ''' Searches for tensor values to bring term closer to gold outputs 
-        Initial bindings should be already created
-    '''
+def nmse_loss_builder(target):
+    ''' we follow R^2 normalization: NMSE = 1 - R^2 '''
+    # norm = torch.mean(target ** 2, dim=-1) # TODO: could be different norms: std dev 
+    norm = torch.var(target, dim=-1, unbiased=False)
+    # mse = torch.mean((output - target) ** 2, dim=-1)
+    def loss_fn(output):
+        mse = torch.mean((output - target) ** 2, dim=-1)
+        nmse = mse / norm
+        return nmse
+    return loss_fn
 
-    leaves = collect_terms(term, lambda t: isinstance(t, (Variable, Value))) # all adjustable leaves 
-    Ws_ops = [value_builder(leaf, semantics, leaf_semantic_ids, branch_semantic_ids,
-                        const_ranges, num_points, sample_strategy) for leaf in leaves[-2:]]
+# def mse_loss_nan_v(predictions, target, *, nan_error = torch.inf):
+#     loss = torch.mean((predictions - target) ** 2, dim=-1)
+#     loss = torch.where(torch.isnan(loss), torch.tensor(nan_error, device=loss.device, dtype=loss.dtype), loss)
+#     return loss     
 
-    Ws, ops = zip(*Ws_ops) # Ws - list of leaf tensors, Opts - list of bindings at term leaf
-    # bindings = bind_terms(leaves, list(values))
+# def mse_loss_nan_vf(predictions, target, *, 
+#                     nan_value_fn = lambda m,t: torch.tensor(torch.inf, 
+#                                                     device = t.device, dtype=t.dtype), 
+#                     nan_frac = 0.5):
+#     nan_frac_count = math.floor(target.shape[0] * nan_frac)
+#     nan_mask = torch.isnan(predictions)
+#     err_rows: torch.Tensor = nan_mask.sum(dim=-1) > nan_frac_count
+#     bad_positions = nan_mask & err_rows.unsqueeze(-1)
+#     fixed_predictions = torch.where(bad_positions, 
+#                                     nan_value_fn(bad_positions, target),
+#                                     predictions)
+#     err_rows.logical_not_()
+#     fixed_positions = nan_mask & err_rows.unsqueeze(-1)
+#     fully_fixed_predictions = torch.where(fixed_positions, target, fixed_predictions)
+#     loss = torch.mean((fully_fixed_predictions - target) ** 2, dim=-1)
+#     del fully_fixed_predictions, fixed_predictions, fixed_positions, bad_positions, err_rows, nan_mask
+#     return loss         
 
-    leaf_ops = {(leaf, len(leaves) - 2 + leaf_id): op for leaf_id, (leaf, op) in enumerate(zip(leaves, ops))}
-    other_ops = {(leaf, leaf_id): partial(default_leaf_op, leaf) for leaf_id, leaf in enumerate(leaves[:-2])}
-
-    last_bindings = None
-    last_outputs = None
-    last_errors = None
-
-    def closure_builder(optimizer):
-        nonlocal last_outputs, last_errors, last_bindings
-        optimizer.zero_grad()        
-        last_bindings = {**other_ops, **leaf_ops}
-        outputs = evaluate(term, alg_ops, last_bindings, last)
-        assert outputs is not None, "Term evaluation should be full. Term is evaluated partially"
-        last_outputs = outputs
-        loss_els = (outputs - gold_outputs) ** 2
-        loss = torch.sum(loss_els, dim=-1) # 1d tensor per batch element
-        # del loss_els
-        last_errors = loss
-        # loss = mse_loss(outputs, gold_outputs)
-        loss.backward(gradient=torch.ones_like(loss))
-        total_loss = loss.median()
-        return total_loss
-
-    optimizer = torch.optim.LBFGS(Ws, lr=1, max_iter=20,
-                                    # max_eval = 1.5 * num_steps,
-                                    # tolerance_change=epsilon,
-                                    # tolerance_grad=epsilon / 10,
-                                    # history_size=100,
-                                    # line_search_fn='strong_wolfe'
-                                    )
-
-    closure = partial(closure_builder, optimizer)
-            
-    total_loss = optimizer.step(closure)
-    print(f"LBFGS optimization finished with loss {total_loss.item()}")
-    # res = evaluate(term, all_ops, {})
-    pass
-
-def mse_loss(output, target):
-    return torch.mean((output - target) ** 2, dim=-1)
-
-def nmse_loss(output, target, norm = 1.0):
-    mse = torch.mean((output - target) ** 2, dim=-1)
-    nmse = mse / norm
-    return nmse
-
-def mse_loss_nan_v(predictions, target, *, nan_error = torch.inf):
-    loss = torch.mean((predictions - target) ** 2, dim=-1)
-    loss = torch.where(torch.isnan(loss), torch.tensor(nan_error, device=loss.device, dtype=loss.dtype), loss)
-    return loss     
-
-def mse_loss_nan_vf(predictions, target, *, 
-                    nan_value_fn = lambda m,t: torch.tensor(torch.inf, 
-                                                    device = t.device, dtype=t.dtype), 
-                    nan_frac = 0.5):
-    nan_frac_count = math.floor(target.shape[0] * nan_frac)
-    nan_mask = torch.isnan(predictions)
-    err_rows: torch.Tensor = nan_mask.sum(dim=-1) > nan_frac_count
-    bad_positions = nan_mask & err_rows.unsqueeze(-1)
-    fixed_predictions = torch.where(bad_positions, 
-                                    nan_value_fn(bad_positions, target),
-                                    predictions)
-    err_rows.logical_not_()
-    fixed_positions = nan_mask & err_rows.unsqueeze(-1)
-    fully_fixed_predictions = torch.where(fixed_positions, target, fixed_predictions)
-    loss = torch.mean((fully_fixed_predictions - target) ** 2, dim=-1)
-    del fully_fixed_predictions, fixed_predictions, fixed_positions, bad_positions, err_rows, nan_mask
-    return loss         
-
-def l1_loss(predictions, target):
-    return torch.mean(torch.abs(predictions - target), dim=-1)  
+def l1_loss_builder(target):
+    return lambda outputs: torch.mean(torch.abs(outputs - target), dim=-1)  
 
 # @dataclass(frozen=False, eq=False, unsafe_hash=False, repr=False)
 # @dataclass(frozen=True)
@@ -347,9 +292,8 @@ class LRAdjust(Exception):
     pass
 
 optim_id = -1 # for debugging
-def optimize(optim_state: OptimState,
-                target: torch.Tensor, given_ops: dict[str, Callable], 
-                get_binding: Callable, *, eval_fn = evaluate, loss_fn = mse_loss,
+def optimize(optim_state: OptimState, loss_fn: Callable, given_ops: dict[str, Callable], 
+                get_binding: Callable, *, eval_fn = evaluate,
                 num_best: int = 1, lr: float = 1.0, max_evals: int = 10, 
                 collect_inner_binding: bool = False, loss_threshold: float = 0.1,
                 ):
@@ -426,7 +370,7 @@ def optimize(optim_state: OptimState,
                 
         outputs: torch.Tensor = eval_fn(optim_state.optim_term, given_ops, _redirected_get_binding, _set_binding)
         # assert outputs is not None, "Term evaluation should be full. Term is evaluated partially"
-        loss: torch.Tensor = loss_fn(outputs, target) 
+        loss: torch.Tensor = loss_fn(outputs) 
         finite_loss_mask = torch.isfinite(loss)
         if not torch.any(finite_loss_mask):
             raise LRAdjust(None)
@@ -545,10 +489,10 @@ def optimize(optim_state: OptimState,
     return num_evals, num_root_evals
 
 def optimize_consts(term: Term, term_loss: torch.Tensor,
-    target: torch.Tensor, builders: Builders,
+    loss_fn: Callable, builders: Builders,
     given_ops: dict[str, Callable], get_binding: Callable, start_range: torch.Tensor,
     *,
-    eval_fn = evaluate, loss_fn = mse_loss,
+    eval_fn = evaluate, 
     num_vals = 10, max_tries = 1, max_evals = 20, num_best: int = 1,
     lr = 0.1,
     loss_threshold: float = 0.1,
@@ -627,7 +571,7 @@ def optimize_consts(term: Term, term_loss: torch.Tensor,
 
     const_vectors = []
     for point in optim_state.optim_points:
-        const_values = torch.tensor([[p[point.point_id]] for p in starts_to_attempt], device=target.device, dtype=target.dtype)
+        const_values = torch.tensor([[p[point.point_id]] for p in starts_to_attempt], device=term_loss.device, dtype=term_loss.dtype)
         const_vectors.append(const_values)
 
     for p, cv in zip(optim_state.optim_points, const_vectors):
@@ -639,8 +583,8 @@ def optimize_consts(term: Term, term_loss: torch.Tensor,
     best_loss_before = optim_state.best_loss if optim_state.best_loss is not None else None
     
     num_evals, num_root_evals = \
-        optimize(optim_state, target, given_ops, get_binding, 
-                 eval_fn = eval_fn, loss_fn = loss_fn, loss_threshold = loss_threshold,
+        optimize(optim_state, loss_fn, given_ops, get_binding, 
+                 eval_fn = eval_fn, loss_threshold = loss_threshold,
                  collect_inner_binding = False,
                  lr=lr, max_evals=max_evals, num_best = num_best)
 
@@ -707,9 +651,9 @@ def get_pos_optim_state(term: Term, positions: list[TermPos], *,
     return optim_state
 
 def optimize_positions(optim_state: OptimState,
-    target: torch.Tensor,
+    loss_fn: Callable,
     given_ops: dict[str, Callable], get_binding: Callable, start_range: torch.Tensor,
-    eval_fn = evaluate, loss_fn = mse_loss,
+    eval_fn = evaluate,
     pos_outputs: list[tuple[torch.Tensor]] = [],
     num_vals = 10, max_evals = 20, num_best: int = 5, collect_inner_binding: bool = False,
     lr = 1.0, loss_threshold: float = 0.1,
@@ -736,8 +680,8 @@ def optimize_positions(optim_state: OptimState,
             binding[opt_id] = start_to_attempt[op_id]
         binding.requires_grad = True    
 
-    optim_res = optimize(optim_state, target, given_ops, get_binding, 
-                         eval_fn = eval_fn, loss_fn = loss_fn, loss_threshold = loss_threshold,
+    optim_res = optimize(optim_state, loss_fn, given_ops, get_binding, 
+                         eval_fn = eval_fn, loss_threshold = loss_threshold,
                          collect_inner_binding = collect_inner_binding,
                          lr=lr, max_evals=max_evals, num_best=num_best)
 
@@ -793,7 +737,7 @@ class Benchmark:
         self.sampled[set_name] = (free_vars, gold_outputs)
         return free_vars, gold_outputs
 
-test_0 = Benchmark("test_0", lambda x: x + 152.3,
+test_0 = Benchmark("test_0", lambda x: x + 74.3,
                    get_rand_points, {"num_samples": 20, "ranges": [(-1.0, 1.0)]})
 
 koza_1 = Benchmark("koza_1", lambda x: x*x*x*x + x*x*x + x*x + x,

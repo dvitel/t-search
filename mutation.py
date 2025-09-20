@@ -406,10 +406,10 @@ class ConstOptimization(Mutation):
 
     def _optimize_consts(self, solver: 'GPSolver', term: Term, term_loss: torch.Tensor) -> Optional[Term]:
         # start_opt = perf_counter()
-        optim_res = optimize_consts(term, term_loss, solver.target, solver.builders,
+        optim_res = optimize_consts(term, term_loss, solver.fitness_fn, solver.builders,
                                     solver.ops, solver._get_binding,
                                     solver.const_range, 
-                                    eval_fn = solver.eval_fn, loss_fn = solver.fitness_fn,
+                                    eval_fn = solver.eval_fn,
                                     num_vals = self.num_vals,
                                     max_tries=self.max_tries,
                                     max_evals=self.num_evals,
@@ -551,6 +551,43 @@ class HoleSemantics:
     std: torch.Tensor
     mean: torch.Tensor
             
+from syntax import sp_alg_ops_f, sp_alg_ops_b, sp_simplify
+
+class SynSimplify(Mutation): 
+    ''' Applies sympy to reduce the terms '''
+    def  __init__(self, name: str = "syn_simpl", *, rate: float = 1.0,
+                    to_ops: dict = sp_alg_ops_f, from_ops: dict = sp_alg_ops_b,
+                    check_validity: bool = False):
+        super().__init__(name)
+        self.rate = rate
+        self.to_ops = to_ops
+        self.from_ops = from_ops
+        self.check_validity = check_validity
+    def _simplify_term(self, solver: 'GPSolver', term: Term) -> Optional[Term]:
+        new_term = sp_simplify(term, to_dict = self.to_ops, from_dict=self.from_ops,
+                               alloc_val = lambda value: solver.const_builder.fn(value = value),
+                               alloc_var = lambda var_id: solver.var_builder.fn(var_id = var_id),
+                               alloc_op = lambda op_id: lambda *args: solver.op_builders.get(op_id).fn(*args))
+        if self.check_validity and not is_valid(new_term, builders=solver.builders, counts_cache=solver.counts_cache):
+            return None
+        return new_term
+    def _mutate(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
+        count_to_modify = int(len(population) * self.rate)
+        if count_to_modify == 0:
+            return list(population)
+        elif count_to_modify == len(population):
+            term_ids = range(len(population))
+        else:
+            term_ids = solver.rnd.permutation(len(population))
+        for term_id in term_ids:
+            if count_to_modify <= 0:
+                break
+            term = population[term_id]
+            new_term = self._simplify_term(solver, term)
+            if new_term is not None and new_term != term:
+                population[term_id] = new_term
+                count_to_modify -= 1
+
 class PointOptimization(Mutation, InitedMixin, TermsListener):
     ''' Adjust a point of the term by searching best vectors ''' 
     
@@ -562,7 +599,8 @@ class PointOptimization(Mutation, InitedMixin, TermsListener):
                  sem_atol: float = 1e-5,
                  collect_inner_binding: bool = True,
                  index_type = VectorStorage,
-                 normalize_semantics: bool = True):
+                 normalize_semantics: bool = True,
+                 syn_simplify: Optional[SynSimplify] = None):
         super().__init__(name)
         self.frac = frac
         self.num_vals = num_vals
@@ -589,6 +627,7 @@ class PointOptimization(Mutation, InitedMixin, TermsListener):
         self.one: torch.Tensor | None = None
         self.delayed_terms: list[Term] = [] # new terms built from holes and other terms, added during mutation
         self.normalize_semantics = normalize_semantics
+        self.syn_simplify = syn_simplify
 
     def _init(self, solver: 'GPSolver'):
         if self.inited:
@@ -615,11 +654,12 @@ class PointOptimization(Mutation, InitedMixin, TermsListener):
         self.delayed_terms = []
 
         if self.normalize_semantics:
-            if "add" not in solver.ops or "mul" not in solver.ops:
-                print(f"Warning: normalization was disabled as there are no operations (add, mul) to revert it")
+            if "add" not in solver.ops or "mul" not in solver.ops or solver.max_consts == 0:
+                print(f"Warning: normalization was disabled as there are no operations (add, mul) or consts to revert it")
                 self.normalize_semantics = False # normalization requires add, mul in solver.ops
         
-        if solver.max_consts > 0 and self.normalize_semantics:
+        # if solver.max_consts > 0 and self.normalize_semantics:
+        if self.normalize_semantics:
             zero_ids = self.term_index.insert(torch.zeros_like(solver.target).unsqueeze(0))
             zero_id = zero_ids[0]
             zero_const = Value(self.zero)
@@ -692,14 +732,16 @@ class PointOptimization(Mutation, InitedMixin, TermsListener):
                 if isinstance(term_semantics.term, Value):
                     hole_term = Value(b)
                 else:
-                    hole_term = Op("add", [term_semantics.term, Value(b)])
+                    hole_term = solver.op_builders["add"].fn(term_semantics.term, solver.const_builder.fn(value = b))
             elif b_is_zero:
-                hole_term = Op("mul", [Value(k), term_semantics.term])
+                hole_term = solver.op_builders["mul"].fn(solver.const_builder.fn(value = k), term_semantics.term)
             else:
                 if isinstance(term_semantics.term, Value):
                     hole_term = Value(b)
                 else:
-                    hole_term = Op("add", [Op("mul", [Value(k), term_semantics.term]), Value(b)]) # should be part of solver config
+                    hole_term = solver.op_builders["add"].fn(
+                                    solver.op_builders["mul"].fn(solver.const_builder.fn(value = k), term_semantics.term),
+                                    solver.const_builder.fn(value = b))
         else:
             hole_term = term_semantics.term
         
@@ -708,6 +750,9 @@ class PointOptimization(Mutation, InitedMixin, TermsListener):
                                         counts_cache=solver.counts_cache,
                                         pos_context_cache=solver.pos_context_cache.setdefault(hole_semantics.root_term, {}),
                                         max_term_depth=solver.max_term_depth)
+        
+        if new_term is not None and self.syn_simplify is not None:
+            new_term = self.syn_simplify._simplify_term(solver, new_term)
         return new_term
         
     def register_terms(self, solver: 'GPSolver', terms: list[Term], semantics: torch.Tensor) -> None: 
@@ -771,6 +816,7 @@ class PointOptimization(Mutation, InitedMixin, TermsListener):
             # nonconst_ids, = torch.where(nonconst_mask)
             normalized_semantics = (semantics - means) / stds
             normalized_semantics[const_mask] = self.zero
+            stds[const_mask] = self.zero
 
             # nonconst_terms: list[Term] = [terms[i] for i in nonconst_ids.tolist()]
             # semantic_ids = self.term_index.insert(normalized_semantics)
@@ -880,10 +926,10 @@ class PointOptimization(Mutation, InitedMixin, TermsListener):
         output_range[1] = range_maxs + self.delta
 
         num_evals, num_root_evals = \
-            optimize_positions(optim_state, solver.target,
+            optimize_positions(optim_state, solver.fitness_fn,
                 solver.ops, solver._get_binding,
                 output_range, 
-                solver.eval_fn, solver.fitness_fn,
+                solver.eval_fn,
                 pos_outputs=(pos_output,),
                 num_vals = self.num_vals,
                 max_evals=self.num_evals,

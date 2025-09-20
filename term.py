@@ -1662,7 +1662,6 @@ def unique_term(root: Term, term_cache: dict[tuple, Term] | None = None) -> Term
 
     return res
 
-
 if __name__ == "__main__":
 
     # tests

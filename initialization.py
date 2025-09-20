@@ -89,5 +89,5 @@ class CachedRHH(RHH):
             if none_count == pop_size:
                 break 
         population = list(solver.syntax.values())[:sz]
-        population.extend(solver.vars)    
+        population.extend(solver.vars.values())    
         return population

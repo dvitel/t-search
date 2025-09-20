@@ -12,14 +12,14 @@ from time import perf_counter
 import numpy as np
 import torch
 from initialization import RHH, Initialization, UpToDepth
-from mutation import ConstOptimization, Deduplicate, Mutation, PointOptimization, PointRandCrossover, PointRandMutation
+from mutation import ConstOptimization, Deduplicate, Mutation, PointOptimization, PointRandCrossover, PointRandMutation, SynSimplify
 from selection import Elitism, Finite, TournamentSelection
 from spatial import VectorStorage
 from term import Builder, Builders, Op, Term, TermPos, Value, Variable, evaluate, get_counts, get_depth, \
                     get_fn_arity, match_root, parse_term, replace_pos_protected
 from sklearn.base import BaseEstimator, RegressorMixin
 
-from torch_alg import mse_loss
+from torch_alg import nmse_loss_builder
 from util import InitedMixin, TermsListener, stack_rows  
 
 GPSolverStatus = Literal["INIT", "MAX_GEN", "MAX_EVAL", "MAX_ROOT_EVAL", "SOLVED"]
@@ -60,7 +60,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
     def __init__(self, 
                 ops: dict[str, Callable],
-                fitness_fn: Callable = mse_loss,
+                fitness_fn_builder: Callable = nmse_loss_builder,
                 fit_condition = partial(fit_0, rtol = 1e-04, atol = 1e-03),
                 init: Initialization = RHH(),
                 eval_fn = evaluate,
@@ -122,7 +122,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         #       alternative: create subclasses of Term for Vars and Values - this is more explicit approach and better 
         #                    Vars = Term + var id, Values = Term + value Any.
         #                    Do we need (term, occur) in this case? Seems yes.
-        self.fitness_fn = fitness_fn
+        self.fitness_fn_builder = fitness_fn_builder
+        self.fitness_fn = None
         self.fit_condition = fit_condition
         self.init = init
         self.eval_fn = eval_fn
@@ -203,7 +204,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         ''' Called before each fit '''
 
         # reset caches 
-        self.vars: list[Variable] = []
+        self.vars: dict[str, Variable] = {}
         self.var_binding: dict[str, torch.Tensor] = {}
         # self.const_binding: list[torch.Tensor] = []
 
@@ -243,7 +244,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if free_vars is not None and len(free_vars) > 0 and (self.max_vars > 0):
             vars, var_binding = self.get_vars(free_vars)
             self.var_binding = var_binding
-            self.vars = vars
+            self.vars = {v.var_id: v for v in vars}
             self.var_builder = Builder("x", self._alloc_var, 0, self.min_vars, self.max_vars)
             builders[Variable] = self.var_builder
 
@@ -312,6 +313,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 self.const_range[0] = torch.minimum(self.const_range[0], min_fv)
                 self.const_range[1] = torch.maximum(self.const_range[1], max_fv)
 
+            self.fitness_fn = self.fitness_fn_builder(self.target)
+
         # self.output_range = torch.stack([self.target, self.target], dim=0)
         # abs_target = torch.abs(self.target)
         # self.output_range[0] -= 0.1 * abs_target
@@ -326,7 +329,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.term_listeners = [op for op in self.pipeline if isinstance(op, TermsListener)]
 
         for t_listener in self.term_listeners:
-            for x in self.vars:
+            for x in self.vars.values():
                 binding = self.var_binding[x.var_id]                
                 t_listener.register_terms(self, [x], binding.unsqueeze(0))
         pass
@@ -344,12 +347,20 @@ class GPSolver(BaseEstimator, RegressorMixin):
             var_binding[v.var_id] = fv 
         return vars, var_binding            
 
-    def _alloc_var(self, *_) -> Variable:
-        var = self.rnd.choice(self.vars)
+    def _alloc_var(self, *, var_id: Optional[str] = None) -> Variable:
+        if var_id is not None: 
+            var = self.vars.get(var_id, None)
+            if var is not None:
+                return var        
+        var = self.rnd.choice(list(self.vars.values()))
         return var
     
-    def _alloc_const(self, *_) -> Value: 
+    def _alloc_const(self, *, value: Optional[float | torch.Tensor] = None) -> Value: 
         ''' Should we random sample of try some grid? Anyway we tune '''
+        if value is not None: # const value provided - no alloc of consts 
+            if not torch.is_tensor(value):
+                value = torch.tensor(value, dtype=self.dtype, device=self.device)
+            return Value(value)
         if self.const_id is None or self.const_id >= self.pop_size:
             del self.const_tape
             self.const_id = 0
@@ -430,7 +441,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 #         max_outputs = torch.max(finite_predictions, dim=0).values
                 #         torch.minimum(self.output_range[0], min_outputs, out=self.output_range[0])
                 #         torch.maximum(self.output_range[1], max_outputs, out=self.output_range[1])
-                new_fitness: torch.Tensor = self.fitness_fn(semantics, self.target)
+                new_fitness: torch.Tensor = self.fitness_fn(semantics)
                 for t, o, f in zip(valid_terms, semantics, new_fitness):
                     self.term_outputs[t] = o.clone()
                     self.term_fitness[t] = f
@@ -616,7 +627,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         return None
     
     def find_any_var(self, outputs: torch.Tensor) -> Optional[Variable]:
-        for x in self.vars:
+        for x in self.vars.values():
             x_binding = self.var_binding[x.var_id]
             close_el_mask = torch.isclose(outputs, x_binding, rtol = self.rtol, atol = self.atol)
             cur_close_mask = close_el_mask.all(dim=-1)
@@ -631,7 +642,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.best_fitness = best_fitness
         best_fitness = best_fitness.unsqueeze(-1) if len(best_fitness.shape) == 0 else best_fitness
         for fi, fv in enumerate(best_fitness):
-            fk = f"fitness_{fi}"
+            fk = f"best_fitness_{fi}"
             self.gen_metrics[fk] = fv.item()
 
         best_depth = get_depth(best_term, self.depth_cache)
@@ -640,6 +651,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.gen_metrics["best_term_depth"] = best_depth
         self.gen_metrics["best_term_size"] = best_size
         self.gen_metrics["best_counts"] = best_counts.tolist()
+        self.gen_metrics["best_term"] = str(best_term)
     
     def check_trivial(self): 
         const_val = self.find_any_const(self.target.unsqueeze(0))
@@ -809,7 +821,9 @@ if __name__ == "__main__":
                         #(num_tries=1, lr=0.1)],
                         pipeline=[
                                     # Finite(), 
-                                    PointOptimization(num_vals = 10, frac=1.0, lr=1),
+                                    PointOptimization(num_vals = 10, frac=1.0, lr=1,
+                                                        syn_simplify=None)
+                                                        # syn_simplify=SynSimplify()),
                                     # ConstOptimization(num_vals = 20, lr=1.0,
                                     #                     num_evals = 7,
                                     #                     loss_threshold = 1e-2),
