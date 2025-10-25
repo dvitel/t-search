@@ -30,7 +30,7 @@ from typing import Optional
 
 @dataclass
 class Idempotence:
-
+    pass
 
 @dataclass 
 class TermProps:

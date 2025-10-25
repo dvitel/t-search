@@ -237,6 +237,9 @@ class VectorStorage:
         # self.stats_batch_size = stats_batch_size
         # self.stats = StorageStats(self)
 
+    def __len__(self):
+        return self.cur_id
+
     def get_vectors(self, ids: None | int | list[int] | tuple[int, int]) -> torch.Tensor:
         ''' ids None --> whole storage view 
             ids int --> single vector view by id

@@ -578,8 +578,11 @@ def evaluate(root: Term, ops: dict[str, Callable],
     return args_stack[0][0]    
 
 def alloc_tape(width: int, penalties: list[tuple[list[int] | int, float, float]] = [],
-                buf_n:int = 100, rnd: np.random.RandomState = np.random) -> np.ndarray:
+                buf_n:int = 100, rnd: np.random.RandomState = np.random,
+                freq_skew: np.ndarray | None = None) -> np.ndarray:
     weights = rnd.random((buf_n, width))
+    if freq_skew is not None:
+        weights *= freq_skew
     for ids, p, level in penalties:
         selection = weights[:,ids]
         weights[:,ids] = np.where(selection >= p, level, 0)
@@ -587,11 +590,13 @@ def alloc_tape(width: int, penalties: list[tuple[list[int] | int, float, float]]
 
 def check_tape(pos_id: int, tape, 
                     penalties: list[tuple[list[int] | int, float]] = [],
-                    buf_n:int = 100, rnd: np.random.RandomState = np.random) -> np.ndarray:    
+                    buf_n:int = 100, rnd: np.random.RandomState = np.random,
+                    freq_skew: np.ndarray | None = None) -> np.ndarray:    
     if pos_id >= tape.shape[0]:
         new_tape = np.zeros((tape.shape[0] + buf_n, tape.shape[1]), dtype=tape.dtype)
         new_tape[:tape.shape[0]] = tape
-        new_part = alloc_tape(tape.shape[1], penalties=penalties, buf_n=buf_n, rnd=rnd)
+        new_part = alloc_tape(tape.shape[1], penalties=penalties, buf_n=buf_n, 
+                              rnd=rnd, freq_skew = freq_skew)
         new_tape[new_tape.shape[0] - buf_n:] = new_part
         tape = new_tape
     return tape
@@ -726,7 +731,27 @@ class Builders:
         
     def __len__(self):
         return len(self.builders)
+    
+    def get_term_counts(self, max_depth: int) -> np.ndarray: 
+        ''' Returns number of terms that start with corresponding builder and then have arbitrary structure 
+            NOTE: this is nonprecise estimation as it does not take into account constraints 
+        '''
+        res = np.zeros((len(self.builders),), dtype=np.int64)
+        res[self.leaf_ids] = 1
+        for d in range(1, max_depth + 1):
+            new_res = np.zeros((len(self.builders),), dtype=np.int64)
+            new_res[self.leaf_ids] = 1
+            prev_total = np.sum(res)
+            new_res[self.nonleaf_ids] = [prev_total ** self.builders[bi].arity() for bi in self.nonleaf_ids]
+            res = new_res
+        return res
 
+    def get_leaf_builders(self) -> list[Builder]:
+        return [self.builders[bi] for bi in self.leaf_ids]
+
+    def get_nonleaf_builders(self) -> list[Builder]:
+        return [self.builders[bi] for bi in self.nonleaf_ids]
+    
     def limit_context(self, cl: dict[Builder, dict[Builder, int]]) -> 'Builders':
         for builder, limits in cl.items():            
             builder.context_limits = self.unlimited.copy()
@@ -832,6 +857,7 @@ def gen_term(builders: Builders,
             start_context: TermGenContext | None = None,
             arg_counts: np.ndarray | None = None,
             gen_metrics: dict | None = None,
+            freq_skew: bool = False
          ) -> Optional[Term]:
     ''' Arities should be unique and provided in sorted order.
         Counts should correspond to arities 
@@ -845,12 +871,19 @@ def gen_term(builders: Builders,
 
     penalties = [] if leaf_proba is None else [(builders.leaf_ids, leaf_proba, 1)]
 
-    tape = alloc_tape(len(builders), penalties=penalties, buf_n=buf_n, rnd=rnd) # tape is 2d ndarray: (t, score)
+    if freq_skew:
+        term_counts = builders.get_term_counts(max_depth)
+        total_counts = np.sum(term_counts)
+        freq_skew = term_counts / total_counts
+    else:
+        freq_skew = None
+
+    tape = alloc_tape(len(builders), penalties=penalties, buf_n=buf_n, rnd=rnd, freq_skew = freq_skew) # tape is 2d ndarray: (t, score)
 
     pos_id = 0 
     def get_next_tape_values():
         nonlocal tape, pos_id 
-        tape = check_tape(pos_id, tape, penalties=penalties, buf_n=buf_n, rnd=rnd)
+        tape = check_tape(pos_id, tape, penalties=penalties, buf_n=buf_n, rnd=rnd, freq_skew = freq_skew)
         tape_values = tape[pos_id]
         pos_id += 1
         return tape_values
@@ -1216,6 +1249,7 @@ def grow(builders: Builders,
          start_context: TermGenContext | None = None,
          arg_counts: np.ndarray | None = None,
          gen_metrics: dict | None = None,
+         freq_skew: bool = False
          ) -> Optional[Term]:
     ''' Grow a tree with a given depth '''
 
@@ -1223,16 +1257,15 @@ def grow(builders: Builders,
     term = gen_term(builders, max_depth = grow_depth, 
                     leaf_proba = grow_leaf_prob, rnd = rnd,
                     start_context = start_context,
-                    arg_counts = arg_counts, gen_metrics=gen_metrics)
+                    arg_counts = arg_counts, gen_metrics=gen_metrics,
+                    freq_skew = freq_skew)
     return term
 
 # IDEA: dropout in GP, frozen tree positions which cannot be mutated or crossovered - for later
 
 def get_positions(root: Term, pos_cache: dict[Term, list[TermPos]],
                     without_root: bool = True) -> list[TermPos]:
-    ''' Returns dictionary where keys are all positions in the term and values are references to parent position 
-        NOTE: we do not return thee root of the term as TermPos as it does not have parent
-    '''
+    ''' Bottom-up left-to-right collection of term positions, excluding root  '''
 
     if root in pos_cache:
         return pos_cache[root]

@@ -12,15 +12,15 @@ from time import perf_counter
 import numpy as np
 import torch
 from initialization import RHH, Initialization, UpToDepth
-from mutation import ConstOptimization, Deduplicate, Mutation, PointOptimization, PointRandCrossover, PointRandMutation, SynSimplify
-from selection import Elitism, Finite, TournamentSelection
+from mutation import CO, Dedupl, Mutation, PO, RPX, RPM, Reduce
+from selection import Finite, TournamentSelection
 from spatial import VectorStorage
 from term import Builder, Builders, Op, Term, TermPos, Value, Variable, evaluate, get_counts, get_depth, \
                     get_fn_arity, match_root, parse_term, replace_pos_protected
 from sklearn.base import BaseEstimator, RegressorMixin
 
 from torch_alg import nmse_loss_builder
-from util import InitedMixin, TermsListener, stack_rows  
+from util import OperatorInitMixin, TermsListener, stack_rows  
 
 GPSolverStatus = Literal["INIT", "MAX_GEN", "MAX_EVAL", "MAX_ROOT_EVAL", "SOLVED"]
 
@@ -64,7 +64,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 fit_condition = partial(fit_0, rtol = 1e-04, atol = 1e-03),
                 init: Initialization = RHH(),
                 eval_fn = evaluate,
-                pipeline: list['Mutation'] = [ TournamentSelection(), PointRandMutation(), PointRandCrossover() ],
+                pipeline: list['Mutation'] = [ TournamentSelection(), RPM(), RPX() ],
                 ops_counts: dict[str, tuple[int, int]] = {},
                 forbid_patterns: list[str] = [],
                 # next is more optimized
@@ -132,7 +132,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.max_root_evals = max_root_evals
         self.max_evals = max_evals
         self.pop_size = pop_size        
-        self.elitism: list[Elitism] = [op for op in self.pipeline if isinstance(op, Elitism)]
         self.with_inner_evals = with_inner_evals
         self.cache_term_props = cache_term_props
         # self.cache_terms = cache_terms
@@ -322,9 +321,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # del abs_target
 
         for op in self.pipeline:
-            if isinstance(op, InitedMixin):
-                op.inited = False
-                op._init(self)
+            if isinstance(op, OperatorInitMixin):
+                op.op_init(self)
 
         self.term_listeners = [op for op in self.pipeline if isinstance(op, TermsListener)]
 
@@ -388,7 +386,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         self.new_term_outputs.clear()   
             
-        hole_terms = []
         outputs = []
         for term in terms:
             output = self.eval_fn(term, self.ops, self._get_binding, self._set_binding)
@@ -455,13 +452,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         self.new_term_outputs.clear()
 
-        if len(hole_terms) == 0:
-            return 
-        
-        print(f"Filling {len(hole_terms)} holes.")
-
-        self.eval(hole_terms)
-        pass
+        return 
     
     def get_terms_fitness(self, terms: list[Term]):
         present_terms = []
@@ -472,6 +463,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 present_terms.append(term)
                 present_fitness.append(f)
         return present_terms, present_fitness
+    
+    def get_term_fitness(self, term: Term) -> Optional[torch.Tensor]:
+        return self.term_fitness.get(term, None)
 
     def breed(self, population: list[Term]) -> list[Term]:
         ''' Pipeline that mutates parents and then applies crossover on pairs. One-point operations '''
@@ -497,10 +491,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
             children = timed(operator, f"{operator.name}_time", self.gen_metrics)(self, children)
             if len(operator.metrics) > 0:
                 self.gen_metrics[operator.name] = operator.metrics
-
-        for e in self.elitism:
-            elite_terms = e.get_elite()
-            children.extend(elite_terms)
 
         return children
     
@@ -567,7 +557,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # if term in self.const_term_outputs:
         #     return self.const_term_outputs[term]
         return None
-
+    
+    def get_cached_outputs(self, terms: list[Term], return_tensor = False) -> list[Optional[torch.Tensor]] | torch.Tensor:
+        res = [self.get_cached_output(t) for t in terms]
+        if return_tensor:
+            res = stack_rows(res, target_size=self.target.shape[0])
+        return res 
     
     def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:        
         res_in_cache = self.get_cached_output(term)      
@@ -635,6 +630,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
             if len(cur_close_ids) > 0:
                 return x
         return None
+    
+    def get_depth(self, term: Term) -> int:
+        term_depth = get_depth(term, self.depth_cache)
+        return term_depth
     
     def _set_best_term(self, best_term: Term, best_outputs: torch.Tensor, best_fitness: torch.Tensor):
         self.best_term = best_term
@@ -761,7 +760,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
 #       [BAD IDEA] 10. Gen math expr instead of lisp expr 
 
 #      11. Other metrics??? Add when caches are enabled - syntactic diversity (is there convergance to same syntax)
-#      DONE 12. Elitism
 #      13. Aging??? 
 #      14. Dropout ???
 #      15. Distribution control in gen_term based on statistics of past decisions at point of generation -
@@ -798,7 +796,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 # TODO: think about terms that are optimized to consts --> invalid_terms vs const_terms store
 # TODO: unification of terms without meta variables to find most abstract common pattern???
 
-# TODO: Debug fail term gen when Finite is disabled, Deduplicate is disabled and Const Optim num_evals = 7,
+# TODO: Debug fail term gen when Finite is disabled, Dedupl is disabled and Const Optim num_evals = 7,
 
 # gen_term should pick op_id based on arity and estimated number of child terms --> create this estimation in Builders, UpToDepth automatic depth calc
 
@@ -821,7 +819,7 @@ if __name__ == "__main__":
                         #(num_tries=1, lr=0.1)],
                         pipeline=[
                                     # Finite(), 
-                                    PointOptimization(num_vals = 10, frac=1.0, lr=1,
+                                    PO(num_vals = 10, frac=1.0, lr=1,
                                                         syn_simplify=None)
                                                         # syn_simplify=SynSimplify()),
                                     # ConstOptimization(num_vals = 20, lr=1.0,
@@ -831,9 +829,9 @@ if __name__ == "__main__":
                                     # TournamentSelection(), 
                                     # PointRandMutation(), 
                                     # PointRandCrossover(), 
-                                    # Deduplicate(), 
+                                    # Dedupl(), 
                                   ],
-                        # mutations=[PointRandMutation(), PointRandCrossover(), Deduplicate(), ConstOptimization1(lr=1.0)],
+                        # mutations=[PointRandMutation(), PointRandCrossover(), Dedupl(), ConstOptimization1(lr=1.0)],
                         # commutative_ops=["add", "mul"],
                         forbid_patterns = [
                             # "(inv (inv .))",

@@ -26,23 +26,45 @@ def stack_rows_2d(tensors: Sequence[torch.Tensor], target_size: int) -> torch.Te
         cur_start += ti.shape[0]
     return res  
 
+def l2_distance(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    el_dist = (a - b) ** 2
+    el_dist.nan_to_num_(nan=torch.inf)
+    return torch.sqrt(torch.sum(el_dist, dim=-1))
+
 class Operator:
     def __init__(self, name: str):
         self.name = name 
         self.metrics = {}
 
-    def on_start(self):
+    def reset_metrics(self):
         self.metrics = {}
+    
+    def exec(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
+        ''' Executes only this operator and update existing metrics state '''
+        return population
+    
+    def call_next(solver: 'GPSolver', population: Sequence[Term], next_ops: list['Operator'] = []):
+        if len(next_ops) > 0:
+            next_op, *rest_ops = next_ops
+            children = next_op(solver, children, rest_ops)        
+            return children
+        return population
 
-class InitedMixin: 
-    def __init__(self):
-        self.inited: bool = False
-    def _init(self, solver: 'GPSolver'):
-        if self.inited:
-            return
-        self.inited = True      
+    def __call__(self, solver: 'GPSolver', population: Sequence[Term], next_ops: list['Operator'] = []):
+        ''' Executes operator in the chain. New metrics are stored in self.metrics '''
+        self.reset_metrics()
+        children = self.exec(solver, population)
+        children = self.call_next(solver, children, next_ops)
+        return children
+
+
+class OperatorInitMixin: 
+    def op_init(self, solver: 'GPSolver'):
+        pass
 
 class TermsListener: 
-    ''' Interface to listen for new terms appearing during the search. '''
-    def register_terms(self, solver: 'GPSolver', terms: list[Term], semantics: torch.Tensor) -> None: 
+    ''' Interface to listen for new terms appearing during the eval. 
+        
+    '''
+    def register_terms(self, solver: 'GPSolver', terms: list[Term], semantics: torch.Tensor) -> list[Term]: 
         pass 
