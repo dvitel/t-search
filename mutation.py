@@ -9,7 +9,7 @@ import torch
 
 from initialization import UpToDepth
 from spatial import VectorStorage
-from term import Op, Term, TermPos, Value, get_depth, get_inner_terms, get_pos_constraints, get_pos_sibling_counts, get_positions, grow, is_valid, replace_pos, replace_pos_protected, shuffle_positions
+from term import Op, Term, TermPos, Value, get_inner_terms, grow, shuffle_positions
 from term_spatial import TermVectorStorage
 from torch_alg import OptimPoint, OptimState, OptimState, get_pos_optim_state, optimize_consts, optimize_positions
 
@@ -118,7 +118,7 @@ class PositionMutation(TermMutation):
         self.leaf_proba = leaf_proba
 
     def select_positions(self, solver: 'GPSolver', term: Term) -> Generator[TermPos]:   
-        positions = get_positions(term, solver.pos_cache)
+        positions = solver.get_positions(term)
         return shuffled_position_flow(positions, self.leaf_proba, solver.rnd)
 
     def mutate_position(self, solver: 'GPSolver', term: Term, position: TermPos) -> Term | None:
@@ -151,17 +151,12 @@ class PositionCrossover(TermCrossover):
         self.leaf_proba = leaf_proba
         self.exclude_values = exclude_values
 
-    # def select_term_positions(self, solver: 'GPSolver', term: Term) -> Generator[TermPos]:
-    #     ''' Selects positions of base term '''
-    #     positions = get_positions(term, solver.pos_cache)
-    #     return (p for p in positions)    
-
     def crossover_positions(self, solver: 'GPSolver', term: Term, position: TermPos, other_term: Term, other_position: TermPos) -> Term | None:
         ''' Abstract. Exchanges terms at positions. '''
         pass # to be implemented in subclasses        
 
     def default_position_flow(self, solver: 'GPSolver', term: Term) -> Generator[TermPos]:
-        positions = get_positions(term, solver.pos_cache)
+        positions = solver.get_positions(term)
         if self.exclude_values:
             positions = [pos for pos in positions if not isinstance(pos.term, Value)]
         flow = shuffled_position_flow(positions, self.leaf_proba, solver.rnd)
@@ -198,9 +193,7 @@ class RPM(PositionMutation):
         self.max_grow_depth = max_grow_depth
 
     def mutate_position(self, solver: 'GPSolver', term: Term, position: TermPos) -> Term | None:
-        pos_contexts = solver.pos_context_cache.setdefault(term, {})
-        start_context = get_pos_constraints(position, solver.builders, solver.counts_cache, pos_contexts)
-        arg_counts = get_pos_sibling_counts(position, solver.builders)
+        start_context, arg_counts = solver.get_gen_constraints(term, position)
 
         new_term = grow(grow_depth = min(self.max_grow_depth, 
                                             solver.max_term_depth - position.at_depth), 
@@ -208,7 +201,7 @@ class RPM(PositionMutation):
                         arg_counts = arg_counts,
                         gen_metrics = self.metrics, rnd = solver.rnd)                
         
-        mutated_term = replace_pos(position, new_term, solver.builders)
+        mutated_term = solver.replace_position(term, position, new_term, with_validation = False)
         return mutated_term
 
 class RPX(PositionCrossover):
@@ -226,11 +219,7 @@ class RPX(PositionCrossover):
             child = self.crossover_cache[crossover_key]
             return child 
 
-        child = replace_pos_protected(position, other_position.term, solver.builders,
-                                        depth_cache=solver.depth_cache,
-                                        counts_cache=solver.counts_cache,
-                                        pos_context_cache=solver.pos_context_cache.setdefault(term, {}),
-                                        max_term_depth=solver.max_term_depth)
+        child = solver.replace_position(term, position, other_position.term)
         
         return child
       
@@ -342,7 +331,7 @@ class Reduce(TermMutation):
                                alloc_val = lambda value: solver.const_builder.fn(value = value),
                                alloc_var = lambda var_id: solver.var_builder.fn(var_id = var_id),
                                alloc_op = lambda op_id: lambda *args: solver.op_builders.get(op_id).fn(*args))
-        if self.check_validity and not is_valid(new_term, builders=solver.builders, counts_cache=solver.counts_cache):
+        if self.check_validity and not solver.is_valid(new_term):
             return None
         return new_term
 
@@ -441,7 +430,7 @@ class PO(PositionMutation, OperatorInitMixin, TermsListener):
 
     def select_positions(self, solver: 'GPSolver', term: Term) -> Generator[TermPos]:
         if term not in self.tries_pos:
-            positions = get_positions(term, solver.pos_cache)
+            positions = solver.get_positions(term)
             positions = [pos for pos in positions if pos not in solver.invalid_term_outputs]
             # DECISION 1: how to pick term pos?? shuffle, sorted by depth?
             positions.sort(key=lambda pos: pos.at_depth) # start with shallowest positions
@@ -522,7 +511,7 @@ class PO(PositionMutation, OperatorInitMixin, TermsListener):
         if self.collect_inner_binding:
 
             if optim_state.optim_term not in self.optim_point_pos_cache:
-                optim_term_poss = get_positions(optim_state.optim_term, solver.pos_cache)
+                optim_term_poss = solver.get_positions(optim_state.optim_term)
                 optim_point_pos = next(pos for pos in optim_term_poss if isinstance(pos.term, OptimPoint))
                 self.optim_point_pos_cache[optim_state.optim_term] = optim_point_pos
 
@@ -624,11 +613,7 @@ class PO(PositionMutation, OperatorInitMixin, TermsListener):
         else:
             hole_term = term_semantics.term
         
-        new_term = replace_pos_protected(hole_semantics.pos, hole_term, solver.builders,
-                                        depth_cache=solver.depth_cache,
-                                        counts_cache=solver.counts_cache,
-                                        pos_context_cache=solver.pos_context_cache.setdefault(hole_semantics.root_term, {}),
-                                        max_term_depth=solver.max_term_depth)
+        new_term = solver.replace_position(hole_semantics.root_term, hole_semantics.pos, hole_term)
         
         if new_term is not None and self.syn_simplify is not None:
             new_term = self.syn_simplify.mutate_term(solver, new_term, [], [])
@@ -660,8 +645,8 @@ class PO(PositionMutation, OperatorInitMixin, TermsListener):
             self.term_semantics[term] = term_semantics
             if semantic_id in self.semantic_terms: # pick smallest term as representative
                 cur_t = self.semantic_terms[semantic_id].term
-                cur_t_depth = get_depth(cur_t, solver.depth_cache)
-                t_depth = get_depth(term, solver.depth_cache)
+                cur_t_depth = solver.get_depth(cur_t)
+                t_depth = solver.get_depth(term)
                 if t_depth < cur_t_depth:
                     self.semantic_terms[semantic_id] = term_semantics
             else:
@@ -793,13 +778,11 @@ class SGM(TermMutation, OperatorInitMixin):
         
         for _ in range(self.num_tries):
             t1 = grow(grow_depth = self.max_grow_depth,
-                        builders = solver.builders, start_context = None, 
-                        arg_counts = None,
+                        builders = solver.builders,
                         gen_metrics = self.metrics, rnd = solver.rnd) 
 
             t2 = grow(grow_depth = self.max_grow_depth,
-                        builders = solver.builders, start_context = None, 
-                        arg_counts = None,
+                        builders = solver.builders, 
                         gen_metrics = self.metrics, rnd = solver.rnd)               
                 
             neg_t2 = solver.op_builders["mul"].fn(self.minus_one, t2)
@@ -809,7 +792,7 @@ class SGM(TermMutation, OperatorInitMixin):
             mutated_term = solver.op_builders["add"].fn(term, delta_term)
             if self.simplifier is not None:
                 mutated_term = self.simplifier.mutate_term(solver, [mutated_term])
-            if self.check_validity and not is_valid(mutated_term, builders=solver.builders, counts_cache=solver.counts_cache):
+            if self.check_validity and not solver.is_valid(mutated_term):
                 mutated_term = None
             if mutated_term is not None:
                 break
@@ -928,8 +911,9 @@ class SGX(TermCrossover, OperatorInitMixin):
             mutated_term = solver.op_builders["add"].fn(term, delta_term)
             if self.simplifier is not None:
                 mutated_term = self.simplifier.mutate_term(solver, [mutated_term])
-            if self.check_validity and not is_valid(mutated_term, builders=solver.builders, counts_cache=solver.counts_cache):
+            if self.check_validity and not solver.is_valid(mutated_term):
                 mutated_term = None
+                continue 
 
             if self.min_d is not None: # check effectiveness of the operator
                 term1_sem, term2_sem, mutated_term_sem, *_ = solver.eval([term, other_term, mutated_term], return_outputs="list").outputs
@@ -937,6 +921,7 @@ class SGX(TermCrossover, OperatorInitMixin):
                 dist2 = l2_distance(term2_sem, mutated_term_sem)
                 if dist1 < self.min_d or dist2 < self.min_d:
                     mutated_term = None
+                    continue
             if mutated_term is not None:
                 break
 
@@ -1018,12 +1003,8 @@ class CM(PositionMutation, OperatorInitMixin, TermsListener):
         
         best_term = self.index.get_repr_term(best_sem_id)
         
-        mutated_term = replace_pos_protected(position, best_term, solver.builders, 
-                            depth_cache=solver.depth_cache,
-                            counts_cache=solver.counts_cache,
-                            pos_context_cache=solver.pos_context_cache.setdefault(term, {}),
-                            max_term_depth=solver.max_term_depth)
-                                             
+        mutated_term = solver.replace_position(term, position, best_term)
+
         return mutated_term
 
     

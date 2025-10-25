@@ -15,8 +15,8 @@ from initialization import RHH, Initialization, UpToDepth
 from mutation import CO, Dedupl, Mutation, PO, RPX, RPM, Reduce
 from selection import Finite, TournamentSelection
 from spatial import VectorStorage
-from term import Builder, Builders, Op, Term, TermPos, Value, Variable, evaluate, get_counts, get_depth, \
-                    get_fn_arity, match_root, parse_term, replace_pos_protected
+from term import Builder, Builders, Op, Term, TermGenContext, TermPos, Value, Variable, evaluate, get_counts, get_depth, \
+                    get_fn_arity, get_pos_constraints, get_pos_sibling_counts, get_positions, is_valid, match_root, parse_term, replace_pos, replace_pos_protected
 from sklearn.base import BaseEstimator, RegressorMixin
 
 from torch_alg import nmse_loss_builder
@@ -47,7 +47,7 @@ def fit_0(fitness: torch.Tensor,
     if torch.isclose(best_fitness, zero, rtol = rtol, atol = atol):
         best_found = True
     return best_id, best_found
-    s
+    
 def timed(fn: Callable, key: str, metrics: dict) -> Callable:
     ''' Decorator to time function execution '''
     def wrapper(*args, **kwargs):
@@ -245,7 +245,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         self.var_builder = None
         if free_vars is not None and len(free_vars) > 0 and (self.max_vars > 0):
-            vars, var_binding = self.get_vars(free_vars)
+            vars, var_binding = self._get_vars(free_vars)
             self.var_binding = var_binding
             self.vars = {v.var_id: v for v in vars}
             self.var_builder = Builder("x", self._alloc_var, 0, self.min_vars, self.max_vars)
@@ -336,7 +336,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 t_listener.register_terms(self, [x], binding.unsqueeze(0))
         pass
         
-    def get_vars(self, free_vars):
+    def _get_vars(self, free_vars):
         vars = []
         var_binding = {}
         for i, xi in enumerate(free_vars):
@@ -458,7 +458,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         return 
 
-    def breed(self, population: list[Term]) -> list[Term]:
+    def _breed(self, population: list[Term]) -> list[Term]:
         ''' Pipeline that mutates parents and then applies crossover on pairs. One-point operations '''
 
         # caches 
@@ -485,7 +485,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         return children
     
-    def _validate_term(self, term: Term) -> bool:
+    def _validate_patterns(self, term: Term) -> bool:
         for fpattern in self.fpatterns:
             match = match_root(term, fpattern, prev_matches=self.match_cache)
             if match is not None:
@@ -507,7 +507,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 key = miss_key
                 term = Op(op_id, args)
                 self.syntax[signature] = term 
-            if not self._validate_term(term):
+            if not self._validate_patterns(term):
                 self.syntax.pop(signature, None)
                 return None
             self.metrics[key] = self.metrics.get(key, 0) + 1
@@ -526,7 +526,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         #     def _alloc_op(*args):
         #         self.metrics[miss_key] = self.metrics.get(miss_key, 0) + 1
         #         term = Op(op_id, args)
-        #         if self._validate_term(term):
+        #         if self.validate_term(term):
         #             return term
         #         return None
             
@@ -608,7 +608,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self._timed_eval(population)
         self._checkpoint_metrics()
         while self.gen < self.max_gen and self.evals < self.max_evals and self.root_evals < self.max_root_evals:
-            population = self.breed(population) 
+            population = self._breed(population) 
             self._timed_eval(population)
             self.gen += 1
             self._checkpoint_metrics()
@@ -646,6 +646,33 @@ class GPSolver(BaseEstimator, RegressorMixin):
         term_depth = get_depth(term, self.depth_cache)
         return term_depth
     
+    def get_positions(self, term: Term) -> list[TermPos]:
+        term_pos = get_positions(term, self.pos_cache)
+        return term_pos
+    
+    def get_gen_constraints(self, term: Term, pos: TermPos) -> tuple[TermGenContext, np.ndarray]:
+        start_context = get_pos_constraints(pos, self.builders, self.counts_cache, 
+                                            self.pos_context_cache.setdefault(term, {}))
+        arg_counts = get_pos_sibling_counts(pos, self.builders)
+        return start_context, arg_counts
+
+    def replace_position(self, term: Term, pos: TermPos, new_subterm: Term,
+                         with_validation = True) -> Optional[Term]:
+        if with_validation:
+            child = replace_pos_protected(pos, new_subterm, self.builders,
+                                            depth_cache=self.depth_cache,
+                                            counts_cache=self.counts_cache,
+                                            pos_context_cache=self.pos_context_cache.setdefault(term, {}),
+                                            max_term_depth=self.max_term_depth)
+        else:
+            child = replace_pos(pos, new_subterm, self.builders)
+        return child    
+
+    def is_valid(self, term: Term) -> bool:        
+        term_is_valid = is_valid(term, builders=self.builders, counts_cache=self.counts_cache)
+        pattern_valid = self._validate_patterns(term)
+        return term_is_valid and pattern_valid
+    
     def _set_best_term(self, best_term: Term, best_outputs: torch.Tensor, best_fitness: torch.Tensor):
         self.best_term = best_term
         self.best_outputs = best_outputs
@@ -663,7 +690,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.gen_metrics["best_counts"] = best_counts.tolist()
         self.gen_metrics["best_term"] = str(best_term)
     
-    def check_trivial(self): 
+    def _check_trivial(self): 
         const_val = self.find_any_const(self.target.unsqueeze(0))
         if const_val is not None: # NOTE: or torch.any ??? config option 
             best_term = Value(const_val) #len(self.const_binding))
@@ -694,7 +721,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             self: Returns the instance itself.
         """
         self._reset_state(free_vars=X, target=y)
-        if self.check_trivial():
+        if self._check_trivial():
             return self
         try:
             self._loop()
@@ -719,7 +746,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if not self.is_fitted_ or self.best_term is None:
             raise RuntimeError("Solver is not fitted yet")
         
-        _, var_binding = self.get_vars(X)
+        _, var_binding = self._get_vars(X)
         
         def get_binding(root: Term, term: Term) -> Optional[torch.Tensor]:
             if isinstance(term, Variable):
