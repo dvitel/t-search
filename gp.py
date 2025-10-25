@@ -12,12 +12,11 @@ from time import perf_counter
 import numpy as np
 import torch
 from initialization import RHH, Initialization, UpToDepth
-from mutation import CO, Dedupl, Mutation, PO, RPX, RPM, Reduce
-from selection import Finite, TournamentSelection
-from spatial import VectorStorage
+# from mutation import CO, Dedupl, Mutation, PO, RPX, RPM, Reduce
 from term import Builder, Builders, Op, Term, TermGenContext, TermPos, Value, Variable, evaluate, get_counts, get_depth, \
                     get_fn_arity, get_pos_constraints, get_pos_sibling_counts, get_positions, is_valid, match_root, parse_term, replace_pos, replace_pos_protected
 from sklearn.base import BaseEstimator, RegressorMixin
+from operators import Operator, TS, RPM, RPX
 
 from torch_alg import nmse_loss_builder
 from util import OperatorInitMixin, TermsListener, stack_rows  
@@ -68,7 +67,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 fit_condition = partial(fit_0, rtol = 1e-04, atol = 1e-03),
                 init: Initialization = RHH(),
                 eval_fn = evaluate,
-                pipeline: list['Mutation'] = [ TournamentSelection(), RPM(), RPX() ],
+                pipeline: list['Operator'] = [ TS(), RPM(), RPX() ],
                 ops_counts: dict[str, tuple[int, int]] = {},
                 forbid_patterns: list[str] = [],
                 # next is more optimized
@@ -841,6 +840,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 if __name__ == "__main__":
 
     from torch_alg import alg_ops, koza_1, test_0
+    from operators import PO, Elitism, TS, RPM, RPX, Dedupl, CO
     import json
     
     device = "cuda"
@@ -859,14 +859,14 @@ if __name__ == "__main__":
                                     # Finite(), 
                                     PO(num_vals = 10, frac=1.0, lr=1,
                                                         syn_simplify=None)
-                                                        # syn_simplify=SynSimplify()),
-                                    # ConstOptimization(num_vals = 20, lr=1.0,
+                                                        # syn_simplify=Reduce()),
+                                    # CO(num_vals = 20, lr=1.0,
                                     #                     num_evals = 7,
                                     #                     loss_threshold = 1e-2),
                                     # Elitism(size = 10),
-                                    # TournamentSelection(), 
-                                    # PointRandMutation(), 
-                                    # PointRandCrossover(), 
+                                    # TS(), 
+                                    # RPM(), 
+                                    # RPX(), 
                                     # Dedupl(), 
                                   ],
                         # mutations=[PointRandMutation(), PointRandCrossover(), Dedupl(), ConstOptimization1(lr=1.0)],

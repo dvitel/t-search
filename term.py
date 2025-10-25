@@ -19,7 +19,7 @@ from functools import partial
 import inspect
 from itertools import cycle, product
 import math
-from typing import Any, Callable, Literal, Optional, Sequence
+from typing import Any, Callable, Generator, Literal, Optional, Sequence
 
 import numpy as np
 import torch
@@ -1694,6 +1694,24 @@ def unique_term(root: Term, term_cache: dict[tuple, Term] | None = None) -> Term
     res = postorder_map(root, _map, with_cache = False)
 
     return res
+
+def shuffled_position_flow(positions: list[TermPos], leaf_proba: float | None = None, rnd: np.random.RandomState = np.random) -> Generator[TermPos]:
+    if len(positions) == 0:
+        return
+    ordered_pos_ids = shuffle_positions(positions, 
+                                    select_node_leaf_prob = leaf_proba, 
+                                    rnd = rnd)        
+    for pos_id in ordered_pos_ids:
+        yield positions[pos_id]
+
+def random_position_flow(positions: list[TermPos], rnd: np.random.RandomState = np.random) -> Generator[TermPos]:
+    if len(positions) == 0:
+        return
+    
+    while True:
+        pos_id = rnd.randint(len(positions))
+        yield positions[pos_id]
+
 
 if __name__ == "__main__":
 
