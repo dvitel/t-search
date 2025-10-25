@@ -21,32 +21,6 @@ from util import OperatorInitMixin, TermsListener, Operator, l2_distance, stack_
 if TYPE_CHECKING:
     from gp import GPSolver, Builders  # Import only for type checking
 
-# class Mutation(Operator):
-
-#     def _mutate(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
-#         ''' Should be implemented in subclasses '''
-#         return population # noop by default - reproduction
-    
-#     def exec(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
-#         children =  self._mutate(solver, population)
-#         return children
-    
-#     # def configure(self, solver: 'GPSolver'):
-#     #             # self, *, builders: Builders,
-#     #             #  pos_cache: dict[Term, list[TermPos]],
-#     #             #  pos_context_cache: dict[Term, dict[tuple[Term, int], TermGenContext]],
-#     #             #  counts_cache: dict[Term, np.ndarray], 
-#     #             #  depth_cache: dict[Term, int],
-#     #             #  device: str, torch_gen: torch.Generator, rnd: np.random.RandomState): 
-#     #     self.builders = solver.builders
-#     #     self.pos_cache = solver.pos_cache
-#     #     self.pos_context_cache = solver.pos_context_cache
-#     #     self.counts_cache = solver.counts_cache
-#     #     self.depth_cache = solver.depth_cache
-#     #     self.device = solver.device
-#     #     self.torch_gen = solver.torch_gen
-#     #     self.rnd = solver.rnd
-
 class PopulationMutation(Operator):
     ''' Abstract base for all population mutation operators '''
     pass 
@@ -283,7 +257,7 @@ class CO(TermMutation):
     def mutate_term(self, solver: 'GPSolver', term: Term) -> Term | None:
         ''' Optimizes all constants inside the term '''
         
-        term_loss = solver.get_term_fitness(term) 
+        term_loss, *_ = solver.eval(term, return_outputs="list").outputs
         
         optim_res = optimize_consts(term, term_loss, solver.fitness_fn, solver.builders,
                                     solver.ops, solver._get_binding,
@@ -336,12 +310,9 @@ class ReplWithBestInner(TermMutation):
             return child 
         inner_terms = get_inner_terms(term)
         # self.term_inner_terms_cache[term] = inner_terms
-        present_terms, present_fitness = solver.get_terms_fitness(inner_terms)
-        if len(present_fitness) == 0:
-            return term
-        inner_fitness = torch.stack(present_fitness, dim=0)
+        inner_fitness = solver.eval(inner_terms, return_fitness="tensor").fitness
         best_id = torch.argmin(inner_fitness).item()
-        best_inner = present_terms[best_id]
+        best_inner = inner_terms[best_id]
         self.term_best_inner_term_cache[term] = best_inner
         del inner_fitness
         return best_inner
@@ -521,7 +492,7 @@ class PO(PositionMutation, OperatorInitMixin, TermsListener):
         if optim_state is None:
             return None
         
-        pos_output = solver.get_cached_output(position.term)
+        pos_output, *_ = solver.eval(position.term, return_outputs="list").outputs
         output_range = stack_rows([pos_output, solver.target], target_size=solver.target.shape[0])
         range_mins = torch.minimum(output_range[0], output_range[1])
         range_maxs = torch.maximum(output_range[0], output_range[1])
@@ -786,9 +757,7 @@ class SDM(RPM):
             return None
         
         # check semantic difference
-        parent_sem = solver.get_cached_output(term)
-        solver.eval([mutated_term])
-        mutated_term_sem = solver.get_cached_output(mutated_term)
+        parent_sem, mutated_term_sem, *_ = solver.eval([term, mutated_term], return_outputs="list").outputs
         dist = l2_distance(parent_sem, mutated_term_sem)
         if dist < self.min_d or dist > self.max_d:
             return None        
@@ -914,16 +883,11 @@ class SDX(RPX):
             return None
         
         # check semantic difference
-        term1_sem = solver.get_cached_output(term)
-        term2_sem = solver.get_cached_output(other_term)
-        solver.eval([mutated_term])
-        mutated_term_sem = solver.get_cached_output(mutated_term)
+        term1_sem, term2_sem, mutated_term_sem, *_ = solver.eval([term, other_term, mutated_term], return_outputs="list").outputs
         dist1 = l2_distance(term1_sem, mutated_term_sem)
-        if dist1 < self.min_d or dist1 > self.max_d:
-            return None       
         dist2 = l2_distance(term2_sem, mutated_term_sem)
-        if dist2 < self.min_d or dist2 > self.max_d:
-            return None
+        if dist1 < self.min_d or dist1 > self.max_d or dist2 < self.min_d or dist2 > self.max_d:
+            return None       
 
         return mutated_term 
 
@@ -968,10 +932,7 @@ class SGX(TermCrossover, OperatorInitMixin):
                 mutated_term = None
 
             if self.min_d is not None: # check effectiveness of the operator
-                term1_sem = solver.get_cached_output(term)
-                term2_sem = solver.get_cached_output(other_term)
-                solver.eval([mutated_term])
-                mutated_term_sem = solver.get_cached_output(mutated_term)
+                term1_sem, term2_sem, mutated_term_sem, *_ = solver.eval([term, other_term, mutated_term], return_outputs="list").outputs
                 dist1 = l2_distance(term1_sem, mutated_term_sem)
                 dist2 = l2_distance(term2_sem, mutated_term_sem)
                 if dist1 < self.min_d or dist2 < self.min_d:
@@ -1031,9 +992,9 @@ class CM(PositionMutation, OperatorInitMixin, TermsListener):
         if self.index_init_depth is not None and self.index.len_sem() == 0: 
             init_op = UpToDepth(self.index_init_depth, force_pop_size=False)
             lib_terms = init_op(solver, pop_size=self.index_max_size)
-            solver.eval(lib_terms)
-            semantics = solver.get_cached_outputs(lib_terms, return_tensor=True)
+            semantics = solver.eval(lib_terms, return_outputs="tensor").outputs
             self.index.insert(lib_terms, semantics) 
+            del semantics
         pass 
 
     def register_terms(self, solver, terms, semantics):
@@ -1068,12 +1029,13 @@ class CM(PositionMutation, OperatorInitMixin, TermsListener):
     
     def mutate_term(self, solver: 'GPSolver', term: Term, parents: Sequence[Term], children: Sequence[Term]) -> Term | None:
 
-        term_sem = solver.get_cached_output(term)
+        term_sem, *_ = solver.eval(term, return_outputs="list").outputs
         if term not in self.inv_cache.term_semantics:
             self.inv_cache.term_semantics[term] = get_desired_semantics(term_sem)
 
-        self.desired_at_pos = invert(term, self.desired_target, [self.inv_cache.term_semantics[term]], solver.get_cached_outputs, 
-                                self.inv_cache.term_semantics, self.op_invs)
+        self.desired_at_pos = invert(term, self.desired_target, [self.inv_cache.term_semantics[term]], 
+                                     lambda args: solver.eval(args, return_outputs="list").outputs, 
+                                     self.inv_cache.term_semantics, self.op_invs)
         
         child = super().mutate_term(solver, term, parents, children)
 
@@ -1109,9 +1071,9 @@ class CX(TermCrossover, OperatorInitMixin, TermsListener):
         if self.index_init_depth is not None and self.index.len_sem() == 0: 
             init_op = UpToDepth(self.index_init_depth, force_pop_size=False)
             lib_terms = init_op(solver, pop_size=self.index_max_size)
-            solver.eval(lib_terms)
-            semantics = solver.get_cached_outputs(lib_terms, return_tensor=True)
+            semantics = solver.eval(lib_terms, return_outputs="tensor").outputs
             self.index.insert(lib_terms, semantics) 
+            del semantics
         pass 
 
     def register_terms(self, solver, terms, semantics):
@@ -1125,11 +1087,10 @@ class CX(TermCrossover, OperatorInitMixin, TermsListener):
 
     def crossover_terms(self, solver: 'GPSolver', term: Term, other_term: Term) -> Term | None:
 
-        term_sem = solver.get_cached_output(term)
+        term_sem, other_term_sem, *_ = solver.eval([term, other_term], return_outputs="list").outputs
+
         if term not in self.term_curr:
             self.inv_cache.term_semantics[term] = get_desired_semantics(term_sem)
-
-        other_term_sem = solver.get_cached_output(other_term)
         if other_term not in self.term_curr:
             self.inv_cache.term_semantics[other_term] = get_desired_semantics(other_term_sem)        
 
@@ -1138,7 +1099,8 @@ class CX(TermCrossover, OperatorInitMixin, TermsListener):
 
 
         self.desired_at_pos = invert(term, mid_desired, [self.inv_cache.term_semantics[term], self.inv_cache.term_semantics[other_term]], 
-                                     solver.get_cached_outputs, self.term_curr, self.op_invs)
+                                     lambda args: solver.eval(args, return_outputs="list").outputs, 
+                                     self.inv_cache.term_semantics, self.op_invs)
         
         child = PositionMutation.mutate_term(self, solver, term)
 

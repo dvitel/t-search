@@ -19,9 +19,9 @@ class Selection(Operator):
         self.replace = replace
     
     def exec(self, solver: 'GPSolver', population):
-        return self._select(solver, population, solver.pop_size)
+        return self.select(solver, population, solver.pop_size)
     
-    def _select(self, solver: 'GPSolver', population: Sequence[Term], selection_size: int) -> Sequence[Term]:
+    def select(self, solver: 'GPSolver', population: Sequence[Term], selection_size: int) -> Sequence[Term]:
         children = solver.rnd.choice(population, selection_size, replace=self.replace).tolist()
         return children
 
@@ -32,12 +32,9 @@ class TournamentSelection(Selection):
         super().__init__(name)
         self.tournament_size = tournament_size
 
-    def _select(self, solver: 'GPSolver', population, selection_size: int) -> Sequence[Term]:
+    def select(self, solver: 'GPSolver', population, selection_size: int) -> Sequence[Term]:
         ''' Fitness is 1d tensor of fitness selected for tournament '''
-        present_terms, fitness_list = solver.get_terms_fitness(population)
-        if len(fitness_list) == 0:
-            return population
-        fitness = torch.stack(fitness_list, dim=0)
+        fitness = solver.eval(population, return_fitness="tensor").fitness
         selected_ids = torch.randint(fitness.shape[0], (selection_size, self.tournament_size), dtype=torch.int, device=fitness.device,
                                     generator=solver.torch_gen)
         selected_fitnesses = fitness[selected_ids]
@@ -45,7 +42,7 @@ class TournamentSelection(Selection):
         best_ids = torch.gather(selected_ids, dim=-1, index = best_id_id.unsqueeze(-1)).squeeze(-1)
         del selected_ids, selected_fitnesses, best_id_id
         del fitness
-        children = [present_terms[best_id] for best_id in best_ids.tolist()]
+        children = [population[best_id] for best_id in best_ids.tolist()]
         return children
     
 class LexicaseSelection(Selection):
@@ -55,9 +52,8 @@ class LexicaseSelection(Selection):
         super().__init__(name)
         self.nan_error = nan_error
 
-    def _select(self, solver: 'GPSolver', population, selection_size: int) -> Sequence[Term]:
-        outputs_list = [solver.get_cached_output(term) for term in population]
-        outputs = stack_rows(outputs_list, target_size=solver.target.shape[0])
+    def select(self, solver: 'GPSolver', population, selection_size: int) -> Sequence[Term]:
+        outputs = solver.eval(population, return_outputs="tensor").outputs
 
         nan_interactions = torch.abs(outputs - solver.target)
 
@@ -96,13 +92,11 @@ class Elitism(Operator):
 
     def __call__(self, solver: 'GPSolver', population: Sequence[Term], next_ops: list['Operator'] = []):
         elite: list[Term] = []
-        present_terms, present_fitness = solver.get_terms_fitness(population)
-        if len(present_fitness) == 0:
-            return population
-        fitness = torch.stack(present_fitness, dim=0)
+        fitness = solver.eval(population, return_fitness="tensor").fitness
         sorted_ids = torch.argsort(fitness, dim=0)
         elite_ids = sorted_ids[:self.elite_size].tolist()
-        elite = [present_terms[i] for i in elite_ids]
+        del fitness, sorted_ids
+        elite = [population[i] for i in elite_ids]
         # bad_ids = sorted_ids[-self.elite_size:].tolist()
         # passed_population = [] 
         # bad_id_set = set(bad_ids)
@@ -138,31 +132,30 @@ class STS(TournamentSelection):
         self.rtol = rtol
         self.atol = atol
 
-    def _select(self, solver: 'GPSolver', population: Sequence[Term], selection_size: int) -> Sequence[Term]:
+    def select(self, solver: 'GPSolver', population: Sequence[Term], selection_size: int) -> Sequence[Term]:
         half_size = selection_size // 2
-        half_parents = super()._select(solver, population, half_size + (selection_size % 2)) 
-        half_parents_sems = solver.get_cached_outputs(half_parents, return_tensor=True)
+        half_parents = super().select(solver, population, half_size + (selection_size % 2)) 
+        half_parents_sems = solver.eval(half_parents, return_outputs="tensor").outputs
         children = []
         for i in range(half_size):
             first_parent = half_parents[i]
             first_sem = half_parents_sems[i]
             # find second parent
             candidiates = solver.rnd.choice(population, size = self.tournament_size)
-            candidate_sem = solver.get_cached_outputs(candidiates, return_tensor=True)
+            candidate_sem = solver.eval(candidiates, return_outputs="tensor").outputs
             # cand_dist = torch.sqrt((candidate_sem - first_sem) ** 2)
             mask = torch.isclose(candidate_sem, first_sem, rtol=self.rtol, atol=self.atol).all(dim=-1)
+            del candidate_sem
             filter_ids, = torch.where(~mask)
             filtered_candidates = [candidiates[i] for i in filter_ids.tolist()]
-            present_candidates, present_fitness = solver.get_terms_fitness(filtered_candidates)
-            if len(present_fitness) == 0:
-                children.append(first_parent)
-                children.append(candidiates[0]) # random
-                continue
-            c_fitness = torch.stack(present_fitness, dim=0)
+            c_fitness = solver.eval(filtered_candidates, return_fitness="tensor").fitness
             best_id = torch.argmin(c_fitness).item()
-            best_parent = present_candidates[best_id]
+            best_parent = candidiates[best_id]
+            del c_fitness
             children.append(first_parent)
             children.append(best_parent)
+
+        del half_parents_sems
 
         if selection_size % 2 == 1:
             children.append(half_parents[-1])
@@ -174,10 +167,10 @@ class CTS(TournamentSelection):
     def __init__(self, name: str = "CTS", **kwargs):
         super().__init__(name, **kwargs)    
 
-    def _select(self, solver: 'GPSolver', population: Sequence[Term], selection_size: int) -> Sequence[Term]:
+    def select(self, solver: 'GPSolver', population: Sequence[Term], selection_size: int) -> Sequence[Term]:
         half_size = selection_size // 2
-        half_parents = super()._select(solver, population, half_size + (selection_size % 2)) 
-        half_parents_sems = solver.get_cached_outputs(half_parents, return_tensor=True)
+        half_parents = super().select(solver, population, half_size + (selection_size % 2)) 
+        half_parents_sems = solver.eval(half_parents, return_outputs="tensor").outputs
         half_parents_dist = l2_distance(half_parents_sems, solver.target)
         children = []
         for i in range(half_size):
@@ -186,10 +179,11 @@ class CTS(TournamentSelection):
             first_target_dist = half_parents_dist[i]
             # find second parent
             candidiates = solver.rnd.choice(population, size = self.tournament_size)
-            candidate_sem = solver.get_cached_outputs(candidiates, return_tensor=True)
+            candidate_sem = solver.eval(candidiates, return_outputs="tensor").outputs
 
             candidate_target_dist = l2_distance(candidate_sem, solver.target)
             candidate_parent_dist = l2_distance(candidate_sem, first_sem)
+            del candidate_sem
             cand_scores = candidate_target_dist / candidate_parent_dist * (1.0 + torch.abs(first_target_dist - candidate_target_dist))
             cand_scores.nan_to_num_(nan=torch.inf)
             best_cand_id = torch.argmin(cand_scores).item()
@@ -197,6 +191,8 @@ class CTS(TournamentSelection):
 
             children.append(first_parent)
             children.append(best_candidate)
+
+        del half_parents_sems
 
         if selection_size % 2 == 1:
             children.append(half_parents[-1])

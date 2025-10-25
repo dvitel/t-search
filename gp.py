@@ -7,7 +7,7 @@
 '''
 
 from functools import partial
-from typing import Callable, Literal, Optional, Sequence
+from typing import Callable, Literal, NamedTuple, Optional, Sequence
 from time import perf_counter
 import numpy as np
 import torch
@@ -23,6 +23,10 @@ from torch_alg import nmse_loss_builder
 from util import OperatorInitMixin, TermsListener, stack_rows  
 
 GPSolverStatus = Literal["INIT", "MAX_GEN", "MAX_EVAL", "MAX_ROOT_EVAL", "SOLVED"]
+
+class TermEvals(NamedTuple):
+    outputs: list[torch.Tensor] | torch.Tensor
+    fitness: None | list[torch.Tensor] | torch.Tensor
 
 class EvSearchTermination(Exception):
     ''' Reaching maximum of evals, gens, ops etc '''    
@@ -382,7 +386,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if self.root_evals > self.max_root_evals:
             raise EvSearchTermination("MAX_ROOT_EVAL", "Maximum number of root evaluations reached")
         
-    def eval(self, terms: list[Term]):     
+    def _eval(self, terms: list[Term]):     
 
         self.new_term_outputs.clear()   
             
@@ -453,19 +457,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.new_term_outputs.clear()
 
         return 
-    
-    def get_terms_fitness(self, terms: list[Term]):
-        present_terms = []
-        present_fitness = []
-        for term in terms:
-            f = self.term_fitness.get(term, None)
-            if f is not None:
-                present_terms.append(term)
-                present_fitness.append(f)
-        return present_terms, present_fitness
-    
-    def get_term_fitness(self, term: Term) -> Optional[torch.Tensor]:
-        return self.term_fitness.get(term, None)
 
     def breed(self, population: list[Term]) -> list[Term]:
         ''' Pipeline that mutates parents and then applies crossover on pairs. One-point operations '''
@@ -541,7 +532,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             
         return _alloc_op
     
-    def get_cached_output(self, term: Term) -> Optional[torch.Tensor]:
+    def _get_cached_output(self, term: Term) -> Optional[torch.Tensor]:
         if isinstance(term, Variable):
             return self.var_binding[term.var_id]
         if isinstance(term, Value):
@@ -558,14 +549,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         #     return self.const_term_outputs[term]
         return None
     
-    def get_cached_outputs(self, terms: list[Term], return_tensor = False) -> list[Optional[torch.Tensor]] | torch.Tensor:
-        res = [self.get_cached_output(t) for t in terms]
-        if return_tensor:
-            res = stack_rows(res, target_size=self.target.shape[0])
-        return res 
-    
     def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:        
-        res_in_cache = self.get_cached_output(term)      
+        res_in_cache = self._get_cached_output(term)      
 
         if res_in_cache is None:
             self.metrics["eval_cache_miss"] = self.metrics.get("eval_cache_miss", 0) + 1
@@ -588,17 +573,43 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.gen_metrics = {}
         self.metrics["gens"].append(self.gen_metrics)
 
-    def timed_eval(self, population):
-        return timed(self.eval, "eval_time", self.gen_metrics)(population)
+    def _timed_eval(self, population):
+        return timed(self._eval, "eval_time", self.gen_metrics)(population)
+    
+    # NOTE: this is public interface to eval from operators.
+    def eval(self, terms: Sequence[Term] | Term, *,
+                return_outputs: Literal["list", "tensor"] = "list",
+                return_fitness: Literal["none", "list", "tensor"] = "none") -> TermEvals:
+        ''' Evaluates given terms. If terms are already in cache, results returned without affecting the metrics. 
+            Calls _eval internally, therefore could cause an avalanche of evaluations of new terms through listeners. 
+        '''
+        if isinstance(terms, Term):
+            terms = [terms]
+        outputs = [ self._get_cached_output(term) for term in terms ]
+        eval_ids = [ i for i, output in enumerate(outputs) if output is None ]
+        eval_terms = [ terms[i] for i in eval_ids ]
+        if len(eval_terms) > 0:
+            self._timed_eval(eval_terms)
+            eval_outputs = [ self._get_cached_output(term) for term in eval_terms ]
+            for i, eval_output in zip(eval_ids, eval_outputs):
+                outputs[i] = eval_output
+        if return_outputs == "tensor":
+            outputs = stack_rows(outputs, target_size=self.target.shape[0])
+        fitness = None 
+        if return_fitness != "none":
+            fitness = [ self.term_fitness[term] for term in terms ]
+            if return_fitness == "tensor":
+                fitness = torch.stack(fitness, dim=0)
+        return TermEvals(outputs, fitness)
 
     def _loop(self):   
         population = timed(self.init, "init_time", self.gen_metrics)(self, self.pop_size)
         self.gen_metrics.update(self.init.metrics)
-        self.timed_eval(population)
+        self._timed_eval(population)
         self._checkpoint_metrics()
         while self.gen < self.max_gen and self.evals < self.max_evals and self.root_evals < self.max_root_evals:
             population = self.breed(population) 
-            self.timed_eval(population)
+            self._timed_eval(population)
             self.gen += 1
             self._checkpoint_metrics()
 

@@ -131,9 +131,9 @@ class SDI(Initialization):
         if len(population) == 0:
             terminal_builders = solver.builders.get_leaf_builders()
             leaf_terms = [t for leaf_builder in terminal_builders for t in [leaf_builder.fn()] if t is not None]
-            solver.eval(leaf_terms)
-            term_outputs = solver.get_cached_outputs(leaf_terms, return_tensor=True)
+            term_outputs = solver.eval(leaf_terms, return_outputs="tensor").outputs
             self.index.insert(leaf_terms, term_outputs)
+            del term_outputs
             population = self.index.get_repr_terms()
         if len(population) >= pop_size:
             return population[:pop_size]
@@ -160,12 +160,11 @@ class SDI(Initialization):
             term = rnd_builder.fn(*args)
             if term is None:
                 continue
-            solver.eval([term])
-            term_output, = solver.get_cached_outputs([term], return_tensor=True)
-            is_const = solver.find_any_const(term_output)
+            term_outputs, *_ = solver.eval(term, return_outputs="list").outputs
+            is_const = solver.find_any_const(term_outputs)
             if is_const is not None:
                 continue
-            self.index.insert([term], term_output.unsqueeze(0))
+            self.index.insert([term], term_outputs.unsqueeze(0))
         population = self.index.get_repr_terms()
         return population
 
@@ -208,8 +207,9 @@ class CI(SDI):
         while len(ci_population) < pop_size and (i < max_try_count):
             i += 1
             population = super().pop_init(solver, i * pop_size)
-            semantics = solver.get_cached_outputs(population, return_tensor=True)
+            semantics = solver.eval(population, return_outputs="tensor").outputs
             np_semantics = semantics.cpu().numpy()
+            del semantics
             convex_hull = ConvexHull(np_semantics)
             vertex_ids = convex_hull.vertices
             ci_population = [population[vid] for vid in vertex_ids]
