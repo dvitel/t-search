@@ -1,30 +1,30 @@
 {
     // Use workspace interpreter (adjust path if needed)
     "python.defaultInterpreterPath": "${workspaceFolder}/t-search-env/bin/python",
-    // Format on save and organize imports
-    "editor.formatOnSave": true,
-    "editor.codeActionsOnSave": {
-        "source.organizeImports": "explicit"
-    },
-    // Make the Python extension the default formatter and tell it to use Black
-    "[python]": {
-        "editor.defaultFormatter": "ms-python.black-formatter"
-    },
-    "black-formatter.args": [
-        "--config",
-        "${workspaceFolder}/pyproject.toml"
-    ],
-    "flake8.args": [
-        "--config",
-        "${workspaceFolder}/pyproject.toml"
-    ],
-    "isort.args": [
-        "--settings-file",
-        "${workspaceFolder}/pyproject.toml"
-    ],
-    "mypy-type-checker.args": [
-        "--config-file=${workspaceFolder}/pyproject.toml"
-    ],
+    // // Format on save and organize imports
+    // "editor.formatOnSave": true,
+    // "editor.codeActionsOnSave": {
+    //     "source.organizeImports": "explicit"
+    // },
+    // // Make the Python extension the default formatter and tell it to use Black
+    // "[python]": {
+    //     "editor.defaultFormatter": "ms-python.black-formatter"
+    // },
+    // "black-formatter.args": [
+    //     "--config",
+    //     "${workspaceFolder}/pyproject.toml"
+    // ],
+    // "flake8.args": [
+    //     "--config",
+    //     "${workspaceFolder}/pyproject.toml"
+    // ],
+    // "isort.args": [
+    //     "--settings-file",
+    //     "${workspaceFolder}/pyproject.toml"
+    // ],
+    // "mypy-type-checker.args": [
+    //     "--config-file=${workspaceFolder}/pyproject.toml"
+    // ],
     // Pytest config
     "python.testing.pytestEnabled": true,
     "python.testing.unittestEnabled": false,
