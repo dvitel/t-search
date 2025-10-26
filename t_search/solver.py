@@ -15,32 +15,15 @@ import torch
 from operators import RHH, RPM, RPX, TS, Initialization, Operator, TermsListener
 from sklearn.base import BaseEstimator, RegressorMixin
 
+from .utils.metrics import nmse_loss_builder
+
 # from mutation import CO, Dedupl, Mutation, PO, RPX, RPM, Reduce
-from .term import (
-    Builder,
-    Builders,
-    Op,
-    Term,
-    TermGenContext,
-    TermPos,
-    UnifyBindings,
-    Value,
-    Variable,
-    evaluate,
-    get_counts,
-    get_depth,
-    get_fn_arity,
-    get_pos_constraints,
-    get_pos_sibling_counts,
-    get_positions,
-    is_valid,
-    match_root,
-    parse_term,
-    replace_pos,
-    replace_pos_protected,
-)
-from .torch_alg import nmse_loss_builder
-from .util import stack_rows
+from syntax import Op, Term, TermPos, Value, Variable, evaluate, parse_term
+from syntax.generation import Builder, Builders, TermGenContext, get_fn_arity
+from syntax.unification import UnifyBindings, match_root
+from syntax.stats import get_depth, get_positions
+from syntax.validation import get_counts, get_pos_constraints, get_pos_sibling_counts, is_valid
+from syntax.replacement import replace_pos, replace_pos_protected
 
 GPSolverStatus = Literal["INIT", "MAX_GEN", "MAX_EVAL", "MAX_ROOT_EVAL", "SOLVED"]
 
@@ -89,12 +72,23 @@ def timed(fn: Callable, key: str, metrics: dict) -> Callable:
 
     return wrapper
 
+default_alg_ops = {
+    "add": lambda a, b: a + b,
+    "mul": lambda a, b: a * b,
+    # "pow": lambda a, b: a ** b,
+    # "neg": lambda a: -a,
+    # "inv": lambda a: 1 / a,
+    # "exp": lambda a: torch.exp(a),
+    # "log": lambda a: torch.log(a),
+    # "sin": lambda a: torch.sin(a),
+    # "cos": lambda a: torch.cos(a),
+}
 
 class GPSolver(BaseEstimator, RegressorMixin):
 
     def __init__(
         self,
-        ops: dict[str, Callable],
+        ops: dict[str, Callable] = default_alg_ops,
         fitness_fn_builder: Callable = nmse_loss_builder,
         fit_condition=partial(fit_0, rtol=1e-04, atol=1e-03),
         init: Initialization = RHH(),
@@ -128,8 +122,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # not for fitness, see fit_0
         rnd_seed: Optional[int] = None,
         torch_rnd_seed: Optional[int] = None,
-        device="cpu",
-        dtype=torch.float32,
+        device:Literal["cpu", "cuda"]="cpu",
+        dtype:torch.dtype=torch.float32,
     ):
 
         self.ops = ops
@@ -450,6 +444,24 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if self.root_evals > self.max_root_evals:
             raise EvSearchTermination("MAX_ROOT_EVAL", "Maximum number of root evaluations reached")
 
+    def stack_rows(self, tensors: Sequence[torch.Tensor]) -> torch.Tensor:
+        if len(tensors) == 0:
+            return torch.empty((0, self.target.shape[0]), dtype=self.dtype, device=self.device)
+        if tensors[0].ndim == 1:
+            res = torch.empty((len(tensors), self.target.shape[0]), dtype=tensors[0].dtype, device=tensors[0].device)
+            for i, ti in enumerate(tensors):
+                res[i] = ti # assuming broadcastable
+            return res  
+        if tensors[0].ndim == 2:
+            sz = (sum(t.shape[0] for t in tensors), self.target.shape[0])
+            res = torch.empty(sz, dtype=tensors[0].dtype, device=tensors[0].device)
+            cur_start = 0
+            for ti in tensors:
+                res[cur_start:cur_start + ti.shape[0]] = ti
+                cur_start += ti.shape[0]
+            return res  
+        raise ValueError(f"Unsupported tensor shape: {tensors[0].shape}")
+
     def _eval(self, terms: list[Term]):
 
         self.new_term_outputs.clear()
@@ -467,7 +479,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         outputs = [self.new_term_outputs[t] for t in new_terms]
         if len(outputs) > 0:
-            semantics = stack_rows(outputs, target_size=self.target.shape[0])
+            semantics = self.stack_rows(outputs)
             finite_semantics_mask = torch.isfinite(semantics).all(dim=-1)  # we do not insert nans and infs
             (valid_ids,) = torch.where(finite_semantics_mask)
             (infinite_ids,) = torch.where(~finite_semantics_mask)
@@ -668,14 +680,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 outputs[i] = eval_output
         output_res: list | torch.Tensor = outputs
         if return_outputs == "tensor":
-            output_res = stack_rows(outputs, target_size=self.target.shape[0])
+            output_res = self.stack_rows(outputs)
         fitness_res: None | list | torch.Tensor = None
         if return_fitness != "none":
             fitness = [self.term_fitness[term] for term in terms]
             fitness_res = fitness
             if return_fitness == "tensor":
                 fitness_res = torch.stack(fitness, dim=0)
-        return TermEvals(outputs_res, fitness_res)
+        return TermEvals(output_res, fitness_res)
 
     def _loop(self):
         population = timed(self.init, "init_time", self.gen_metrics)(self, self.pop_size)
@@ -932,14 +944,13 @@ if __name__ == "__main__":
 
     from operators import CO, PO, RPM, RPX, TS, Dedupl, Elitism, Up2D
 
-    from .torch_alg import alg_ops, koza_1, test_0
+    from datasets import test_0
 
     device = "cuda"
     dtype = torch.float16
     rnd_seed = 42
 
     solver = GPSolver(
-        ops=alg_ops,
         device=device,
         dtype=dtype,
         rnd_seed=rnd_seed,

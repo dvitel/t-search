@@ -1,6 +1,7 @@
 from typing import TYPE_CHECKING
 
-from t_search.term import Term, TermPos, grow
+from syntax import Term, TermPos
+from syntax.generation import grow
 
 from .base import PositionMutation
 

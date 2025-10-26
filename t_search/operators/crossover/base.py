@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, Generator, Optional
 
-from t_search.term import Term, TermPos, Value, shuffled_position_flow
+from syntax import Term, TermPos, Value, shuffled_position_flow
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver

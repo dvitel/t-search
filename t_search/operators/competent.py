@@ -1,16 +1,18 @@
-''' 
+''' Common utilities for competent operators 
     Operation inversion for Competent Operators - Mutation and Crossover  
     Note that now inv operators work on combinatorial semantics - vector of sets of possible values     
 
     [s1, s2... sn]. If s1 is empty - any value works, if s1 is None - no value works.    
 '''
 
+from dataclasses import dataclass, field
 from math import prod
 import math
 from typing import Callable
 import torch
 
-from t_search.term import TRAVERSAL_EXIT_NODE, Op, Term, postorder_traversal
+from syntax import Term, Op
+from syntax.traverse import postorder_traversal, TRAVERSAL_EXIT_NODE
 
 
 DesiredSemantics = list[set[float] | None]  # list of sets of possible values for each dimension.
@@ -225,8 +227,59 @@ def invert(root: Term, target: DesiredSemantics, bad_semantics: list[DesiredSema
 
     return final 
 
-    
+def get_best_semantics(desired: DesiredSemantics, undesired: list[DesiredSemantics], all_semantics: torch.Tensor,):
+    assert len(desired) > 0
 
+    if any(d is None for d in desired): # unsat desired at position 
+        return None
 
+    # if all(len(d) == 0 for d in desired): # any term will work - shou
+    #     return None 
 
+    forbidden_mask = torch.zeros((all_semantics.shape[1],), dtype=torch.bool, device=all_semantics.device)
 
+    for forbidden in undesired:
+
+        if any(d is None for d in forbidden):
+            continue # unsat undesired - skip
+        
+        forbidden_close_mask = torch.ones((all_semantics.shape[1],), dtype=torch.bool, device=all_semantics.device)
+
+        for test_id, forbit_values in enumerate(forbidden):
+            if len(forbit_values) == 0:
+                continue 
+            sem_values = all_semantics[:, test_id].unsqueeze(-1) # (num_terms, 1)
+            forbidden_tensor = torch.tensor(list(forbit_values), dtype=all_semantics.dtype, device=all_semantics.device)
+            diffs = torch.abs(sem_values - forbidden_tensor.unsqueeze(0)) # (num_terms, num_forbidden)
+            close_mask = torch.any(diffs < 1e-5, dim=1) # (num_terms,)
+            forbidden_close_mask &= close_mask
+            del forbidden_tensor
+            if not torch.any(forbidden_close_mask):
+                break
+
+        forbidden_mask |= forbidden_close_mask
+
+    # test_ids = [i for i, d in enumerate(desired) if len(d) > 0]
+    # selected_semantics = all_semantics[:, test_ids]
+    sem_score = torch.zeros((all_semantics.shape[0],), dtype=all_semantics.dtype, device=all_semantics.device)
+    for test_id, allowed_values in enumerate(desired):
+        if len(allowed_values) == 0:
+            continue 
+        sem_values = all_semantics[:, test_id].unsqueeze(-1) # (num_terms, 1)
+        allowed_tensor = torch.tensor(list(forbit_values), dtype=all_semantics.dtype, device=all_semantics.device)
+        diffs = torch.abs(sem_values - allowed_tensor.unsqueeze(0)) # (num_terms, num_allowed)
+        sem_score += torch.min(diffs, dim=1).values # (num_terms,) 
+
+    sem_score[forbidden_mask] = torch.inf
+
+    best_sem_id = torch.argmin(sem_score).item()
+
+    if sem_score[best_sem_id] == torch.inf:
+        return None
+
+    return best_sem_id
+
+@dataclass 
+class InversionCache: 
+    term_semantics: dict[Term, DesiredSemantics] = field(default_factory=dict)
+    term_subtree_semantics: dict[Term, dict[tuple[Term, int], tuple[DesiredSemantics, list[DesiredSemantics]]]] = field(default_factory=dict)

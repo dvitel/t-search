@@ -1,0 +1,64 @@
+
+def lin_comb_value_builder(
+    term: Term,
+    semantics: torch.Tensor,
+    leaf_semantic_ids: dict[Term, int],
+    branch_semantic_ids: dict[Term, int],
+    const_ranges: torch.Tensor,
+    num_points: int,
+    sample_strategy: Callable = get_rand_interval_points,
+):
+    """
+    Represents symbol x as linear combination of free variables and constant - one W per symbol position in term
+    sample_grid_strategy - one of get_rand_chebyshev_points, get_rand_interval_points, get_rand_points
+    do not use full grid - too expensive
+    free_vars - tensor for variables x, y, z, etc and constant 1.
+    Convension - constant is first in semantics - should be reflected in free_vars and ranges
+
+    Goal is to find W - cocnstants that would bring us to target semantics
+    term is ignored - all vars and constants are samely repreesented
+    """
+    # TODO: ranges - are const ranges always - except of original free var grid
+    if len(term.args) == 0:  # leaf
+        semantic_ids = [*leaf_semantic_ids.values()]
+    else:  # branch - experimental - idea is to replace args A under (f A) by (f W * A), only applicable if all branches are evaluated
+        semantic_ids = [0, *(branch_semantic_ids.get(arg, None) for arg in term.args)]
+        assert all(bid is not None for bid in semantic_ids), "All branch semantic ids should be defined"
+    ranges = torch.tile(const_ranges, (len(semantic_ids), 1))
+    W = sample_strategy(num_points, ranges)  # what should we use as ranges here?
+    W.requires_grad = True  # we optimize this tensor
+    X = semantics[semantic_ids]
+
+    def term_op(W=W, X=X):
+        output = torch.matmul(W, X)  # W = 20 x 4, X = 4 x 256 ==> W * X = 20 x 256
+        return output
+
+    return (W, term_op)
+
+
+def const_value_builder(
+    term: Term,
+    semantics: torch.Tensor,
+    leaf_semantic_ids: dict[Term, int],
+    branch_semantic_ids: dict[Term, int],
+    const_ranges: torch.Tensor,
+    num_points: int,
+    sample_strategy: Callable = get_rand_interval_points,
+):
+    """
+    Represents constant c symbol only as weight.
+    Variables
+    """
+    if len(term.args) == 0:  # leaf
+        semantic_ids = [leaf_semantic_ids[term]]
+    else:  # branch - scale branch result
+        semantic_ids = [branch_semantic_ids[term]]
+    W = sample_strategy(num_points, const_ranges[torch.newaxis, :])  # ranges for constant
+    W.requires_grad = True  # we optimize this tensor
+    X = semantics[semantic_ids]
+
+    def term_op(W=W, X=X):
+        output = torch.matmul(W, X)
+        return output
+
+    return (W, term_op)

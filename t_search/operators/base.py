@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Sequence
 
 import torch
 
-from t_search.term import Term
+from syntax import Term
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver  # Import only for type checking

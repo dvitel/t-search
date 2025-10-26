@@ -1,10 +1,10 @@
-
+''' Adds syntax to plain vector storage '''
 
 from bisect import insort
 from pyparsing import Callable
 import torch
-from spatial import VectorStorage
-from t_search.term import Term
+from .base import VectorStorage
+from syntax import Term
 
 
 class TermVectorStorage:

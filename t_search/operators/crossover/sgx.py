@@ -2,8 +2,8 @@
 
 from .base import TermCrossover
 from ..mutation import Reduce
-from t_search.term import Term
-from t_search.util import l2_distance
+from syntax import Term
+from utils.metrics import l2
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
@@ -51,8 +51,8 @@ class SGX(TermCrossover):
 
             if self.min_d is not None: # check effectiveness of the operator
                 term1_sem, term2_sem, mutated_term_sem, *_ = solver.eval([term, other_term, mutated_term], return_outputs="list").outputs
-                dist1 = l2_distance(term1_sem, mutated_term_sem)
-                dist2 = l2_distance(term2_sem, mutated_term_sem)
+                dist1 = l2(term1_sem, mutated_term_sem)
+                dist2 = l2(term2_sem, mutated_term_sem)
                 if dist1 < self.min_d or dist2 < self.min_d:
                     mutated_term = None
                     continue

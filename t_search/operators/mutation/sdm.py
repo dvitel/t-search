@@ -3,8 +3,8 @@
 from .rpm import RPM
 from typing import TYPE_CHECKING
 
-from t_search.term import Term, TermPos
-from t_search.util import l2_distance
+from syntax import Term, TermPos
+from utils.metrics import l2
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
 
@@ -22,7 +22,7 @@ class SDM(RPM):
         
         # check semantic difference
         parent_sem, mutated_term_sem, *_ = solver.eval([term, mutated_term], return_outputs="list").outputs
-        dist = l2_distance(parent_sem, mutated_term_sem)
+        dist = l2(parent_sem, mutated_term_sem)
         if dist < self.min_d or dist > self.max_d:
             return None        
 

@@ -1,8 +1,8 @@
 
 from typing import TYPE_CHECKING, Optional
 from .base import TermMutation
-from t_search.term import Term, Value
-from t_search.torch_alg import OptimState, optimize_consts
+from syntax import Term, Value
+from .optimization import OptimState, optimize_consts
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver

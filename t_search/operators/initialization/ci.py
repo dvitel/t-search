@@ -3,8 +3,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 from scipy.spatial import ConvexHull
 
-from t_search.term import Term
-from t_search.term_spatial import TermVectorStorage
+from syntax import Term
+from spatial import TermVectorStorage
 
 from .sdi import SDI
 

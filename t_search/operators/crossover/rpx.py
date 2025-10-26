@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 from .base import PositionCrossover
-from t_search.term import Term, TermPos
+from syntax import Term, TermPos
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver

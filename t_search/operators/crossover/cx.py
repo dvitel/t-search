@@ -1,12 +1,14 @@
 from operator import invert
 from typing import TYPE_CHECKING
+
+from ..mutation import PositionMutation, CM
+
+from ..competent import InversionCache, alg_inv, get_desired_semantics
 from ..initialization import Up2D
 from ..base import TermsListener
 from .base import TermCrossover
-from ..mutation import PositionMutation, CM, InversionCache
-from t_search.term import Term, TermPos
-from term_spatial import TermVectorStorage
-from t_search.torch_alg_inv import get_desired_semantics, alg_inv
+from syntax import Term, TermPos
+from spatial import TermVectorStorage
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver

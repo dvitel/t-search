@@ -3,7 +3,8 @@
 from typing import TYPE_CHECKING, Generator, Optional, Sequence
 
 from ..base import Operator
-from t_search.term import Term, TermPos, shuffled_position_flow
+from syntax import Term, TermPos
+from syntax.flow import shuffled_position_flow
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver  # Import only for type checking

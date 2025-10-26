@@ -9,9 +9,8 @@ from ..base import TermsListener
 from .base import PositionMutation
 from .reduce import Reduce
 from spatial import VectorStorage
-from t_search.term import Term, TermPos, Value
-from t_search.torch_alg import OptimPoint, OptimState, get_pos_optim_state, optimize_positions
-from t_search.util import stack_rows, stack_rows_2d
+from syntax import Term, TermPos, Value
+from .optimization import OptimPoint, OptimState, get_pos_optim_state, optimize_positions
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
@@ -164,7 +163,7 @@ class PO(PositionMutation, TermsListener):
             return None
         
         pos_output, *_ = solver.eval(position.term, return_outputs="list").outputs
-        output_range = stack_rows([pos_output, solver.target], target_size=solver.target.shape[0])
+        output_range = solver.stack_rows([pos_output, solver.target])
         range_mins = torch.minimum(output_range[0], output_range[1])
         range_maxs = torch.maximum(output_range[0], output_range[1])
         output_range[0] = range_mins - self.delta
@@ -352,7 +351,7 @@ class PO(PositionMutation, TermsListener):
         ''' Adds hole and its semantics to index and outputs currently present fillings '''
         if len(holes) == 0:
             return []
-        semantics = stack_rows_2d([s for _, _, s in holes], target_size=solver.target.shape[0])
+        semantics = solver.stack_rows([s for _, _, s in holes])
 
         if self.normalize_semantics:
             means = torch.mean(semantics, dim=1, keepdim=True)

@@ -2,7 +2,8 @@
 
 from typing import TYPE_CHECKING, Optional
 
-from t_search.term import Term, grow
+from syntax import Term
+from syntax.generation import grow
 from .base import Initialization
 
 if TYPE_CHECKING:

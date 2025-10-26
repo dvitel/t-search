@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Sequence
 
 import torch
 
-from t_search.term import Term
+from syntax import Term
 from .ts import TS
 
 if TYPE_CHECKING:

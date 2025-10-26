@@ -1,7 +1,7 @@
 
 from typing import TYPE_CHECKING
-from t_search.term import Builder, Term
-from t_search.term_spatial import TermVectorStorage
+from syntax import Term
+from spatial import TermVectorStorage
 from .base import Initialization
 
 if TYPE_CHECKING:
@@ -35,7 +35,7 @@ class SDI(Initialization):
         global_try_count = 3 * (pop_size - self.index.len_sem())
         while (self.index.len_sem() < pop_size) and (global_try_count > 0): 
             global_try_count -= 1
-            rnd_builder: Builder = solver.rnd.choice(nonterminal_builders)
+            rnd_builder = solver.rnd.choice(nonterminal_builders)
             args = []
             try_count = 0
             for _ in range(rnd_builder.arity()):
