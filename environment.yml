@@ -1,0 +1,23 @@
+# conda env create -f environment.yml --prefix ./t-search-env
+
+name: t-search-env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python==3.10.13
+  - pytorch=2.5.1
+  - numpy=2.2.6
+  - pandas==2.3.1
+  - scikit-learn==1.7.1
+  - scipy==1.15.3
+  - sympy=1.14.0
+
+  # -- deve dependencies 
+  - seaborn
+  - matplotlib
+  - pytest
+  - black
+  - isort
+  - mypy
+  - flake8

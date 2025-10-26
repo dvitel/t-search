@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "t-search"
+version = "0.1.0"
+description = "A PyTorch-based, scikit-learn compatible solver for symbolic regression using geometric semantic genetic programming."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Dmytro Vitel" }]
+keywords = ["symbolic-regression", "genetic-programming", "term-solver", "semantic-search"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.10"
+
+dependencies = [
+  "torch>=2.5",
+  "numpy>=2.2",
+  "pandas>=2.3",
+  "scikit-learn>=1.7",
+  "scipy>=1.15",
+  "sympy>=1.14"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "seaborn",
+    "matplotlib",
+    "black",
+    "isort",
+    "mypy",
+    "flake8"
+]
+
+# [project.scripts]
+# t-search = "t_search.__main__:main"
+
+[tool.black]
+line-length = 121
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+
+[tool.mypy]
+python_version = 3.10
+check_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.flake8]
+max-line-length = 121
+extend-ignore = ["E203", "W503"]
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-q"
+testpaths = ["tests"]
+
+[project.urls]
+Homepage = "https://github.com/dvitel/t-search"
+Issues = "https://github.com/dvitel/t-search/issues"

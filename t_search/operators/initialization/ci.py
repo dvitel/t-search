@@ -1,27 +1,31 @@
-
-
 from typing import TYPE_CHECKING
+
 import numpy as np
+from scipy.spatial import ConvexHull
+
 from t_search.term import Term
 from t_search.term_spatial import TermVectorStorage
+
 from .sdi import SDI
-from scipy.spatial import ConvexHull
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
 
+
 class CI(SDI):
-    ''' Competent semantic initialization '''
-    def __init__(self, name: str = "CI", *, 
-                 index: TermVectorStorage):
+    """Competent semantic initialization"""
+
+    def __init__(self, name: str = "CI", *, index: TermVectorStorage):
         super().__init__(name, index=index)
 
-    def is_point_inside_hull(self, point: np.ndarray, hull: ConvexHull, tolerance: float = 1e-12) -> bool:
+    def is_point_inside_hull(
+        self, point: np.ndarray, hull: ConvexHull, tolerance: float = 1e-12
+    ) -> bool:
         results = np.dot(hull.equations[:, :-1], point) + hull.equations[:, -1]
-        return np.all(results <= tolerance)        
-    
-    def pop_init(self, solver: 'GPSolver', pop_size: int) -> list[Term]:
-        ci_population = []
+        return np.all(results <= tolerance).item()
+
+    def pop_init(self, solver: "GPSolver", pop_size: int) -> list[Term]:
+        ci_population: list[Term] = []
         max_try_count = 3
         i = 0
         target_inside_hull = False
@@ -37,6 +41,6 @@ class CI(SDI):
             ci_population = [population[vid] for vid in vertex_ids]
             target_inside_hull = self.is_point_inside_hull(target, convex_hull)
         res = ci_population
-        self.metrics['target_inside_hull'] = target_inside_hull
-        # res = ci_population[:pop_size]       
-        return res   
+        self.metrics["target_inside_hull"] = target_inside_hull
+        # res = ci_population[:pop_size]
+        return res
