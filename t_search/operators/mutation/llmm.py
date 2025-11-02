@@ -2,10 +2,6 @@
     Zero-shot: requests direct mutation 
     ICL based: providing several examples 
     CoT based: provide reasoning steps     
-
-    Required environment variables:
-        OPENAI_API_KEY - for OpenAI models
-        GOOGLE_API_KEY - for Google Gemini models
 '''
 
 from dataclasses import dataclass, asdict
@@ -16,17 +12,10 @@ import torch
 
 from syntax import Term
 from .base import TermMutation
+from .. import llm
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
-
-def get_model_provider(model: str) -> str:
-    if model.startswith("gpt-") or model.startswith("text-"):
-        return "openai"
-    elif model.startswith("gemini-"):
-        return "google"
-    else:
-        raise ValueError(f"Unknown model provider for model: {model}")
 
 @dataclass 
 class TestCaseContext:
@@ -68,6 +57,10 @@ class PromptContext:
 # DONE: ICL exemplar adjustment in prompt - maybe better to show improvement instead of output actual values?
 # DONE: metrics
 
+# TODO: simpler version of prompt to reduce number of tokens
+# TODO: Generation of sketch (arbitrary constants) instead of concrete term
+# TODO: management of requests for same term?
+
 tests_prompt = """You are an expert in symbolic mathematics and programming. 
 Given a LISP expression presenting a original mathematical term, 
 your task is to provide a mutated/changed version of that term to bring its outputs closer to expected outputs on given tests and minimize {{loss_name}}.
@@ -82,32 +75,33 @@ constants and following operations:
 Try to keep expression depths below {{max_depth}}.
 Number of constants in one expression should not exceed {{max_constants}}.
 
-{% if previous_good_mutations | length > 0 %}
-    Examples of improvement:
-    {% for example in previous_good_mutations -%}
+{% for example in previous_good_mutations -%}
+{% if loop.first %}
+Examples of improvement:
+{% endif %}
     {{ loop.index }}. Original term:
     {{example.term}}
     After modification:
     {{example.term_after}}
-    Tests with highest improvement:
-        {% for test in example.tests %}
-            {{ loop.index }}. {% for free_var, free_var_value in test.vars.items() -%} {{ free_var }} = {{ free_var_value | round(3) }} {%- endfor %}
-            Distance change to expected outcome:
-            {%- if test.diff < 0 -%}
-            output was lower by {{ test.diff | round(3) }}, 
-            {%- else -%}
-            output was higher by {{ test.diff | round(3) }}, 
-            {%- endif -%}
-            {%- if test.diff_after < 0 -%}
-            became lower by {{ test.diff_after | round(3) }}
-            {%- else -%}
-            became higher by {{ test.diff_after | round(3) }}
-            {%- endif -%}            
-        {%- endfor %}
-    {{loss_name}} decreased by {{ example.fitness_diff | round(5) }}.
+    {% for test in example.tests %}
+        {% if loop.first %}
+        Tests with highest improvement:
+        {% endif %}
+        {{ loop.index }}. {% for free_var, free_var_value in test.vars.items() -%} {{ free_var }} = {{ free_var_value | round(3) }} {%- endfor %}
+        Distance change to expected outcome:
+        {%- if test.diff < 0 -%}
+        output was lower by {{ test.diff | round(3) }}, 
+        {%- else -%}
+        output was higher by {{ test.diff | round(3) }}, 
+        {%- endif -%}
+        {%- if test.diff_after < 0 -%}
+        became lower by {{ test.diff_after | round(3) }}
+        {%- else -%}
+        became higher by {{ test.diff_after | round(3) }}
+        {%- endif -%}            
     {%- endfor %}
-
-{% endif %}
+    {{loss_name}} decreased by {{ example.fitness_diff | round(5) }}.
+{%- endfor %}
 
 Given term:
 {{term}}
@@ -131,18 +125,6 @@ For each mutation:
 Prefer minimal modifications that reduce error without bloating the term.
 """
 
-_alg_ops_desc = {
-    "add": "Adds two arguments, two subexpressions",
-    "mul": "Multiplies two arguments, two subexpressions",
-    "pow": "Raises the first argument to the power of the second argument",
-    "neg": "Negates the argument",
-    "inv": "Computes the multiplicative inverse of the argument",
-    "exp": "Computes the exponential of the argument",
-    "log": "Computes the natural logarithm of the argument",
-    "sin": "Sine of the argument (in radians)",
-    "cos": "Cosine of the argument (in radians)",
-}
-
 @dataclass
 class MutationPositionExecution:
     reason: Annotated[str, "Short explanation why this subexpression was selected (e.g., contributes most to error)"]
@@ -160,11 +142,12 @@ class AllMutationExecutions:
 
 class LLMM(TermMutation):
 
-    def __init__(self, name = "LLMM", *, rate = 0.8, 
+    def __init__(self, name = "LLMM", *, 
+                 llm: llm.LLMCaller,
+                 rate = 0.8, 
                 #  prompt_template_path: str = "",
-                 prompt_template: str = tests_prompt,                 
-                 model: str = "gpt-4o-mini",
-                 op_desc: dict[str, str] = _alg_ops_desc,
+                 prompt_template: str = tests_prompt,
+                 op_desc: dict[str, str] = llm.ops_descriptions,
                  num_mutations: int = 3,
                  max_num_positions: int = 2,
                  max_num_examples: int = 3,
@@ -173,9 +156,6 @@ class LLMM(TermMutation):
                  loss_name: str = "NMSE",
                  **kwargs):
         super().__init__(name, rate=rate, **kwargs)
-        # self.system_prompt = _system_prompt_format.format(
-        #     op_desc_str = "\n".join([f"{name} - {desc}" for name, desc in op_desc.items()])
-        # )
         self.num_mutations = num_mutations
         self.max_num_positions = max_num_positions
         self.max_num_examples = max_num_examples
@@ -183,60 +163,11 @@ class LLMM(TermMutation):
         self.max_num_demo_tests = max_num_demo_tests
         self.loss_name = loss_name
         from jinja2 import Template
-        # with open(prompt_template_path, 'r') as file:
-        #     self.prompt_template: Template = Template(file.read())
         self.prompt_template: Template = Template(prompt_template)
-        self.model = model
-        self.provider = get_model_provider(model)
-        self.op_desc = op_desc
-        if self.provider == "openai":
-            self.prompt_fn = self._call_openai
-        elif self.provider == "google":
-            self.prompt_fn = self._call_google
-        else:
-            self.prompt_fn = lambda p: ""
-        
+        self.llm = llm
+        self.op_desc = op_desc        
         self.good_mutations: list[GoodMutationContext] = []
 
-    def _call_openai(self, prompt: str) -> AllMutationExecutions: 
-        import openai
-        if self.openai_client is None:
-            self.openai_client = openai.OpenAI(
-                api_key = os.environ["OPENAI_API_KEY"],
-                organization = os.environ.get("OPENAI_ORG_ID", None),
-            )
-        mut_response = self.openai_client.responses.parse(
-            model=self.model,
-            input=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            text_format = AllMutationExecutions
-        )
-
-        mut = mut_response.output_parsed
-
-        return mut
-
-    def _call_google(self, prompt: str) -> AllMutationExecutions:
-        from google import genai
-        if self.google_client is None:
-            self.google_client = genai.Client(
-                api_key = os.environ["GOOGLE_API_KEY"]
-            )
-        resp = self.google_client.models.generate_content(
-            model = self.model,
-            contents = prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": AllMutationExecutions                
-            }
-        )
-        mut = resp.parsed
-        return mut
-    
     def select_exemplars(self, solver: 'GPSolver', term: str):
         ''' Currently we pick just last N good mutations 
             TODO: consider similarity, diversity metrics and NMSE improvement
@@ -297,7 +228,7 @@ class LLMM(TermMutation):
             return None
 
         try:
-            response = self.prompt_fn(prompt)
+            response = self.llm(prompt, AllMutationExecutions)
         except Exception as e:
             print("Error during LLM prompting:", e)
             self.add_metric(llm_error=1)
