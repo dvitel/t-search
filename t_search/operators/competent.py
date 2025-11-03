@@ -5,6 +5,7 @@
     [s1, s2... sn]. If s1 is empty - any value works, if s1 is None - no value works.    
 '''
 
+from bisect import bisect_left
 from dataclasses import dataclass, field
 from math import prod
 import math
@@ -180,8 +181,8 @@ def pre_invert(root: Term, output_getter: Callable[[Term], torch.Tensor]):
     return term_arg_semantics, term_occurs 
 
 
-def invert(root: Term, target: DesiredSemantics, bad_semantics: list[DesiredSemantics],
-            output_getter: Callable[[Term], torch.Tensor], term_curr: dict[Term, DesiredSemantics],
+def backward_desired(root: Term, target: DesiredSemantics, bad_semantics: list[DesiredSemantics],
+            output_getter: Callable[[Term], torch.Tensor], get_desired_semantics: Callable[[Term, torch.Tensor], DesiredSemantics],
             op_invs: dict[str, Callable]) -> dict[tuple[Term, int], tuple[DesiredSemantics, list[DesiredSemantics]]]:
     ''' Semantic backpropagation SB'''
 
@@ -213,9 +214,7 @@ def invert(root: Term, target: DesiredSemantics, bad_semantics: list[DesiredSema
                 arg_undesired = general_inv(bad_sem, arg_semantics, arg_i, op_inv)
                 arg_undesired_all.append(arg_undesired)
             undesired_all[arg_occur] = arg_undesired_all
-            if arg_occur[0] not in term_curr:
-                term_curr[arg_occur[0]] = get_desired_semantics(arg_semantics[arg_i])
-            arg_cur = term_curr[arg_occur[0]]
+            arg_cur = get_desired_semantics(arg_occur[0], arg_semantics[arg_i])
             undesired_with_cur_all[arg_occur] = [*arg_undesired_all, arg_cur]
         
     def _exit_term(term: Term, *_):
@@ -227,13 +226,42 @@ def invert(root: Term, target: DesiredSemantics, bad_semantics: list[DesiredSema
 
     return final 
 
+def get_best_constant(desired: DesiredSemantics, epsilon: float = 1e-5) -> float | None:
+    ''' Detect constant semantics that can approximate desired semantics '''
+    if any(d is None for d in desired):
+        return []
+    desired_nonempty = [d for d in desired if len(d) > 0]
+    if len(desired_nonempty) == 0:
+        return 0.0 # any constant works
+    ds = [sorted(d) for d in desired_nonempty ]
+    all_vals = set(v for d in ds for v in d)
+    for v in all_vals:
+        all_close = True
+        for d in ds:
+            pos = bisect_left(d, v)
+            if pos == 0: 
+                if abs(d[pos + 1] - v) > epsilon: 
+                    all_close = False
+                    break
+            elif pos == len(d):
+                if abs(d[pos - 1] - v) > epsilon:
+                    all_close = False
+                    break
+            else:
+                if abs(d[pos] - v) > epsilon and abs(d[pos - 1] - v) > epsilon:
+                    all_close = False
+                    break
+        if all_close:
+            return v 
+    return None
+
 def get_best_semantics(desired: DesiredSemantics, undesired: list[DesiredSemantics], all_semantics: torch.Tensor,):
     assert len(desired) > 0
 
     if any(d is None for d in desired): # unsat desired at position 
         return None
 
-    # if all(len(d) == 0 for d in desired): # any term will work - shou
+    # if all(len(d) == 0 for d in desired): # any term will work
     #     return None 
 
     forbidden_mask = torch.zeros((all_semantics.shape[1],), dtype=torch.bool, device=all_semantics.device)
@@ -283,3 +311,7 @@ def get_best_semantics(desired: DesiredSemantics, undesired: list[DesiredSemanti
 class InversionCache: 
     term_semantics: dict[Term, DesiredSemantics] = field(default_factory=dict)
     term_subtree_semantics: dict[Term, dict[tuple[Term, int], tuple[DesiredSemantics, list[DesiredSemantics]]]] = field(default_factory=dict)
+
+    def reset(self):
+        self.term_semantics.clear()
+        self.term_subtree_semantics.clear()

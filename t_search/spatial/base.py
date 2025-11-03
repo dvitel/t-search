@@ -219,6 +219,9 @@ class VectorStorage:
                  store_batch_size: int = 1024, query_batch_size: int = 128, dim_batch_size: int = 8, **kwargs):
                 #  stats_batch_size: int = math.inf, dim_delta: int = 64):
         self.capacity = capacity 
+        self.dtype = dtype
+        self.device = device
+        self.dims = dims
         self.vectors = torch.empty((capacity, dims), dtype=dtype, device=device)
         self.cur_id = 0
         self.rtol = rtol
@@ -228,6 +231,12 @@ class VectorStorage:
         self.dim_batch_size = dim_batch_size
         # self.stats_batch_size = stats_batch_size
         # self.stats = StorageStats(self)
+
+    def reset(self):
+        if self.cur_id > 0:
+            del self.vectors
+            self.vectors = torch.empty((self.capacity, self.dims), dtype=self.dtype, device=self.device)
+            self.cur_id = 0
 
     def __len__(self):
         return self.cur_id

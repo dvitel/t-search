@@ -14,7 +14,7 @@
 '''
 
 from .term import Term, Op, Variable, Value, Wildcard, OpWildcard, TermPos
-from .str import term_to_str, parse_term
+from .str import term_to_str, parse_term, parse_const_skeleton_to_term
 from .evaluation import evaluate
 
 Term.__str__ = term_to_str
@@ -31,4 +31,5 @@ __all__ = [
     "term_to_str",
     "parse_term",
     "evaluate",
+    "parse_const_skeleton_to_term"
 ]

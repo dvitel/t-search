@@ -17,6 +17,13 @@ class Operator:
     def reset_metrics(self):
         self.metrics = {}
 
+    def add_metric(self, **kwargs):
+        for key, value in kwargs.items():
+            if key not in self.metrics:
+                self.metrics[key] = value
+            else:
+                self.metrics[key] = self.metrics[key] + value
+
     def op_init(self, solver: 'GPSolver'):
         pass        
     
@@ -38,9 +45,18 @@ class Operator:
         children = self.call_next(solver, children, next_ops)
         return children
 
-class TermsListener: 
-    ''' Interface to listen for new terms appearing during the eval. 
-        
-    '''
-    def register_terms(self, solver: 'GPSolver', terms: list[Term], semantics: torch.Tensor) -> list[Term]: 
+# NOTE: we decouple reactiveness from operators. Operators should be classic GP in this sense.
+class Listener: 
+    ''' Reactive to new terms and semantics. May produce new terms. '''
+
+    def __init__(self, name: str):
+        self.name = name 
+        self.metrics = {}    
+
+    def reset(self, solver: 'GPSolver'):
+        ''' Called on solver resent, demarkating the start of a new flow of terms '''
+        self.metrics = {}
+
+    def __call__(self, solver: 'GPSolver', terms: Sequence[Term], semantics: torch.Tensor) -> Sequence[Term]: 
+        ''' Called by solver after new terms evaluatio. Semantics represent evaluation result '''
         pass 

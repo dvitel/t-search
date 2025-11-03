@@ -80,6 +80,9 @@ def term_to_str(term: Term, formatters: dict = default_formatters) -> str:
     res = postorder_map(term, t_to_s, with_cache=True)
     return res  
 
+def term_to_const_skeleton_str(term: Term, const_name: str = "C") -> str:
+    return term_to_str(term, {**default_formatters, Value: lambda *_: const_name})
+
 def skip_spaces(term_str: str, i: int) -> int:
     while i < len(term_str) and term_str[i].isspace():
         i += 1
@@ -144,6 +147,13 @@ def parse_term(term_str: str, i: int = 0, parsers = default_parsers) -> tuple[Te
             branches[0].append(new_term)
     return branches[0][0], i
 
+def parse_const_skeleton_to_term(term_str: str, const_name: str = "C") -> Term:
+    def const_parser(s: str, *_) -> Optional[Term]:
+        if s == const_name:
+            return Value(0.0)
+        return None
+    term, _ = parse_term(term_str, parsers = [const_parser, *default_parsers])
+    return term
 
 # def get_term_repr(term: Term, term_reprs: dict[Term, Term]) -> Term:
 

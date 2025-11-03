@@ -12,13 +12,15 @@ from typing import Any, Callable, Literal, NamedTuple, Optional, Sequence, Type
 
 import numpy as np
 import torch
-from operators import RHH, RPM, RPX, TS, Initialization, Operator, TermsListener
+from operators import RHH, RPM, RPX, TS, Initialization, Operator, Listener
 from sklearn.base import BaseEstimator, RegressorMixin
+
+from syntax.traverse import postorder_map
 
 from .utils.metrics import nmse_loss_builder
 
 # from mutation import CO, Dedupl, Mutation, PO, RPX, RPM, Reduce
-from syntax import Op, Term, TermPos, Value, Variable, evaluate, parse_term
+from syntax import Op, Term, TermPos, Value, Variable, evaluate, parse_term, parse_const_skeleton_to_term
 from syntax.generation import Builder, Builders, TermGenContext, get_fn_arity
 from syntax.unification import UnifyBindings, match_root
 from syntax.stats import get_depth, get_positions
@@ -111,11 +113,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
         max_root_evals: int = 100_000,
         max_evals: int = 1_000_000,
         pop_size: int = 1000,
-        with_inner_evals: bool = False,
-        cache_term_props: bool = True,
+        with_inner_evals: bool = True,
+        # cache_term_props: bool = True,
         # cache_terms: bool = True,
         # cache_evals: bool = True, # outputs and fitness
         # compute_output_range = True,
+        term_listeners: list[Listener] = [],
         const_range: Optional[tuple[float, float]] = None,  # if not set, computed from X, y
         rtol=1e-04,
         atol=1e-03,  # NOTE: these are for semantic/outputs comparison,
@@ -163,7 +166,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.max_evals = max_evals
         self.pop_size = pop_size
         self.with_inner_evals = with_inner_evals
-        self.cache_term_props = cache_term_props
+        # self.cache_term_props = cache_term_props
         # self.cache_terms = cache_terms
         # self.cache_evals = cache_evals
         self.rtol = rtol
@@ -193,6 +196,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         )
         self.term_outputs: dict[Term, torch.Tensor] = {}
         self.new_term_outputs: dict[Term, torch.Tensor] = {}
+        self.new_listener_terms: list[Term] = []
         # terms with nans or infs in output
         self.invalid_term_outputs: dict[Term, torch.Tensor] = {}
         # self.const_term_outputs: dict[Term, torch.Tensor] = {}
@@ -218,7 +222,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.start_time: float = 0
         self.const_id: int = 0
         self.const_tape: torch.Tensor | None = None
-        self.term_listeners: list[TermsListener] = []
+        self.term_listeners: list[Listener] = term_listeners
+
+        self.vars: dict[str, Variable] = {}
+        self.var_binding: dict[str, torch.Tensor] = {}
 
         self.op_builders: dict[str, Builder] = {}
         for op_id, op_fn in self.ops.items():
@@ -246,10 +253,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
         target: Sequence | torch.Tensor,
     ):
         """Called before each fit"""
-
-        # reset caches
-        self.vars = {}
-        self.var_binding = {}
 
         self.syntax.clear()
         for output in self.term_outputs.values():
@@ -283,18 +286,16 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.is_fitted_ = False
         builders: dict[Type | str, Builder] = {}
 
-        self.const_builder = None
-        if self.max_consts > 0:
-            self.const_builder = Builder("C", self._alloc_const, 0, self.min_consts, self.max_consts)
-            builders[Value] = self.const_builder
+        # self.const_builder = None
+        # if self.max_consts > 0:
+        self.const_builder = Builder("C", self._alloc_const, 0, self.min_consts, self.max_consts)
+        builders[Value] = self.const_builder
 
-        self.var_builder = None
-        if free_vars is not None and len(free_vars) > 0 and (self.max_vars > 0):
-            vars, var_binding = self._get_vars(free_vars)
-            self.var_binding = var_binding
-            self.vars = {v.var_id: v for v in vars}
-            self.var_builder = Builder("x", self._alloc_var, 0, self.min_vars, self.max_vars)
-            builders[Variable] = self.var_builder
+        vars, var_binding = self._get_vars(free_vars)
+        self.var_binding = var_binding
+        self.vars = {v.var_id: v for v in vars}
+        self.var_builder = Builder("x", self._alloc_var, 0, self.min_vars, self.max_vars)
+        builders[Variable] = self.var_builder
 
         for op_id, op_builder in self.op_builders.items():
             builders[op_id] = op_builder
@@ -380,17 +381,20 @@ class GPSolver(BaseEstimator, RegressorMixin):
         for op in self.pipeline:
             op.op_init(self)
 
-        self.term_listeners = [op for op in self.pipeline if isinstance(op, TermsListener)]
+        self.new_listener_terms.clear()
 
-        for t_listener in self.term_listeners:
+        for listener in self.term_listeners:
+            listener.reset(self)
+
             for x in self.vars.values():
                 binding = self.var_binding[x.var_id]
-                t_listener.register_terms(self, [x], binding.unsqueeze(0))
+                new_terms = listener(self, [x], binding.unsqueeze(0))
+                self.new_listener_terms.extend(new_terms) # evaluated lated after init operators
         pass
 
     def _get_vars(self, free_vars):
-        vars = []
-        var_binding = {}
+        vars: list[Variable] = []
+        var_binding: dict[str, torch.Tensor] = {}
         for i, xi in enumerate(free_vars):
             v = Variable(f"x{i}")
             if not torch.is_tensor(xi):
@@ -462,6 +466,28 @@ class GPSolver(BaseEstimator, RegressorMixin):
             return res  
         raise ValueError(f"Unsupported tensor shape: {tensors[0].shape}")
 
+    def parse_term_str(self, term_str: str) -> Term | None:
+        try:
+            term, _ = parse_term(term_str)
+            def map_term(t: Term, args: list[Term]) -> Term:
+                builder = self.builders.get_term_builder(t)                    
+                return builder.fn(*args)
+            cached_term = postorder_map(term, map_term)
+            return cached_term
+        except Exception:
+            return None 
+        
+    def parse_const_skeleton(self, skeleton_str: str, const_name: str = "C") -> Term | None:
+        try:
+            term, _ = parse_const_skeleton_to_term(skeleton_str, const_name=const_name)
+            def map_term(t: Term, args: list[Term]) -> Term:
+                builder = self.builders.get_term_builder(t)                    
+                return builder.fn(*args)
+            cached_term = postorder_map(term, map_term)
+            return cached_term
+        except Exception:
+            return None
+
     def _eval(self, terms: list[Term]):
 
         self.new_term_outputs.clear()
@@ -507,8 +533,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
             if len(valid_terms) > 0:
                 semantics = new_semantics
-                for t_listener in self.term_listeners:
-                    t_listener.register_terms(self, valid_terms, semantics)
+                for listener in self.term_listeners:
+                    listener_terms = listener(self, valid_terms, semantics)
+                    self.new_listener_terms.extend(listener_terms)
 
                 # if self.compute_output_range:
                 #     finite_predictions_mask = torch.isfinite(predictions).all(dim=-1)
@@ -543,11 +570,11 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         # caches
 
-        if not self.cache_term_props:
-            self.pos_cache.clear()
-            self.counts_cache.clear()
-            self.pos_context_cache.clear()
-            self.depth_cache.clear()
+        # if not self.cache_term_props:
+        #     self.pos_cache.clear()
+        #     self.counts_cache.clear()
+        #     self.pos_context_cache.clear()
+        #     self.depth_cache.clear()
 
         # validation 1
         # for term in population:
@@ -654,8 +681,21 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.gen_metrics = {}
         self.metrics["gens"].append(self.gen_metrics)
 
+    def _eval_loop(self, terms: list[Term]):
+
+        if len(terms) > 0:
+            self._eval(terms)
+
+        while len(self.new_listener_terms) > 0:
+            new_terms = self.new_listener_terms
+            self.new_listener_terms.clear()
+            self._eval(new_terms)
+            self.new_listener_terms = [t for t in self.new_listener_terms for o in [self._get_cached_output(t)] if o is None]
+
+        pass 
+    
     def _timed_eval(self, population):
-        return timed(self._eval, "eval_time", self.gen_metrics)(population)
+        return timed(self._eval_loop, "eval_time", self.gen_metrics)(population)
 
     # NOTE: this is public interface to eval from operators.
     def eval(

@@ -17,7 +17,7 @@ from .. import llm
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
 
-selection_prompt = """You are an expert in symbolic mathematics and programming. 
+selection_prompt = """You are an expert in symbolic mathematics. 
 Given a set of LISP expressions and their evaluations,
 your task is to select one most promising expression for later modification.
 You should only answer with the index.
@@ -28,14 +28,21 @@ Proposed terms:
 {{loss_name}}={{s.fitness | round(3)}}
 {% endfor %}
 
-What term is best for modification w.r.t. loss improvement and complexity of modification?
+Select the term that is both:
+1. Likely to improve loss when mutated.
+2. Has a structure that allows effective small modifications.
+
+Output only:
+- reason: 1–2 short bullets explaining why
+- index: integer of selected term
 """
 
 # TODO: reasoning?? 
 
 @dataclass
 class SelectionExecution:    
-    selected: Annotated[int, "Index"]
+    reason: list[str]
+    index: int 
 
 @dataclass 
 class SelectionTermInfo:
@@ -85,12 +92,13 @@ class LLMS(Selection):
                 continue
             
             try:
-                response = self.llm(prompt, SelectionExecution)
+                response, usage = self.llm(prompt, SelectionExecution)
+                self.add_metric(**usage)
             except Exception as e:
                 print("Error during LLM prompting:", e)
                 self.add_metric(llm_error=1)
                 continue
-            selected_id = response.selected
+            selected_id = response.index
             if selected_id < 0 or selected_id >= len(candidiates):
                 self.add_metric(invalid_index=1)
                 continue

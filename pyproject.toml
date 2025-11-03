@@ -39,6 +39,13 @@ dev = [
     "flake8"
 ]
 
+# LLM-specific dependencies for LLMM operator
+llm = [
+    "jinja2>=3.1",
+    "openai>=2.6",
+    "google-genai>=1.43"
+]
+
 # [project.scripts]
 # t-search = "t_search.__main__:main"
 

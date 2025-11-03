@@ -39,7 +39,7 @@ class LLMCaller:
         self.provider = get_model_provider(model)
         self.openai_client = None
         self.google_client = None
-    def _call_openai(self, prompt: str, response_schema: Type[T]) -> T: 
+    def _call_openai(self, prompt: str, response_schema: Type[T]) -> tuple[T, dict]: 
         import openai
         if self.openai_client is None:
             self.openai_client = openai.OpenAI(
@@ -59,9 +59,17 @@ class LLMCaller:
 
         res = response.output_parsed
 
-        return res
+        meta = response.usage
 
-    def _call_google(self, prompt: str, response_schema: Type[T]) -> T: 
+        usage = {
+            "input_tokens": meta.input_tokens,
+            "output_tokens": meta.output_tokens,
+            "total_tokens": meta.total_tokens,
+        }
+
+        return res, usage
+
+    def _call_google(self, prompt: str, response_schema: Type[T]) -> tuple[T, dict]: 
         from google import genai
         if self.google_client is None:
             self.google_client = genai.Client(
@@ -76,9 +84,15 @@ class LLMCaller:
             }
         )
         res = response.parsed
-        return res
+        meta = response.usage_metadata
+        usage = {
+            "input_tokens": getattr(meta, "prompt_token_count", 0),
+            "output_tokens": getattr(meta, "candidates_token_count", 0),
+            "total_tokens": getattr(meta, "total_token_count", 0),
+        }
+        return res, usage
     
-    def __call__(self, prompt: str, response_schema: Type[T]) -> T: 
+    def __call__(self, prompt: str, response_schema: Type[T]) -> tuple[T, dict]: 
         if self.provider == "openai":
             return self._call_openai(prompt, response_schema)
         elif self.provider == "google":

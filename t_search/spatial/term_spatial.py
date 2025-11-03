@@ -14,6 +14,11 @@ class TermVectorStorage:
         self.sid_to_terms: dict[int, list[Term]] = {}
         self.term_to_sid: dict[Term, int] = {}
 
+    def reset(self):
+        self.sid_to_terms = {}
+        self.term_to_sid = {}
+        self.index.reset()
+
     def insert(self, terms: list[Term], vectors: torch.Tensor, eq_group_order_key: Callable) -> None:
         ''' Returns mapping of term to its id in the equivalence group '''
         ids = self.index.insert(vectors)

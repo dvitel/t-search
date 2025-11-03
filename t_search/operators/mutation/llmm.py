@@ -5,14 +5,15 @@
 '''
 
 from dataclasses import dataclass, asdict
-import os
-from typing import TYPE_CHECKING, Annotated, Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import torch
 
 from syntax import Term
+from syntax.str import term_to_const_skeleton_str
 from .base import TermMutation
 from .. import llm
+from . import CO
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
@@ -56,88 +57,66 @@ class PromptContext:
 # DONE: ICL exemplar adjustment in prompt - maybe better to show improvement instead of output actual values?
 # DONE: metrics
 
-# TODO: simpler version of prompt to reduce number of tokens
-# TODO: Generation of sketch (arbitrary constants) instead of concrete term
-# TODO: management of requests for same term?
+# DONE: simpler version of prompt to reduce number of tokens
+# DONE: Generation of sketch (arbitrary constants) instead of concrete term
 
-tests_prompt = """You are an expert in symbolic mathematics and programming. 
-Given a LISP expression presenting a original mathematical term, 
-your task is to provide a mutated/changed version of that term to bring its outputs closer to expected outputs on given tests and minimize {{loss_name}}.
-The expected term values are provided in a form of tests: free variable values, expected result.
-Ensure that your modification forms the correct LISP expression from the free variables 
-{%- for free_var in free_vars -%} {{free_var}}, {% endfor -%}, 
-constants and following operations:
-{% for key, value in op_desc.items() %}
-- {{ key }}: {{ value }}
+tests_prompt = """You are an expert in symbolic mathematics. 
+Given a LISP expression for a mathematical term, produce a mutated version that reduces {{loss_name}} on the tests below.
+Allowed variables {%- for v in free_vars -%} {{v}}{% if not loop.last %}, {% endif %}{% endfor %}.
+Use C as a placeholder constant.
+Allowed operations:
+{% for k,v in op_desc.items() %}- {{k}}: {{v}}
+{% endfor %}
+Constraints: depth ≤ {{max_depth}}, constants ≤ {{max_constants}}.
+
+{% for e in previous_good_mutations -%}
+    {% if loop.first %}
+    Examples of improving mutations:
+    {% endif %}
+    {{loop.index}}. {{e.term}} → {{e.term_after}}  (Δ{{loss_name}} = {{e.fitness_diff|round(4)}})
+    {% for t in e.tests %}
+    test{{loop.index}}: {% for var,val in t.vars.items() -%}{{var}}={{val|round(3)}}, {% endfor %}
+    Δ={{t.diff|round(3)}} → Δ={{t.diff_after|round(3)}}
+    {% endfor %}
 {% endfor %}
 
-Try to keep expression depths below {{max_depth}}.
-Number of constants in one expression should not exceed {{max_constants}}.
-
-{% for example in previous_good_mutations -%}
-{% if loop.first %}
-Examples of improvement:
-{% endif %}
-    {{ loop.index }}. Original term:
-    {{example.term}}
-    After modification:
-    {{example.term_after}}
-    {% for test in example.tests %}
-        {% if loop.first %}
-        Tests with highest improvement:
-        {% endif %}
-        {{ loop.index }}. {% for free_var, free_var_value in test.vars.items() -%} {{ free_var }} = {{ free_var_value | round(3) }} {%- endfor %}
-        Distance change to expected outcome:
-        {%- if test.diff < 0 -%}
-        output was lower by {{ test.diff | round(3) }}, 
-        {%- else -%}
-        output was higher by {{ test.diff | round(3) }}, 
-        {%- endif -%}
-        {%- if test.diff_after < 0 -%}
-        became lower by {{ test.diff_after | round(3) }}
-        {%- else -%}
-        became higher by {{ test.diff_after | round(3) }}
-        {%- endif -%}            
-    {%- endfor %}
-    {{loss_name}} decreased by {{ example.fitness_diff | round(5) }}.
-{%- endfor %}
-
-Given term:
+Current term:
 {{term}}
-Hardest tests:
-    {% for test in tests %}    
-        {{ loop.index }}. {% for free_var, free_var_value in test.vars.items() -%} {{ free_var }} = {{ free_var_value | round(3) }} {%- endfor %}
-        Distance to expected outcome:
-        {%- if test.diff < 0 -%}
-        output is lower by {{ test.diff | round(3) }}, 
-        {%- else -%}
-        output is higher by {{ test.diff | round(3) }}, 
-        {%- endif -%}
-    {% endfor %}
-{{loss_name}} is {{ fitness | round(5) }}.
+Hard tests:
+{% for t in tests %}
+  test{{loop.index}}: {% for v,val in t.vars.items() -%}{{v}}={{val|round(3)}}, {% endfor %}
+  Δ={{t.diff|round(3)}}
+{% endfor %}
+{{loss_name}}={{fitness|round(5)}}
 
-Generate the mutated term by following steps:
-1. First, select from one to {{num_positions}} subexpressions to modify and provide a short reason for selection.
-2. Then, decide the change that improves tests and loss (operator replacement, constant adjustment, subtree replacement, etc.).
-3. Finnaly, apply the mutation and provide the resulting LISP expression.
-Prefer minimal modifications that reduce error without bloating the term.
+Output (only these fields):
+- reasoning: 2–3 short bullets (why this change). 
+- mutated_term: final LISP expression
+
+Prefer minimal edits; keep syntax valid.
 """
 
-@dataclass
-class MutationPositionExecution:
-    reason: Annotated[str, "Short explanation why this subexpression was selected (e.g., contributes most to error)"]
-    position: Annotated[str, "The select LISP subexpression."]
-    mutation_type: Annotated[str, "Type of mutation applied"]
+# @dataclass
+# class MutationPositionExecution:
+#     reasoning: Annotated[str, "Short explanation why this subexpression was selected (e.g., contributes most to error)"]
+#     position: Annotated[str, "The select LISP subexpression."]
+#     mutation_type: Annotated[str, "Type of mutation applied"]
+
+# @dataclass
+# class MutationExecution:
+#     all_selected_positions: Annotated[list[MutationPositionExecution], "List of positions selected for mutation."]
+#     final_mutated_term: Annotated[str, "Final LISP expression after applying the mutations to the selected positions."]
 
 @dataclass
 class MutationExecution:
-    all_selected_positions: Annotated[list[MutationPositionExecution], "List of positions selected for mutation."]
-    final_mutated_term: Annotated[str, "Final LISP expression after applying the mutations to the selected positions."]
+    reasoning: list[str]
+    mutated_term: str 
 
 class LLMM(TermMutation):
 
-    def __init__(self, name = "LLMM", *, 
+    def __init__(self, name = "LLMM", *,     
                  llm: llm.LLMCaller,
+                 const_optimizer: CO,
                  rate = 0.8, 
                 #  prompt_template_path: str = "",
                  prompt_template: str = tests_prompt,
@@ -159,6 +138,7 @@ class LLMM(TermMutation):
         self.llm = llm
         self.op_desc = op_desc        
         self.good_mutations: list[GoodMutationContext] = []
+        self.const_optimizer = const_optimizer
 
     def select_exemplars(self, solver: 'GPSolver', term: str):
         ''' Currently we pick just last N good mutations 
@@ -202,7 +182,7 @@ class LLMM(TermMutation):
         demonstrations = self.select_exemplars(solver, term)
         context = PromptContext(
             num_positions=self.max_num_positions,
-            term = str(term),
+            term = term_to_const_skeleton_str(term),
             tests = tests,
             fitness = fitness,
             op_desc = self.op_desc,
@@ -219,13 +199,14 @@ class LLMM(TermMutation):
             return None
 
         try:
-            response = self.llm(prompt, MutationExecution)
+            response, usage = self.llm(prompt, MutationExecution)
+            self.add_metric(**usage)
         except Exception as e:
             print("Error during LLM prompting:", e)
             self.add_metric(llm_error=1)
             return None
 
-        new_term = solver.parse_term_str(response.final_mutated_term)
+        new_term = solver.parse_const_skeleton(response.mutated_term)
         if new_term is None:
             self.add_metric(llm_syn_invalid=1)
             return None
@@ -233,7 +214,9 @@ class LLMM(TermMutation):
             self.add_metric(llm_constr_invalid=1)
             return None 
         
-        outputs, fitnesses = solver.eval(new_term, return_outputs="list", return_fitness="list")
+        optimized_term = self.const_optimizer.mutate_term(solver, new_term) or new_term
+        
+        outputs, fitnesses = solver.eval(optimized_term, return_outputs="list", return_fitness="list")
 
         new_fitness = fitnesses[0]
         new_outcomes = outputs[0]
@@ -269,10 +252,10 @@ class LLMM(TermMutation):
                         for i in final_best_test_ids]
             good_mutation = GoodMutationContext(
                 term = context.term, 
-                term_after = str(new_term),
+                term_after = term_to_const_skeleton_str(optimized_term),
                 fitness_diff = fitness - new_fitness,
                 tests = tests
             )
             self.good_mutations.append(good_mutation)
         
-        return new_term 
+        return optimized_term 

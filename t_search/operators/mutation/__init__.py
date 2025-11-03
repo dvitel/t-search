@@ -8,6 +8,7 @@ from .reduce import Reduce
 from .best_inner import BestInner
 from .sdm import SDM
 from .sgm import SGM
+from .llmm import LLMM
 
 __all__ = [
     "RPM",
@@ -20,5 +21,6 @@ __all__ = [
     "SDM",
     "SGM",
     "TermMutation",
-    "PositionMutation"
+    "PositionMutation",
+    "LLMM",
 ]

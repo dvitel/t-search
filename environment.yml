@@ -12,6 +12,10 @@ dependencies:
   - scikit-learn==1.7.1
   - scipy==1.15.3
   - sympy=1.14.0
+  # only for LLMM operator, if you do not plan to use LLM prompting, ignore installing this
+  - jinja2==3.1.6
+  - openai==2.6.1
+  - google-genai==1.43.0
 
   # -- deve dependencies 
   - seaborn
