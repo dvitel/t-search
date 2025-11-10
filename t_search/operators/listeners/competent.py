@@ -6,7 +6,7 @@ from t_search.spatial import TermVectorStorage
 from t_search.syntax import Term
 from ..initialization import Up2D
 from ..competent import DesiredSemantics, InversionCache, get_desired_semantics
-from ..base import Listener
+from .base import Listener
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
@@ -31,8 +31,8 @@ class CompetentListener(Listener):
         self.inv_cache = InversionCache()
         self.desired_target: DesiredSemantics | None = None
 
-    def reset(self, solver: 'GPSolver'):
-        super().reset(solver)
+    def on_start(self, solver: 'GPSolver'):
+        super().on_start(solver)
         self.desired_target = get_desired_semantics(solver.target)
         self.index.reset()
         self.inv_cache.reset()
@@ -43,10 +43,9 @@ class CompetentListener(Listener):
             self.index.insert(lib_terms, semantics) 
             del semantics
 
-    def __call__(self, solver, terms, semantics):
+    def on_eval(self, solver, terms, semantics, fitness):
         if self.dynamic_index and self.index.len_terms() < self.index_max_size:
             self.index.insert(terms, semantics)
-        return []
     
     def get_desired_semantics(self, term: Term, semantics: torch.Tensor) -> DesiredSemantics:
         if term not in self.inv_cache.term_semantics:

@@ -46,8 +46,8 @@ llm = [
     "google-genai>=1.43"
 ]
 
-# [project.scripts]
-# t-search = "t_search.__main__:main"
+[project.scripts]
+t-search = "t_search.__main__:main"
 
 # [tool.black]
 # line-length = 121

@@ -44,19 +44,3 @@ class Operator:
         children = self.exec(solver, population)
         children = self.call_next(solver, children, next_ops)
         return children
-
-# NOTE: we decouple reactiveness from operators. Operators should be classic GP in this sense.
-class Listener: 
-    ''' Reactive to new terms and semantics. May produce new terms. '''
-
-    def __init__(self, name: str):
-        self.name = name 
-        self.metrics = {}    
-
-    def reset(self, solver: 'GPSolver'):
-        ''' Called on solver resent, demarkating the start of a new flow of terms '''
-        self.metrics = {}
-
-    def __call__(self, solver: 'GPSolver', terms: Sequence[Term], semantics: torch.Tensor) -> Sequence[Term]: 
-        ''' Called by solver after new terms evaluatio. Semantics represent evaluation result '''
-        pass 

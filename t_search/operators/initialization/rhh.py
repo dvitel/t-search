@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 class RHH(Initialization):
     ''' Ramped Half and Half initialization operator '''
 
-    def __init__(self, name: str = "rhh", *, 
+    def __init__(self, name: str = "RHH", *, 
                 min_depth = 1, max_depth = 5, grow_proba = 0.5,
                 leaf_proba: Optional[float] = 0.1,
                 freq_skew: bool = False):

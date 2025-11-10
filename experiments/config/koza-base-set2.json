@@ -1,5 +1,0 @@
-{
-    "ops": ["add", "mul", "neg", "inv", "exp", "log", "sin", "cos"],
-    "prohibit_ops_on_consts_only": false,
-    "with_inner_evals": true
-}

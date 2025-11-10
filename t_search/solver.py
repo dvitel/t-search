@@ -132,7 +132,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         fitness_name: str = 'nmse',
         init: Initialization = RHH(),
         eval_fn=evaluate,
-        pipeline: list["Operator"] = [TS(), RPM(), RPX()],
+        operators: list["Operator"] = [TS(), RPM(), RPX()],
         ops_counts: dict[str, tuple[int, int]] = {},
         forbid_patterns: list[str] = [],
         # next is more optimized
@@ -154,7 +154,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # cache_terms: bool = True,
         # cache_evals: bool = True, # outputs and fitness
         # compute_output_range = True,
-        term_listeners: list[Listener] = [],
+        listeners: list[Listener] = [],
         const_range: Optional[tuple[float, float]] = None,  # if not set, computed from X, y
         fitness_atol: float = 1e-07,
         rtol=1e-04,
@@ -164,7 +164,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
         torch_gen: Optional[torch.Generator] = None,
         device:Literal["cpu", "cuda"]="cpu",
         dtype:torch.dtype=torch.float32,
+        debug: bool = False
     ):
+        self.debug = debug
 
         if type(ops) is list:
             op_dict = {}            
@@ -214,7 +216,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.fit_condition = partial(fit_condition, atol=fitness_atol)
         self.init = init
         self.eval_fn = eval_fn
-        self.pipeline = pipeline
+        self.operators = operators
         self.max_gen = max_gen
         self.max_root_evals = max_root_evals
         self.max_evals = max_evals
@@ -272,7 +274,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.start_time: float = 0
         self.const_id: int = 0
         self.const_tape: torch.Tensor = torch.empty(0, device=self.device, dtype=self.dtype)
-        self.term_listeners: list[Listener] = term_listeners
+        self.listeners: list[Listener] = listeners
         self.syntax: dict[tuple[str, Term], Term] = {}
 
         self.vars: dict[str, Variable] = {}
@@ -435,18 +437,19 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # self.output_range[1] += 0.1 * abs_target
         # del abs_target
 
-        for op in self.pipeline:
+        for op in self.operators:
             op.op_init(self)
 
         self.new_listener_terms.clear()
 
-        for listener in self.term_listeners:
-            listener.reset(self)
+        for listener in self.listeners:
+            listener.on_start(self)
 
             for x in self.vars.values():
                 binding = self.var_binding[x.var_id]
-                new_terms = listener(self, [x], binding.unsqueeze(0))
-                self.new_listener_terms.extend(new_terms) # evaluated lated after init operators
+                new_terms = listener.on_eval(self, [x], binding.unsqueeze(0))
+                if new_terms is not None:
+                    self.new_listener_terms.extend(new_terms) # evaluated lated after init operators
         pass
 
     def _get_vars(self, free_vars):
@@ -515,7 +518,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
     def stack_rows(self, tensors: Sequence[torch.Tensor]) -> torch.Tensor:
         if len(tensors) == 0:
             return torch.empty((0, self.target.shape[0]), dtype=self.dtype, device=self.device)
-        if tensors[0].ndim == 1:
+        if tensors[0].ndim <= 1:
             res = torch.empty((len(tensors), self.target.shape[0]), dtype=tensors[0].dtype, device=tensors[0].device)
             for i, ti in enumerate(tensors):
                 res[i] = ti # assuming broadcastable
@@ -597,9 +600,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
             if len(valid_terms) > 0:
                 semantics = new_semantics
-                for listener in self.term_listeners:
-                    listener_terms = listener(self, valid_terms, semantics)
-                    self.new_listener_terms.extend(listener_terms)
 
                 # if self.compute_output_range:
                 #     finite_predictions_mask = torch.isfinite(predictions).all(dim=-1)
@@ -610,6 +610,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 #         torch.minimum(self.output_range[0], min_outputs, out=self.output_range[0])
                 #         torch.maximum(self.output_range[1], max_outputs, out=self.output_range[1])
                 new_fitness: torch.Tensor = self.fitness_fn(semantics)
+                for listener in self.listeners:
+                    listener_terms = listener.on_eval(self, valid_terms, semantics, new_fitness)
+                    if listener_terms is not None:
+                        self.new_listener_terms.extend(listener_terms)
                 for t, o, f in zip(valid_terms, semantics, new_fitness):
                     self.term_outputs[t] = o.clone()
                     self.term_fitness[t] = f
@@ -632,24 +636,15 @@ class GPSolver(BaseEstimator, RegressorMixin):
     def _breed(self, population: list[Term]) -> list[Term]:
         """Pipeline that mutates parents and then applies crossover on pairs. One-point operations"""
 
-        # caches
-
-        # if not self.cache_term_props:
-        #     self.pos_cache.clear()
-        #     self.counts_cache.clear()
-        #     self.pos_context_cache.clear()
-        #     self.depth_cache.clear()
-
-        # validation 1
-        # for term in population:
-        #     poss = get_positions(term, {})
-        #     for pos in poss:
-        #         get_pos_constraints(pos, self.builders, {}, {})
-        #     pass
-
         children = population
 
-        for operator in self.pipeline:
+        for operator in self.operators:
+            
+            # validation - disable in production for speed
+            if self.debug:
+                for t in children:
+                    assert self.is_valid(t), f"Invalid term before operator {operator.name}: {t}"
+
             children = timed(operator, f"{operator.name}_time", self.gen_metrics)(self, children)
             if len(operator.metrics) > 0:
                 self.gen_metrics[operator.name] = operator.metrics
@@ -807,8 +802,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self._timed_eval(population)
         self._checkpoint_metrics()
         while self.gen < self.max_gen and self.evals < self.max_evals and self.root_evals < self.max_root_evals:
+            for listener in self.listeners:
+                listener.on_gen_start(self, self.gen, population)            
             population = self._breed(population)
             self._timed_eval(population)
+            for listener in self.listeners:
+                listener.on_gen_end(self, self.gen, population)
             self.gen += 1
             self._checkpoint_metrics()
 
@@ -943,6 +942,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.is_fitted_ = True
         if self.status == "INIT":
             self.status = "MAX_GEN"
+        for listener in self.listeners:
+            listener.on_end(self)
         self._add_final_metrics()
         return self
 
@@ -980,8 +981,17 @@ class GPSolver(BaseEstimator, RegressorMixin):
     
     def save_metrics(self, filepath: str):
         """Saves metrics to a JSON file."""
+        import json
+
+        def metrics_serializer(obj):
+            if isinstance(obj, torch.Tensor):
+                return obj.cpu().numpy().tolist()
+            if isinstance(obj, Term):
+                return str(obj)
+            raise TypeError(f"Type {type(obj)} not serializable")
+
         with open(filepath, "w") as f:
-            json.dump(self.metrics, f, indent=4)
+            json.dump(self.metrics, f, indent=4, default=metrics_serializer)
 
 
 # NOTE: on metrics:
@@ -1080,7 +1090,7 @@ if __name__ == "__main__":
         # init=RHH(),
         init=Up2D(depth=1),
         # (num_tries=1, lr=0.1)],
-        pipeline=[
+        operators=[
             # Finite(),
             PO(num_vals=10, frac=1.0, lr=1, syn_simplify=None)
             # syn_simplify=Reduce()),

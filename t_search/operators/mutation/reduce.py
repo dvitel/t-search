@@ -105,7 +105,7 @@ def sp_simplify(term: Term, *,
 class Reduce(TermMutation): 
     ''' Syntactic Simplifier based on domain axioms '''
 
-    def  __init__(self, name: str = "syn_simpl", *,
+    def  __init__(self, name: str = "reduce", *,
                     to_ops: dict = sp_alg_ops_f, from_ops: dict = sp_alg_ops_b,
                     check_validity: bool = False, **kwargs):
         super().__init__(name, **kwargs)

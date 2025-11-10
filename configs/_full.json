@@ -1,4 +1,18 @@
 {
+    "pipeline": {
+        "context": [
+            {"name": "storage", "type": "SpatialIndex", "params": {} }
+        ],
+        "listeners": [
+            {"type": "LoggingListener", "params": {"file_path": "data/logs/run_{}.log", "autoflush": true}}
+        ],        
+        "init": { "type": "RHH", "params": {}  },
+        "operators": [
+            { "type": "TS", "params": { "tournament_size": 7 } },
+            { "type": "RPM", "params": { "rate": 0.1 } },
+            { "type": "RPX", "params": { "rate": 0.9 } }
+        ]
+    },
     "ops": [ "add", "sub", "mul", "div", "pow", "neg", "inv", "exp", "log", "sin", "cos" ],
     "fitness_name": "nmse",
     "fitness_atol": 1e-07,

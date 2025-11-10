@@ -1,0 +1,15 @@
+{
+    "pipeline": {
+        "listeners": [
+            {"type": "LoggingListener", "params": {}}
+        ],
+        "init": { "type": "RHH", "params": {} },
+        "operators": [
+            { "type": "TS", "params": { "tournament_size": 7 } },
+            { "type": "RPM", "params": { "rate": 0.1 } },
+            { "type": "RPX", "params": { "rate": 0.9 } }
+        ]
+    },
+    "prohibit_ops_on_consts_only": false,
+    "with_inner_evals": true
+}

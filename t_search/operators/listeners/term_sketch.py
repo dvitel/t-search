@@ -6,7 +6,7 @@ import torch
 from t_search.syntax import Term, TermPos, Value
 from t_search.spatial import VectorStorage
 
-from ..base import Listener
+from .base import Listener
 
 if TYPE_CHECKING:    
     from ..mutation import Reduce
@@ -63,11 +63,11 @@ class TermSketchSearch(Listener):
         self.semantic_holes: dict[int, dict[tuple[Term, Term, int, int], HoleSemantics]] = {} 
         self.syn_simplify = syn_simplify
 
-    def __call__(self, solver, terms, semantics):
+    def on_eval(self, solver, terms, semantics, fitness):
         return self.register_terms(solver, terms, semantics)    
     
-    def reset(self, solver):
-        super().reset(solver)
+    def on_start(self, solver):
+        super().on_start(solver)
         self.zero = torch.zeros((1,), dtype = solver.dtype, device = solver.device)
         self.one = torch.ones((1,), dtype = solver.dtype, device = solver.device)    
 

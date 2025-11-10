@@ -9,7 +9,7 @@ CONST_CASES = [0.0, math.pi, -math.e, 1e7]
 def test_const(target: float):
     ''' Solving the target with trivial check '''
     atol = 1e-2
-    solver = GPSolver(pipeline=[], max_gen=0, atol=atol) # pipeline does not matter as we test trivial cases
+    solver = GPSolver(operators=[], max_gen=0, atol=atol) # pipeline does not matter as we test trivial cases
     n = 100
     x = list(range(n))
     free_vars = [x]
@@ -35,7 +35,7 @@ def test_const(target: float):
 def test_var():
     ''' Solving the target with trivial check '''
     num_vars: int = 5
-    solver = GPSolver(pipeline=[], max_gen=0) # pipeline does not matter as we test trivial cases
+    solver = GPSolver(operators=[], max_gen=0) # pipeline does not matter as we test trivial cases
     n = 100
     xs = [[float(i) - var_id for i in range(n)] for var_id in range(num_vars)]
     for target_id in range(num_vars):

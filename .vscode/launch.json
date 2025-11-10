@@ -15,19 +15,21 @@
             "name": "Koza set1",
             "type": "debugpy",
             "request": "launch",
-            "module": "experiments.koza",
+            "module": "t_search",
             "args": [
                 "--dataset", "test_0",
-                "--config", "experiments/config/koza-base-set1.json",
+                "--config", "configs/koza-set1.json",
                 "--output", "data/koza-set1-{}-results.json",
                 "--device", "cuda",
                 "--dtype", "float16",
-                "--seed", "42"
+                "--seed", "42",
+                "--debug"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}"
+                "PYTHONPATH": "${workspaceFolder}",
+                "DEBUG_SOLVER": "1"
             },
             "stopOnEntry": false
         }
