@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Sequence
 
 import torch
 
-from syntax import Term
-from syntax.str import term_to_const_skeleton_str
+from t_search.syntax import Term
+from t_search.syntax.str import term_to_const_skeleton_str
 from .base import TermMutation
 from .. import llm
 from . import CO
@@ -42,8 +42,7 @@ class PromptContext:
     fitness: float
     op_desc: dict[str, str]        
     free_vars: Sequence[str]
-    num_positions: int = 2
-    loss_name: str
+    loss_name: str = "nmse"
 
 # DONE: ICL --> best mutations and their effect 
 # DONE: CoT --> select position explain why and then mutate there
@@ -121,14 +120,12 @@ class LLMM(TermMutation):
                 #  prompt_template_path: str = "",
                  prompt_template: str = tests_prompt,
                  op_desc: dict[str, str] = llm.ops_descriptions,
-                 max_num_positions: int = 2,
                  max_num_examples: int = 3,
                  max_num_tests: int = 3,
                  max_num_demo_tests: int = 2,
                  loss_name: str = "NMSE",
                  **kwargs):
         super().__init__(name, rate=rate, **kwargs)
-        self.max_num_positions = max_num_positions
         self.max_num_examples = max_num_examples
         self.max_num_tests = max_num_tests
         self.max_num_demo_tests = max_num_demo_tests
@@ -181,7 +178,6 @@ class LLMM(TermMutation):
 
         demonstrations = self.select_exemplars(solver, term)
         context = PromptContext(
-            num_positions=self.max_num_positions,
             term = term_to_const_skeleton_str(term),
             tests = tests,
             fitness = fitness,

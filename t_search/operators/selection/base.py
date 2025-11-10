@@ -3,7 +3,7 @@
 
 from typing import TYPE_CHECKING, Sequence
 
-from syntax import Term
+from t_search.syntax import Term
 from ..base import Operator
 
 if TYPE_CHECKING:

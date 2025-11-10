@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Sequence
 
 import torch
 
-from syntax import Term
+from t_search.syntax import Term
 from .base import Selection
 
 if TYPE_CHECKING:
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 class TS(Selection):
     ''' Tournament selection operator '''
     
-    def __init__(self, name: str = "tournament", tournament_size: int = 7):
+    def __init__(self, name: str = "TS", tournament_size: int = 7):
         super().__init__(name)
         self.tournament_size = tournament_size
 

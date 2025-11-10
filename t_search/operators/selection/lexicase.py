@@ -1,13 +1,13 @@
 from typing import TYPE_CHECKING, Sequence
 import torch
 
-from syntax import Term
+from t_search.syntax import Term
 from .base import Selection
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
 
-class LexicaseSelection(Selection):
+class Lexicase(Selection):
     ''' Lexicase selection operator '''
     
     def __init__(self, name: str = "lexicase", nan_error = torch.inf,):

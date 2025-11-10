@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 from .base import Operator
-from syntax import Term
+from t_search.syntax import Term
 
 
 if TYPE_CHECKING:

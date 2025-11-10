@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Sequence
 
 import torch
 
-from syntax import Term
+from t_search.syntax import Term
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver  # Import only for type checking
@@ -31,7 +31,7 @@ class Operator:
         ''' Executes only this operator and update existing metrics state '''
         return population
     
-    def call_next(solver: 'GPSolver', population: Sequence[Term], next_ops: list['Operator'] = []):
+    def call_next(self, solver: 'GPSolver', population: Sequence[Term], next_ops: list['Operator'] = []):
         if len(next_ops) > 0:
             next_op, *rest_ops = next_ops
             children = next_op(solver, children, rest_ops)        

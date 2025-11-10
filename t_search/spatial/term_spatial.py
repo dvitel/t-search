@@ -4,7 +4,7 @@ from bisect import insort
 from pyparsing import Callable
 import torch
 from .base import VectorStorage
-from syntax import Term
+from t_search.syntax import Term
 
 
 class TermVectorStorage:

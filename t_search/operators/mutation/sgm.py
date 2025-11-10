@@ -2,8 +2,8 @@
 
 from .base import TermMutation
 from .reduce import Reduce
-from syntax import Term
-from syntax.generation import grow 
+from t_search.syntax import Term
+from t_search.syntax.generation import grow 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
@@ -46,7 +46,7 @@ class SGM(TermMutation):
                 
             neg_t2 = solver.op_builders["mul"].fn(self.minus_one, t2)
             t1_minus_t2 = solver.op_builders["add"].fn(t1, neg_t2)
-            r = solver.const_builder.fn(value = solver.rnd.rand() * self.epsilon)
+            r = solver.const_builder.fn(value = solver.rnd.random() * self.epsilon)
             delta_term = solver.op_builders["mul"].fn(r, t1_minus_t2)
             mutated_term = solver.op_builders["add"].fn(term, delta_term)
             if self.simplifier is not None:

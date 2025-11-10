@@ -2,8 +2,8 @@
 from typing import TYPE_CHECKING
 
 import torch
-from spatial import TermVectorStorage
-from syntax import Term
+from t_search.spatial import TermVectorStorage
+from t_search.syntax import Term
 from ..initialization import Up2D
 from ..competent import DesiredSemantics, InversionCache, get_desired_semantics
 from ..base import Listener

@@ -1,8 +1,8 @@
 
 
 from typing import TYPE_CHECKING
-from syntax import Term
-from syntax.generation import TermGenContext, gen_all_terms
+from t_search.syntax import Term
+from t_search.syntax.generation import TermGenContext, gen_all_terms
 from .base import Initialization
 
 if TYPE_CHECKING:

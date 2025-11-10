@@ -5,9 +5,9 @@ from typing import Callable, Optional
 import torch
 
 from t_search.datasets.sampling import get_interval_grid, get_rand_interval_points
-from syntax import Term, TermPos, Value, evaluate
-from syntax.generation import Builders
-from syntax.replacement import replace_fn, replace_pos
+from t_search.syntax import Term, TermPos, Value, evaluate
+from t_search.syntax.generation import Builders
+from t_search.syntax.replacement import replace_fn, replace_pos
 
 
 @dataclass(frozen=True)
@@ -23,16 +23,6 @@ class OptimState:
     best_binding: dict[Term, torch.Tensor] | None = None  # intermediate bindings of the optimization
     best_loss: torch.Tensor | None = None
     best_term: Term | None = None
-    max_tries: int = 1
-
-    def dec(self):
-        self.max_tries -= 1
-        if self.max_tries <= 0:
-            for v in self.binding.values():
-                del v
-            self.binding.clear()
-            # self.optim_points.clear()
-
 
 class LRAdjust(Exception):
     pass
@@ -244,8 +234,6 @@ def optimize(
         optim_state.best_loss = best_loss[best_id_ids]
         optim_state.best_binding = best_binding
 
-    optim_state.dec()
-
     return num_evals, num_root_evals
 
 
@@ -399,7 +387,6 @@ def get_pos_optim_state(
     builders: Builders,
     num_vals: int = 10,
     output_size: int = 1,
-    max_tries: int = 1,
     dtype=torch.float16,
     device="cuda",
 ) -> Optional[OptimState]:
@@ -437,7 +424,7 @@ def get_pos_optim_state(
         if optim_term is None:
             return None
         if optim_term not in optim_state_cache:
-            optim_state = OptimState(optim_term, optim_points, binding, max_tries=max_tries)
+            optim_state = OptimState(optim_term, optim_points, binding)
             optim_state_cache[optim_term] = optim_state
         else:
             optim_state = optim_state_cache[optim_term]

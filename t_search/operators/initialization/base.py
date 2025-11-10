@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, Any
 
-from syntax import Term
+from t_search.syntax import Term
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver

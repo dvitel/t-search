@@ -3,8 +3,8 @@
 from typing import TYPE_CHECKING, Generator, Optional, Sequence
 
 from ..base import Operator
-from syntax import Term, TermPos
-from syntax.flow import shuffled_position_flow
+from t_search.syntax import Term, TermPos
+from t_search.syntax.flow import shuffled_position_flow
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver  # Import only for type checking
@@ -66,7 +66,7 @@ class PositionMutation(TermMutation):
         self.max_pos_tries = max_pos_tries
         self.leaf_proba = leaf_proba
 
-    def select_positions(self, solver: 'GPSolver', term: Term) -> Generator[TermPos]:   
+    def select_positions(self, solver: 'GPSolver', term: Term) -> Generator[TermPos, None, None]:   
         positions = solver.get_positions(term)
         return shuffled_position_flow(positions, self.leaf_proba, solver.rnd)
 

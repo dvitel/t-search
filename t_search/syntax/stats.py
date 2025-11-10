@@ -1,4 +1,6 @@
 
+from collections import deque
+from dataclasses import dataclass
 from typing import Generator, Optional
 
 import numpy as np
@@ -49,28 +51,27 @@ def get_positions(root: Term, pos_cache: dict[Term, list[TermPos]],
     positions: list[TermPos] = []
     at_depth = 0
 
-    # arg_stack = [(TermPos(None), [])]
-    parent_positions = [None]
+    children_stack = [[]] # one frame in list of childrens
 
     occurs = {}
-    def _enter_args(term: Term, term_i, *_):
+    def _enter_args(*_):
         nonlocal at_depth
-        cur_occur = occurs.setdefault(term, 0)
-        parent_pos = parent_positions[-1]
-        term_pos = TermPos(term, cur_occur, term_i, at_depth,
-                           parent = parent_pos)
-        parent_positions.append(term_pos)
+        children_stack.append([])
         at_depth += 1
 
-    def _exit_term(*_):
+    def _exit_term(term: Term, term_i, *_):
         nonlocal at_depth
         at_depth -= 1
-        cur_pos = parent_positions.pop()
-        # if len(children_pos) > 0:
-        #     cur_pos.depth = max(child.depth for child in children_pos) + 1
-        # cur_pos.size += sum(child.size for child in children_pos)
+        cur_children: list[TermPos] = children_stack.pop()
+        last_frame = children_stack[-1]
+        cur_occur = occurs.setdefault(term, 0)
+        cur_pos = TermPos(term, cur_occur, term_i, at_depth,
+                            parent = None, children=cur_children)
+        for child in cur_children:
+            child.parent = cur_pos
+        last_frame.append(cur_pos)
         positions.append(cur_pos)
-        occurs[cur_pos.term] += 1
+        occurs[term] += 1
 
     postorder_traversal(root, _enter_args, _exit_term)
 

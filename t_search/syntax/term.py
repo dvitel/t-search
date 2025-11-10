@@ -97,5 +97,6 @@ class TermPos:
     at_depth: int = 0
     # depth: int = 0
     # size: int = 0
+    children: list['TermPos'] = field(default_factory=list)
     parent: Optional['TermPos'] = None
     sibling_count: np.ndarray | None = None

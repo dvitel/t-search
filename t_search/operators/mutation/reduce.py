@@ -2,8 +2,8 @@ from typing import TYPE_CHECKING, Callable
 
 import torch
 from .base import TermMutation
-from syntax import Op, Term, Value, Variable, parse_term
-from syntax.traverse import postorder_traversal, TRAVERSAL_EXIT_NODE
+from t_search.syntax import Op, Term, Value, Variable, parse_term
+from t_search.syntax.traverse import postorder_traversal, TRAVERSAL_EXIT_NODE
 import sympy as sp
 
 if TYPE_CHECKING:
@@ -11,7 +11,9 @@ if TYPE_CHECKING:
 
 sp_alg_ops_f = {
     "add": sp.Add,
+    "sub": lambda a, b: a - b,
     "mul": sp.Mul,
+    "div": lambda a, b: a / b,
     "pow": sp.Pow,
     "neg": lambda a: -a,
     "inv": lambda a: 1/a,

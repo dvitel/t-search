@@ -12,20 +12,22 @@ from typing import Any, Callable, Literal, NamedTuple, Optional, Sequence, Type
 
 import numpy as np
 import torch
-from operators import RHH, RPM, RPX, TS, Initialization, Operator, Listener
+
+from t_search.utils.rnd import GLOBAL_RNG
+from .operators import RHH, RPM, RPX, TS, Initialization, Operator, Listener
 from sklearn.base import BaseEstimator, RegressorMixin
 
-from syntax.traverse import postorder_map
+from t_search.syntax.traverse import postorder_map
 
-from .utils.metrics import nmse_loss_builder
+from .utils.metrics import l1_loss_builder, mse_loss_builder, nmse_loss_builder
 
 # from mutation import CO, Dedupl, Mutation, PO, RPX, RPM, Reduce
-from syntax import Op, Term, TermPos, Value, Variable, evaluate, parse_term, parse_const_skeleton_to_term
-from syntax.generation import Builder, Builders, TermGenContext, get_fn_arity
-from syntax.unification import UnifyBindings, match_root
-from syntax.stats import get_depth, get_positions
-from syntax.validation import get_counts, get_pos_constraints, get_pos_sibling_counts, is_valid
-from syntax.replacement import replace_pos, replace_pos_protected
+from t_search.syntax import Op, Term, TermPos, Value, Variable, evaluate, parse_term, parse_const_skeleton_to_term
+from t_search.syntax.generation import Builder, Builders, TermGenContext, get_fn_arity
+from t_search.syntax.unification import UnifyBindings, match_root
+from t_search.syntax.stats import get_depth, get_positions
+from t_search.syntax.validation import get_counts, get_pos_constraints, get_pos_sibling_counts, is_valid
+from t_search.syntax.replacement import replace_pos, replace_pos_protected
 
 GPSolverStatus = Literal["INIT", "MAX_GEN", "MAX_EVAL", "MAX_ROOT_EVAL", "SOLVED"]
 
@@ -46,8 +48,8 @@ class EvSearchTermination(Exception):
 def fit_0(
     fitness: torch.Tensor,
     prev_best_fitness: Optional[torch.Tensor],
-    rtol=1e-04,
-    atol=1e-03,
+    rtol=0,
+    atol=1e-07,
 ) -> tuple[int | None, bool]:
     best_fitness, best_id = torch.min(fitness, dim=0)
     best_found = False
@@ -76,23 +78,58 @@ def timed(fn: Callable, key: str, metrics: dict) -> Callable:
 
 default_alg_ops = {
     "add": lambda a, b: a + b,
+    "sub": lambda a, b: a - b,
     "mul": lambda a, b: a * b,
-    # "pow": lambda a, b: a ** b,
-    # "neg": lambda a: -a,
-    # "inv": lambda a: 1 / a,
-    # "exp": lambda a: torch.exp(a),
-    # "log": lambda a: torch.log(a),
-    # "sin": lambda a: torch.sin(a),
-    # "cos": lambda a: torch.cos(a),
+    "div": lambda a, b: a / b,
+    "pow": lambda a, b: a ** b,
+    "neg": lambda a: -a,
+    "inv": lambda a: 1 / a,
+    "exp": lambda a: torch.exp(a),
+    "log": lambda a: torch.log(a),
+    "sin": lambda a: torch.sin(a),
+    "cos": lambda a: torch.cos(a),
 }
+
+# def get_ops(*op_names: str) -> tuple[dict[str, Callable], dict[str, int]]:
+#     if len(op_name) == 0:
+#         return default_alg_ops
+#     selected_ops = {}
+#     ops_counts = {}
+#     for op_name_with_count in op_names: 
+#         op_name, *count_parts = op_name_with_count.split(':')
+#         if len(count_parts) > 1:
+#             counts = (int(count_parts[0]), int(count_parts[1]))
+#         elif len(count_parts) == 1:
+#             counts = (0, int(count_parts[0]))
+#         else:
+#             counts = None 
+#         if op_name in default_alg_ops:
+#             selected_ops[op_name] = default_alg_ops[op_name]
+#         else:
+#             raise ValueError(f"Operator {op_name} is not in default set. Supported: {list(default_alg_ops.keys())}")
+#         if counts is not None:
+#             ops_counts[op_name] = counts
+#     return selected_ops, ops_counts
+
+# loss and direction to the best, fit_0 -> 0 is the best
+supported_loss = {
+    'nmse': (nmse_loss_builder, fit_0, torch.inf),
+    'mse': (mse_loss_builder, fit_0, torch.inf),
+    'l1': (l1_loss_builder, fit_0, torch.inf),
+}
+
+def get_fitness_fns(name: str) -> Callable:
+    if name in supported_loss:
+        return supported_loss[name]
+    else:
+        raise ValueError(f"Loss {name} is not supported. Supported: {list(supported_loss.keys())}") 
 
 class GPSolver(BaseEstimator, RegressorMixin):
 
     def __init__(
         self,
-        ops: dict[str, Callable] = default_alg_ops,
-        fitness_fn_builder: Callable = nmse_loss_builder,
-        fit_condition=partial(fit_0, rtol=1e-04, atol=1e-03),
+        ops: dict[str, Callable] | list[str] = default_alg_ops,
+        fitness_name: str = 'nmse',
         init: Initialization = RHH(),
         eval_fn=evaluate,
         pipeline: list["Operator"] = [TS(), RPM(), RPX()],
@@ -105,10 +142,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # commutative_ops: list[str] = [], # by all args
         max_term_depth=17,
         min_consts: int = 0,
-        max_consts: int = 5,  # 0 to disable consts in terms
+        max_consts: int = 10,  # 0 to disable consts in terms
         min_vars: int = 1,
         max_vars: int = 10,  # max number of free variables
-        max_ops: dict[str, int] = {},
         max_gen: int = 100,
         max_root_evals: int = 100_000,
         max_evals: int = 1_000_000,
@@ -120,15 +156,31 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # compute_output_range = True,
         term_listeners: list[Listener] = [],
         const_range: Optional[tuple[float, float]] = None,  # if not set, computed from X, y
+        fitness_atol: float = 1e-07,
         rtol=1e-04,
         atol=1e-03,  # NOTE: these are for semantic/outputs comparison,
         # not for fitness, see fit_0
-        rnd_seed: Optional[int] = None,
-        torch_rnd_seed: Optional[int] = None,
+        rnd: np.random.Generator = GLOBAL_RNG,
+        torch_gen: Optional[torch.Generator] = None,
         device:Literal["cpu", "cuda"]="cpu",
         dtype:torch.dtype=torch.float32,
     ):
 
+        if type(ops) is list:
+            op_dict = {}            
+            for op_id in ops:
+                if op_id in default_alg_ops:
+                    op_dict[op_id] = default_alg_ops[op_id]
+                else:
+                    raise ValueError(f"Operator {op_id} is not in default set. Supported: {list(default_alg_ops.keys())}")
+            ops = op_dict
+        for op_id, op_fn in ops.items():
+            if op_fn is None: # use default impl 
+                if op_id in default_alg_ops:
+                    ops[op_id] = default_alg_ops[op_id]
+                else:
+                    raise ValueError(f"Operator {op_id} is not in default set. Supported: {list(default_alg_ops.keys())}")
+                
         self.ops = ops
         self.ops_counts = ops_counts
 
@@ -137,7 +189,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.max_vars = max_vars
         self.min_consts = min_consts
         self.max_consts = max_consts
-        self.max_ops = max_ops
         self.forbid_patterns = forbid_patterns
         self.fpatterns = []
         if len(self.forbid_patterns) > 0:
@@ -156,8 +207,11 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 device=device,
             )
 
+        self.fitness_name = fitness_name
+        fitness_fn_builder, fit_condition, bad_fitness = get_fitness_fns(fitness_name)
+        self.bad_fitness = torch.tensor(bad_fitness, dtype=dtype, device=device)
         self.fitness_fn_builder = fitness_fn_builder
-        self.fit_condition = fit_condition
+        self.fit_condition = partial(fit_condition, atol=fitness_atol)
         self.init = init
         self.eval_fn = eval_fn
         self.pipeline = pipeline
@@ -171,6 +225,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # self.cache_evals = cache_evals
         self.rtol = rtol
         self.atol = atol
+        self.fitness_atol = fitness_atol
         self.device = device
         self.dtype = dtype
         # self.output_range = None
@@ -180,13 +235,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.immediate_arg_limits = immediate_arg_limits
         # self.commutative_ops = set(commutative_ops)
 
-        self.rnd: np.random.Generator = np.random.default_rng(rnd_seed)
-
-        if torch_rnd_seed is None:
-            self.torch_gen = None
-        else:
-            self.torch_gen = torch.Generator(device=device)
-            self.torch_gen.manual_seed(torch_rnd_seed)
+        self.rnd = rnd 
+        self.torch_gen = torch_gen
 
         # next are runtime fields and caches that works across fit calls
         self.target: torch.Tensor = torch.empty(
@@ -221,8 +271,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.status: GPSolverStatus = "INIT"
         self.start_time: float = 0
         self.const_id: int = 0
-        self.const_tape: torch.Tensor | None = None
+        self.const_tape: torch.Tensor = torch.empty(0, device=self.device, dtype=self.dtype)
         self.term_listeners: list[Listener] = term_listeners
+        self.syntax: dict[tuple[str, Term], Term] = {}
 
         self.vars: dict[str, Variable] = {}
         self.var_binding: dict[str, torch.Tensor] = {}
@@ -230,14 +281,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.op_builders: dict[str, Builder] = {}
         for op_id, op_fn in self.ops.items():
             op_arity = get_fn_arity(op_fn)
-            max_count = None
-            if op_id in self.max_ops:
-                max_count = self.max_ops[op_id]
             op_builder = Builder(
                 op_id,
                 self._alloc_op_builder(op_id),
-                op_arity,
-                max_count=max_count,
+                op_arity
             )
             # commutative = op_id in self.commutative_ops)
             if op_id in self.ops_counts:
@@ -285,6 +332,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.metrics["gens"] = [self.gen_metrics]
         self.is_fitted_ = False
         builders: dict[Type | str, Builder] = {}
+
+        self.const_id = 0
+        del self.const_tape
+        self.const_tape = torch.empty(0, device=self.device, dtype=self.dtype)
 
         # self.const_builder = None
         # if self.max_consts > 0:
@@ -364,7 +415,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
             max_value = max_value + 0.1 * dist
             self.const_range = torch.tensor([min_value, max_value], dtype=self.dtype, device=self.device)
             if not torch.is_tensor(free_vars):
-                free_vars = torch.stack([fv for fv in free_vars], dim=0)
+                fv_list = [] 
+                for fv in free_vars:
+                    if torch.is_tensor(fv):
+                        fv_list.append(fv.to(device=self.device, dtype=self.dtype))
+                    else:
+                        fv_list.append(torch.tensor(fv, dtype=self.dtype, device=self.device))
+                free_vars = torch.stack(fv_list, dim=0)
             min_fv = torch.min(free_vars)
             max_fv = torch.max(free_vars)
             self.const_range[0] = torch.minimum(self.const_range[0], min_fv)
@@ -414,30 +471,37 @@ class GPSolver(BaseEstimator, RegressorMixin):
         return var
 
     def _alloc_const(self, *, value: Optional[float | torch.Tensor] = None) -> Value:
-        """Should we random sample of try some grid? Anyway we tune"""
-        if value is not None:  # const value provided - no alloc of consts
-            if not torch.is_tensor(value):
-                value = torch.tensor(value, dtype=self.dtype, device=self.device)
-            return Value(value)
-        if self.const_id == 0 or self.const_id >= self.pop_size:
-            del self.const_tape
-            self.const_tape = torch.rand(
-                self.pop_size,
+        if self.const_id >= self.const_tape.shape[0]:
+            delta = max(1, self.max_consts) * self.pop_size
+            new_tape = torch.empty(
+                self.const_tape.shape[0] + delta,
+                device=self.device,
+                dtype=self.dtype)
+            new_tape[: self.const_tape.shape[0]] = self.const_tape
+            new_rands = torch.rand(
+                delta,
                 device=self.device,
                 dtype=self.dtype,
                 generator=self.torch_gen,
             )
             if self.const_range is not None:
                 dist = self.const_range[1] - self.const_range[0]
-                self.const_tape *= dist
-                self.const_tape += self.const_range[0]
-        assert self.const_tape is not None
+                new_rands *= dist
+                new_rands += self.const_range[0]
+            new_tape[self.const_tape.shape[0] :] = new_rands
+            self.const_tape = new_tape
+            del new_rands
+        if value is not None:  # const value provided - no alloc of consts
+            self.const_tape[self.const_id] = value
+            # if not torch.is_tensor(value):
+            #     value = torch.tensor(value, dtype=self.dtype, device=self.device)
+            # return Value(value)
         value = self.const_tape[self.const_id]
         self.const_id += 1
         # const_id = len(self.const_binding)
         # self.const_binding.append(value)
         # return Value(const_id)
-        self.metrics["consts"] = self.metrics.get("consts", 0) + 1
+        # self.metrics["consts"] = self.metrics.get("consts", 0) + 1
         return Value(value)
 
     def report_evals(self, num_evals: int, num_root_evals: int):
@@ -619,7 +683,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 return None
             self.metrics[key] = self.metrics.get(key, 0) + 1
             if term in self.invalid_term_outputs:
-                self.metrics["syntax_invalid"] = self.metrics.get("syntax_invalid", 0) + 1
+                # NOTE that we increase on every cache hit
+                self.metrics["invalid_hit"] = self.metrics.get("invalid_hit", 0) + 1
                 return None  # do not output known invalid terms
             # elif term in self.const_term_outputs:
             #     self.metrics["syntax_const"] = self.metrics.get("syntax_const", 0) + 1
@@ -656,6 +721,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
         # if term in self.const_term_outputs:
         #     return self.const_term_outputs[term]
         return None
+
+    def _get_fitness(self, term: Term) -> torch.Tensor:
+        if term in self.term_fitness:
+            return self.term_fitness[term]
+        elif term in self.invalid_term_outputs:
+            return self.bad_fitness
+        raise ValueError(f"Term {term} has no fitness computed")
 
     def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:
         res_in_cache = self._get_cached_output(term)
@@ -723,7 +795,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             output_res = self.stack_rows(outputs)
         fitness_res: None | list | torch.Tensor = None
         if return_fitness != "none":
-            fitness = [self.term_fitness[term] for term in terms]
+            fitness = [self._get_fitness(term) for term in terms]
             fitness_res = fitness
             if return_fitness == "tensor":
                 fitness_res = torch.stack(fitness, dim=0)
@@ -746,6 +818,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.metrics["root_evals"] = self.root_evals
         self.metrics["final_time"] = round((perf_counter() - self.start_time) * 1000)
         self.metrics["status"] = self.status
+        self.metrics["consts"] = self.const_id
+        self.metrics["invalid_terms"] = len(self.invalid_term_outputs)
         if self.best_term is not None:
             self.metrics["solution"] = self.best_term
 
@@ -903,6 +977,11 @@ class GPSolver(BaseEstimator, RegressorMixin):
             raise RuntimeError("Evaluation of the best term returned None, not all terminals may be bound")
         output_numpy = output.cpu().numpy()
         return output_numpy
+    
+    def save_metrics(self, filepath: str):
+        """Saves metrics to a JSON file."""
+        with open(filepath, "w") as f:
+            json.dump(self.metrics, f, indent=4)
 
 
 # NOTE: on metrics:

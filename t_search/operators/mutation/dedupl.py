@@ -1,7 +1,7 @@
 
 from typing import Sequence
 from ..base import Operator
-from syntax import Term
+from t_search.syntax import Term
 
 class Dedupl(Operator):
     ''' Removes duplicate syntaxes from the population '''

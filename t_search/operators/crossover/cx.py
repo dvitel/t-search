@@ -6,7 +6,7 @@ from ..mutation import PositionMutation, CM
 
 from ..competent import alg_inv, backward_desired, get_desired_semantics
 from .base import TermCrossover
-from syntax import Term, TermPos
+from t_search.syntax import Term, TermPos
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver

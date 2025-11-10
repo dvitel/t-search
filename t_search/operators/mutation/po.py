@@ -1,5 +1,6 @@
 
 
+from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generator, Literal, Optional
 
@@ -9,18 +10,12 @@ from ..listeners import TermSketchSearch
 
 from .base import PositionMutation
 from .reduce import Reduce
-from spatial import VectorStorage
-from syntax import Term, TermPos, Value
+from t_search.spatial import VectorStorage
+from t_search.syntax import Term, TermPos, Value
 from .optimization import OptimPoint, OptimState, get_pos_optim_state, optimize_positions
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
-
-
-@dataclass 
-class OptimizedPos:
-    term_pos: list[TermPos]
-    cur_id: int
 
 # TODO: simplification: optimization of term only once - same in const optimization 
 # TODO: loss_threshold - may we move it outside core optimization loop? 
@@ -31,7 +26,7 @@ class PO(PositionMutation):
     
     def __init__(self, name = "point_opt", *, 
                  search: TermSketchSearch,
-                 num_vals: int = 1, max_tries: int = 1,
+                 num_vals: int = 1,
                  num_evals: int = 10, lr = 1.0, delta: float = 0.1,
                  num_best: int = 5,
                  loss_threshold: Optional[float] = None,
@@ -44,13 +39,12 @@ class PO(PositionMutation):
         super().__init__(name, **kwargs)
         self.search = search
         self.num_vals = num_vals
-        self.max_tries = max_tries
         self.num_evals = num_evals
         self.lr = lr
         self.delta = delta
         # self.sem_atol = sem_atol
         self.num_best = num_best
-        self.tries_pos: dict[Term, OptimizedPos] = {}
+        self.term_positions: dict[Term, deque] = {}
         self.optim_term_cache: dict[tuple[Term, tuple[Term, int]], Term | None] = {}
         self.optim_state_cache: dict[Term, OptimState] = {}
         self.optim_point_pos_cache: dict[Term, TermPos] = {}
@@ -102,52 +96,34 @@ class PO(PositionMutation):
     #         self.term_semantics[zero_const] = zero_semantics
     #         self.semantic_terms[zero_id] = zero_semantics
 
-    def select_positions(self, solver: 'GPSolver', term: Term) -> Generator[TermPos]:
+    def select_positions(self, solver: 'GPSolver', term: Term) -> Generator[TermPos, None, None]:
 
-        if term not in self.tries_pos:
+        if term not in self.term_positions:
             positions = solver.get_positions(term)
-            positions = [pos for pos in positions if pos not in solver.invalid_term_outputs]
-            # DECISION 1: how to pick term pos?? shuffle, sorted by depth?
-            positions.sort(key=lambda pos: pos.at_depth) # start with shallowest positions
-            # positions = solver.rnd.permutation(positions)
-            self.tries_pos[term] = OptimizedPos(term_pos=positions, cur_id=0)
+            positions_at_first_depth = [pos for pos in positions if pos.at_depth == 1]
+            # positions = [pos for pos in positions if pos not in solver.invalid_term_outputs]
+            # # NOTE: positions are visited in depth order
+            # positions.sort(key=lambda pos: pos.at_depth) # start with shallowest positions
+            # # positions = solver.rnd.permutation(positions)
+            self.term_positions[term] = deque(positions_at_first_depth)
 
-        term_pos = self.tries_pos[term]
-        end_id = term_pos.cur_id - 1 
-        if end_id < 0:
-            end_id = len(term_pos.term_pos) - 1
-        cur_pos = None
-        optim_state = None
-        # pos_to_remove = set()
-        while term_pos.cur_id <= end_id:
-            cur_pos = term_pos.term_pos[term_pos.cur_id % len(term_pos.term_pos)]
-            term_pos.cur_id += 1
-            optim_state = get_pos_optim_state(term, (cur_pos,), 
+        positions = self.term_positions[term]
+
+        while len(positions) > 0:
+            position: TermPos = positions.popleft()
+            positions.extend(position.children)
+            optim_state = get_pos_optim_state(term, (position,), 
                                 optim_term_cache = self.optim_term_cache, 
                                 optim_state_cache = self.optim_state_cache,
                                 builders = solver.builders,
                                 num_vals = self.num_vals,
                                 output_size = solver.target.shape[0],
-                                max_tries = self.max_tries,
                                 dtype = solver.dtype, device = solver.device)
-            # DECISION 2: how many optim attempts? what starting point to take?
             if optim_state is None:
-                # pos_to_remove.add((cur_pos.term, cur_pos.occur))
                 continue
-            if optim_state.max_tries <= 0:
-                optim_state = None
-                # point was already optimized and is in the hole index
-                continue # try next pos // or should we try next term??? return None
-                # return None ???
-            break 
+            yield position
 
-        # if len(pos_to_remove) > 0:
-        #     term_pos.term_pos = [pos for pos in term_pos.term_pos if (pos.term, pos.occur) not in pos_to_remove]
-        #     if len(term_pos.term_pos) == 0:
-        #         del self.tries_pos[term]
-        #         return None 
-        #     term_pos.cur_id = term_pos.cur_id % len(term_pos.term_pos)
-        return cur_pos, optim_state
+        pass
 
     def mutate_position(self, solver: 'GPSolver', term: Term, position: TermPos) -> Term | None:
         

@@ -6,13 +6,14 @@
         GOOGLE_API_KEY - for Google Gemini models    
 '''
 
-
 import os
 from typing import Type, TypeVar
 
 ops_descriptions = {
     "add": "binary addition (add arg1 arg2)",
+    "sub": "binary subtraction (sub minuend subtrahend)",
     "mul": "binary multiplication (mul arg1 arg2)",
+    "div": "binary division (div dividend divisor) - divisor != 0",
     "pow": "binary power (pow base exponent)",
     "neg": "unary negation (neg arg)",
     "inv": "unary inversion (inv arg) - computes 1/args",

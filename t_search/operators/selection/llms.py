@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Annotated, Sequence
 
 import torch
 
-from syntax import Term
+from t_search.syntax import Term
 from .base import Selection
 from .. import llm
 

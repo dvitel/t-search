@@ -5,6 +5,8 @@ import math
 from typing import Callable, Optional
 import numpy as np
 
+from t_search.utils.rnd import GLOBAL_RNG
+
 from .term import Term
 
 
@@ -33,7 +35,7 @@ def check_tape(pos_id: int, tape,
     return tape
 
 def _add_factorize(total: int, min_counts: np.ndarray, max_counts: np.ndarray, 
-                    rnd: np.random.RandomState = np.random) -> np.ndarray | None:
+                    rnd: np.random.Generator = GLOBAL_RNG) -> np.ndarray | None:
     ''' Splits total onto additives: total = sum(res) s.t. res under count constraints'''
 
     # permutation = rnd.permutation(len(min_counts))
@@ -57,7 +59,7 @@ def _add_factorize(total: int, min_counts: np.ndarray, max_counts: np.ndarray,
         real_max = min(cur_max, total - total_mins)
         if real_min > real_max:
             return None
-        new_count = rnd.randint(real_min, real_max + 1)
+        new_count = rnd.integers(real_min, real_max + 1)
         total -= new_count
         res[i] = new_count
 
@@ -145,9 +147,6 @@ class Builders:
             initial_arg_limits = self.unlimited.copy()
             initial_arg_limits[self.leaf_ids] = 0
 
-        self.has_leaf_min_counts=np.any(self.min_counts[self.leaf_ids] > 0)
-        self.has_nonleaf_min_counts=np.any(self.min_counts[self.nonleaf_ids] > 0)
-
         self.default_gen_context = TermGenContext(
             min_counts=self.min_counts,
             max_counts=self.max_counts,
@@ -212,7 +211,7 @@ class TermGenContext:
     
     def split(self, term_id: int, term_counts: np.ndarray, term_left_args: int, leaf_ids: np.ndarray,
                 term_context_limits: np.ndarray | None = None, term_arg_limits: np.ndarray | None = None,
-                rnd: np.random.RandomState = np.random) -> 'TermGenContext':
+                rnd: np.random.Generator = GLOBAL_RNG) -> 'TermGenContext':
         
         left_min_counts = self.min_counts - term_counts # term counts - num of nodes in term including root
         left_max_counts = self.max_counts - term_counts
@@ -228,7 +227,7 @@ class TermGenContext:
             arg_max_counts = left_max_counts
         else:
             max_of_min_counts = left_min_counts // term_left_args
-            arg_min_counts = rnd.randint(0, max_of_min_counts + 1)
+            arg_min_counts = rnd.integers(0, max_of_min_counts + 1)
 
             left_leaf_max_counts = left_max_counts[leaf_ids]
             for _ in range(term_left_args - 1):
@@ -314,9 +313,8 @@ def gen_term(builders: Builders,
         at_depth: int) -> Optional[Term]:
         nonlocal backtracks
         
-        leaf_min_count = 0 if builders.has_leaf_min_counts else gen_context.min_counts[builders.leaf_ids].sum()
-        nonleaf_min_count = 0 if builders.has_nonleaf_min_counts else gen_context.min_counts[builders.nonleaf_ids].sum()
-
+        leaf_min_count = gen_context.min_counts[builders.leaf_ids].sum()
+        nonleaf_min_count = gen_context.min_counts[builders.nonleaf_ids].sum()
         
         if at_depth == max_depth: # leaf forced
 
@@ -365,7 +363,12 @@ def gen_term(builders: Builders,
         # not at max depth, non-leaf possible
 
         # we estimate minimal arity to filter out non-leafs that would not satisfy
+        max_leaf_count_on_depth = builders.max_leaf_count_per_depth[max_depth - at_depth - 1]
+        if max_leaf_count_on_depth == 0:
+            return None
+
         min_arity = math.ceil(leaf_min_count / builders.max_leaf_count_per_depth[max_depth - at_depth - 1])
+
 
         max_leaf_count = gen_context.max_counts[builders.leaf_ids].sum()        
 
@@ -507,8 +510,8 @@ def gen_all_terms(builders: Builders, depth = 3,
         arg_counts: np.ndarray,
         at_depth: int) -> list[tuple[Term, np.ndarray, np.ndarray]]:
         
-        leaf_min_count = 0 if builders.has_leaf_min_counts else gen_context.min_counts[builders.leaf_ids].sum()
-        nonleaf_min_count = 0 if builders.has_nonleaf_min_counts else gen_context.min_counts[builders.nonleaf_ids].sum()
+        leaf_min_count = gen_context.min_counts[builders.leaf_ids].sum()
+        nonleaf_min_count = gen_context.min_counts[builders.nonleaf_ids].sum()
         
         if at_depth == depth: # leaf forced
 

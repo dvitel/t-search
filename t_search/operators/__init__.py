@@ -1,5 +1,5 @@
 from .base import Operator, Listener
-from initialization import *
+from .initialization import *
 from .selection import *
 from .mutation import *
 from .crossover import *

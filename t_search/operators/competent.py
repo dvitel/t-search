@@ -12,8 +12,8 @@ import math
 from typing import Callable
 import torch
 
-from syntax import Term, Op
-from syntax.traverse import postorder_traversal, TRAVERSAL_EXIT_NODE
+from t_search.syntax import Term, Op
+from t_search.syntax.traverse import postorder_traversal, TRAVERSAL_EXIT_NODE
 
 
 DesiredSemantics = list[set[float] | None]  # list of sets of possible values for each dimension.
@@ -41,6 +41,13 @@ def add_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
     res = [ desired - sum(v for i, v in enumerate(args) if i != arg_i ) ]
     return res 
 
+def sub_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
+    if arg_i == 0: # desired w.r.t. minuend
+        res = [ desired + args[1] ]
+    else: # desired w.r.t. subtrahend
+        res = [ args[0] - desired ]
+    return res
+
 def mul_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
     other_mul = prod(v for i, v in enumerate(args) if i != arg_i )
     if other_mul == 0: 
@@ -51,6 +58,16 @@ def mul_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
     else:
         res = [ desired / other_mul ]
         return res
+    
+def div_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
+    if arg_i == 0: # desired w.r.t. dividend
+        res = [ desired * args[1] ]
+    else: # desired w.r.t. divisor
+        if abs(desired) < 1e-10:
+            return [None]
+        else:
+            res = [ args[0] / desired ]
+    return res
     
 def pow_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
     base, exponent = args
@@ -80,7 +97,7 @@ def neg_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
     return res
 
 def inv_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
-    if desired == 0:
+    if abs(desired) < 1e-10:
         return [None]
     else:
         res = [ 1 / desired ]

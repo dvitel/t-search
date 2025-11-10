@@ -2,8 +2,8 @@
 
 from typing import TYPE_CHECKING, Optional
 
-from syntax import Term
-from syntax.generation import grow
+from t_search.syntax import Term
+from t_search.syntax.generation import grow
 from .base import Initialization
 
 if TYPE_CHECKING:
@@ -24,8 +24,8 @@ class RHH(Initialization):
         self.freq_skew = freq_skew
 
     def _rhh(self, solver: 'GPSolver'):
-        depth = solver.rnd.randint(self.min_depth, self.max_depth + 1)
-        leaf_prob = self.leaf_proba if solver.rnd.rand() < self.grow_proba else 0
+        depth = solver.rnd.integers(self.min_depth, self.max_depth + 1)
+        leaf_prob = self.leaf_proba if solver.rnd.random() < self.grow_proba else 0
         term = grow(solver.builders, grow_depth = depth, 
                     grow_leaf_prob = leaf_prob, rnd = solver.rnd, gen_metrics=self.metrics,
                     freq_skew = self.freq_skew)

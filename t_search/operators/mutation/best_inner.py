@@ -2,8 +2,8 @@ from typing import TYPE_CHECKING
 
 import torch
 from .base import TermMutation
-from syntax import Term
-from syntax.stats import get_inner_terms
+from t_search.syntax import Term
+from t_search.syntax.stats import get_inner_terms
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver

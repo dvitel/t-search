@@ -1,6 +1,7 @@
 {
     // Use workspace interpreter (adjust path if needed)
     "python.defaultInterpreterPath": "${workspaceFolder}/t-search-env/bin/python",
+    "python.envFile": "${workspaceFolder}/.env",
     // // Format on save and organize imports
     // "editor.formatOnSave": true,
     // "editor.codeActionsOnSave": {

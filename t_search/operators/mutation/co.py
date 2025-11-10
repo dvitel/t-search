@@ -1,7 +1,7 @@
 
 from typing import TYPE_CHECKING, Optional
 from .base import TermMutation
-from syntax import Term, Value
+from t_search.syntax import Term, Value
 from .optimization import OptimState, optimize_consts
 
 if TYPE_CHECKING:

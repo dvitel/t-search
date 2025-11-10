@@ -1,6 +1,7 @@
 from typing import TYPE_CHECKING, Generator, Optional
 
-from syntax import Term, TermPos, Value, shuffled_position_flow
+from t_search.syntax import Term, TermPos, Value
+from t_search.syntax.flow import shuffled_position_flow
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
@@ -38,14 +39,14 @@ class PositionCrossover(TermCrossover):
         ''' Abstract. Exchanges terms at positions. '''
         pass # to be implemented in subclasses        
 
-    def default_position_flow(self, solver: 'GPSolver', term: Term) -> Generator[TermPos]:
+    def default_position_flow(self, solver: 'GPSolver', term: Term) -> Generator[TermPos, None, None]:
         positions = solver.get_positions(term)
         if self.exclude_values:
             positions = [pos for pos in positions if not isinstance(pos.term, Value)]
         flow = shuffled_position_flow(positions, self.leaf_proba, solver.rnd)
         return flow
     
-    def select_position_pairs(self, solver: 'GPSolver', term: Term, other_term: Term) -> Generator[tuple[TermPos, TermPos]]:
+    def select_position_pairs(self, solver: 'GPSolver', term: Term, other_term: Term) -> Generator[tuple[TermPos, TermPos], None, None]:
         for pos1 in self.default_position_flow(solver, term):
             for pos2 in self.default_position_flow(solver, other_term):
                 if pos1.term == pos2.term:

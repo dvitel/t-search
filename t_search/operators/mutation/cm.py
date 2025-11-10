@@ -8,7 +8,7 @@ from ..listeners import CompetentListener
 from ..competent import alg_inv, get_best_constant, get_best_semantics, backward_desired
 
 from .base import PositionMutation
-from syntax import Term, TermPos
+from t_search.syntax import Term, TermPos
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver

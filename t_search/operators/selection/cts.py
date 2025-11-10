@@ -2,8 +2,8 @@ from typing import TYPE_CHECKING, Sequence
 
 import torch
 
-from syntax import Term
-from utils.metrics import l2
+from t_search.syntax import Term
+from t_search.utils.metrics import l2
 
 from .ts import TS
 

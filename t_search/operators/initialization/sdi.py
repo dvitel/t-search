@@ -1,7 +1,7 @@
 
 from typing import TYPE_CHECKING
-from syntax import Term
-from spatial import TermVectorStorage
+from t_search.syntax import Term
+from t_search.spatial import TermVectorStorage
 from .base import Initialization
 
 if TYPE_CHECKING:

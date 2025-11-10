@@ -1,14 +1,15 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Optional
 
 import torch
 
-from syntax import Term, TermPos, Value
-from spatial import VectorStorage
-from ..mutation import Reduce
+from t_search.syntax import Term, TermPos, Value
+from t_search.spatial import VectorStorage
+
 from ..base import Listener
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:    
+    from ..mutation import Reduce
     from t_search.solver import GPSolver
 
 @dataclass 
@@ -47,9 +48,9 @@ class TermSketchSearch(Listener):
 
     def __init__(self, name="TermSketchSearch", *, 
                     index_type = None, # type: ignore
-                    syn_simplify: Reduce | None = None,
+                    syn_simplify: 'Reduce | None' = None,
                     **kwargs):
-        super().__init__(name)      
+        super().__init__(name, **kwargs)
         self.zero = torch.tensor(0.0)
         self.one = torch.tensor(1.0)  
         self.index_type = index_type
@@ -60,7 +61,7 @@ class TermSketchSearch(Listener):
         
         self.hole_index: VectorStorage | None = None
         self.semantic_holes: dict[int, dict[tuple[Term, Term, int, int], HoleSemantics]] = {} 
-
+        self.syn_simplify = syn_simplify
 
     def __call__(self, solver, terms, semantics):
         return self.register_terms(solver, terms, semantics)    
