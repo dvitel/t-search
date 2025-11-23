@@ -259,7 +259,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.evaluator.on_start(self)
 
         if self.const_range is None:
-            self.const_range = self.evaluator.detect_const_range(self.var_binding.values())
+            self.const_range = self.evaluator.detect_const_range(self.target, self.var_binding.values())
 
         self.new_listener_terms.clear()
 
@@ -486,7 +486,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         return_fitness: Literal["none", "list", "tensor"] = "none",
     ) -> Evaluations:
         evaluations = self.evaluator.eval(
-            terms,
+            terms, self,
             return_outputs=return_outputs,
             return_fitness=return_fitness,
         )

@@ -12,7 +12,7 @@ from .base import PositionMutation
 from .reduce import Reduce
 from t_search.spatial import VectorStorage
 from t_search.syntax import Term, TermPos, Value
-from .optimization import OptimPoint, OptimState, get_pos_optim_state, optimize_positions
+from ...evaluators.optimization import OptimPoint, OptimState, get_pos_optim_state, optimize_positions
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver

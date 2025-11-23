@@ -13,7 +13,7 @@ from .rtree import RTreeIndex
 from .spearman import SpearmanCorIndex
 from .cos import RCosIndex
 from .inter import InteractionIndex
-from .term_spatial import TermVectorStorage
+from ..evaluators.term_spatial import TermVectorStorage
 
 __all__ = ['VectorStorage', 'SpatialIndex', 'TermVectorStorage',
            'BinIndex', 'GridIndex', 'RTreeIndex', 'SpearmanCorIndex', 

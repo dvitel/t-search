@@ -5,8 +5,8 @@ from typing import Literal, NamedTuple, Optional, TYPE_CHECKING, Sequence
 
 import torch
 
-from t_search.evaluators.term_spatial import TermVectorStorage
-from t_search.operators.listeners.base import Listener
+from .optimizer import Optimizer
+from .term_spatial import TermVectorStorage
 from t_search.spatial import VectorStorage
 from t_search.syntax.evaluation import evaluate
 from t_search.syntax.term import Variable, Value, Term
@@ -16,13 +16,6 @@ from .fitness import get_fitness_fns
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
-
-class Evaluation(NamedTuple):
-    ''' evaluation of one term '''
-    sketch: Term # skeleton from which the concrete term was created, by default it is term itself
-    term: Term # same or revised term under evaluation
-    outputs: torch.Tensor # per test outcomes 
-    fitness: torch.Tensor # aggregated outcomes
 
 class Evaluations(NamedTuple):
     ''' grouped evaluations of many terms '''
@@ -36,11 +29,13 @@ class Evaluator:
 
     def __init__(self, *,
                     vector_storage: VectorStorage, # should be injected 
+                    optimizer: Optimizer | None = None,
                     fitness_name: str = 'nmse',
                     fitness_atol: float = 1e-05,           
                     with_inner_evals: bool = True,      
                     max_root_evals: int = 100_000,
                     max_evals: int = 1_000_000,
+                    eval_fn: Callable = evaluate,
                     # output_rtol=1e-04,
                     # output_atol=1e-04, 
                 ):
@@ -52,6 +47,8 @@ class Evaluator:
         self.root_evals: int = 0
         self.max_evals = max_evals
         self.evals: int = 0
+        self.eval_fn = eval_fn
+        self.optimizer = optimizer
 
         fitness_fn_builder = get_fitness_fns(fitness_name)
         self.fitness_fn_builder = fitness_fn_builder
@@ -64,12 +61,12 @@ class Evaluator:
         self.term_fitness: dict[Term, torch.Tensor] = {}
         self.with_inner_evals: bool = with_inner_evals
 
-        self.best_eval: Optional[Evaluation] = None
+        self.best_term: Optional[Term] = None
+        self.best_term_outputs: Optional[torch.Tensor] = None
+        self.best_term_fitness: Optional[torch.Tensor] = None
 
         # settings set by GPSolver in on_start 
-        self.target: Optional[torch.Tensor] = None
-        self.ops: Optional[dict[str, Callable]] = None
-        self.listeners: list[Listener] = []
+        self.bad_fitness = torch.tensor(float('inf'))
 
     def _clean_eval_caches(self):
         self.evals = 0
@@ -90,27 +87,26 @@ class Evaluator:
     def on_start(self, solver: 'GPSolver'):
         ''' Called before solver starts fitting '''
         self._clean_eval_caches()
-        self.ops = solver.ops
-        self.target = solver.target
-        self.fitness_fn = self.fitness_fn_builder(self.target)
-        self.listeners = solver.listeners
+        if self.optimizer is not None:
+            self.optimizer.reset()
+        self.fitness_fn = self.fitness_fn_builder(solver.target)
         self.new_listener_terms.clear()
         self.eq_group_term_order = lambda t: solver.get_size(t)
+        self.bad_fitness = torch.tensor(float('inf'), device=solver.device, dtype=solver.dtype)
 
     def on_end(self, solver: 'GPSolver'):
         ''' Called on the end of solver search'''
 
-        best_depth = solver.get_depth(self.best_eval.term)
-        best_size = solver.get_size(self.best_eval.term)
-        best_counts = solver.get_counts(self.best_eval.term)
+        best_depth = solver.get_depth(self.best_term)
+        best_size = solver.get_size(self.best_term)
+        best_counts = solver.get_counts(self.best_term)
 
         solver.add_metric(
             evals = self.evals,
             root_evals = self.root_evals,            
             invalid_terms = len(self.invalid_term_outputs),
-            best_sketch = self.best_eval.sketch,
-            best_term = self.best_eval.term,
-            best_fitness = self.best_eval.fitness,
+            best_term = self.best_term,
+            best_fitness = self.best_term_fitness,
             best_term_depth = best_depth,
             best_term_size = best_size,
             best_term_counts = best_counts.tolist()
@@ -118,6 +114,8 @@ class Evaluator:
 
         self._clean_eval_caches()
         self.new_listener_terms.clear()
+        if self.optimizer is not None:
+            self.optimizer.reset()
 
     def is_const(
         self,
@@ -135,9 +133,9 @@ class Evaluator:
     ):
         return term in self.invalid_term_outputs
     
-    def detect_const_range(self, var_bindings: Sequence[torch.Tensor]) -> torch.Tensor:
-        min_value = self.target.min()
-        max_value = self.target.max()
+    def detect_const_range(self, target: torch.Tensor, var_bindings: Sequence[torch.Tensor]) -> torch.Tensor:
+        min_value = target.min()
+        max_value = target.max()
         if torch.isclose(
             min_value,
             max_value,
@@ -145,7 +143,7 @@ class Evaluator:
         ):
             min_value = min_value - 0.1
             max_value = max_value + 0.1
-        const_range = torch.tensor([min_value, max_value], dtype=self.target.dtype, device=self.target.device)
+        const_range = torch.tensor([min_value, max_value], dtype=target.dtype, device=target.device)
         free_vars_as_one = torch.stack(tuple(var_bindings), dim=0)
         min_fv = torch.min(free_vars_as_one)
         max_fv = torch.max(free_vars_as_one)
@@ -206,16 +204,22 @@ class Evaluator:
         best_new_fitness, best_new_id = torch.min(fitness, dim=0)
         new_term = new_terms[best_new_id]
         new_outputs = outputs[best_new_id]
-        if self.best_eval is None:
-            self.best_eval = Evaluation(new_term, new_term, best_new_fitness, new_outputs)
-        elif torch.isclose(best_new_fitness, self.best_eval.fitness, atol=self.fitness_atol, rtol=0):
-            best_term_size = solver.get_size(self.best_eval.term)
+        if self.best_term is None:
+            self.best_term = new_term
+            self.best_term_fitness = best_new_fitness
+            self.best_term_outputs = new_outputs
+        elif torch.isclose(best_new_fitness, self.best_term_fitness, atol=self.fitness_atol, rtol=0):
+            best_term_size = solver.get_size(self.best_term)
             new_term_size = solver.get_size(new_term)
             if new_term_size < best_term_size:
-                self.best_eval = Evaluation(new_term, new_term, best_new_fitness, new_outputs)
-        elif best_new_fitness < self.best_eval.fitness:
-            self.best_eval = Evaluation(new_term, new_term, best_new_fitness, new_outputs)
-        if self.best_eval.fitness < self.fitness_atol:
+                self.best_term = new_term
+                self.best_term_fitness = best_new_fitness
+                self.best_term_outputs = new_outputs
+        elif best_new_fitness < self.best_term_fitness:
+            self.best_term = new_term
+            self.best_term_fitness = best_new_fitness
+            self.best_term_outputs = new_outputs
+        if self.best_term_fitness < self.fitness_atol:
             raise (EvSearchTermination("SOLVED"))
         
     def _eval_loop(self, terms: list[Term]):
@@ -229,25 +233,32 @@ class Evaluator:
             self.new_listener_terms.clear()
             self._eval_group(new_terms)
             self.new_listener_terms.extend((t for t in self.new_listener_terms if self._get_cached_output(t) is None))
-        pass     
+        pass          
 
-    def _eval_one(self, term: Term, 
-                  ops: dict[str, Callable] | None = None,
+    def _eval_one(self, solver: 'GPSolver', term: Term, 
                   get_binding: Callable | None = None,
-                  set_binding: Callable | None = None) -> Optional[torch.Tensor]:
+                  set_binding: Callable | None = None) -> tuple[Term, torch.Tensor]:
         ''' Interrnal, can be overriden, one term evaluation without any caching '''
-        output = evaluate(term, ops or self.ops, get_binding or self._get_binding, set_binding or self._set_binding)
-        return output
+        if self.optimizer is not None: # first optimize then eval 
+            new_term = self.optimizer.optimize(solver, term)
+        else:
+            new_term = term
+        output = self.eval_fn(new_term, solver.ops, get_binding or self._get_binding, set_binding or self._set_binding)
+        return (term, output)
     
-    def _eval_group(self, terms: list[Term]):
+    def _eval_group(self, solver: 'GPSolver', terms: list[Term]):
         ''' Internal, eager eval ofo many terms without caching '''
 
         self.new_term_outputs.clear()
 
         outputs = []
+        optim_terms = []
         for term in terms:
-            output = self._eval_one(term)
+            new_term, output = self._eval_one(solver, term)
+            optim_terms.append(new_term)
             outputs.append(output)
+
+        terms = optim_terms
 
         new_terms = [t for t in terms if t in self.new_term_outputs]
         if self.with_inner_evals:
@@ -255,7 +266,7 @@ class Evaluator:
 
         outputs = [self.new_term_outputs[t] for t in new_terms]
         if len(outputs) > 0:
-            semantics = stack_rows(outputs, self.target)
+            semantics = stack_rows(outputs, solver.target)
             finite_semantics_mask = torch.isfinite(semantics).all(dim=-1)  # we do not insert nans and infs
             (valid_ids,) = torch.where(finite_semantics_mask)
             (infinite_ids,) = torch.where(~finite_semantics_mask)
@@ -275,8 +286,8 @@ class Evaluator:
                     self.term_fitness[t] = f                
                 
                 # solver.on_eval(valid_terms, semantics, new_fitness)
-                for listener in self.listeners:
-                    listener_terms = listener.on_eval(self, valid_terms, semantics, new_fitness)
+                for listener in solver.listeners:
+                    listener_terms = listener.on_eval(solver, valid_terms, semantics, new_fitness)
                     if listener_terms is not None:
                         self.new_listener_terms.extend(listener_terms)                
 
@@ -290,6 +301,7 @@ class Evaluator:
 
     def eval(
         self,
+        solver: 'GPSolver',
         terms: Sequence[Term] | Term,
         *,
         return_outputs: Literal["list", "tensor"] = "list",
@@ -304,13 +316,13 @@ class Evaluator:
         eval_ids = [i for i, output in enumerate(outputs) if output is None]
         eval_terms = [terms[i] for i in eval_ids]
         if len(eval_terms) > 0:
-            self._eval_loop(eval_terms)
+            self._eval_loop(solver, eval_terms)
             eval_outputs = [self._get_cached_output(term) for term in eval_terms]
             for i, eval_output in zip(eval_ids, eval_outputs):
                 outputs[i] = eval_output
         output_res: list | torch.Tensor = outputs
         if return_outputs == "tensor":
-            output_res = stack_rows(outputs, self.target)
+            output_res = stack_rows(outputs, solver.target)
         fitness_res: None | list | torch.Tensor = None
         if return_fitness != "none":
             fitness = [self._get_fitness(term) for term in terms]
@@ -329,7 +341,7 @@ class Evaluator:
         
 
     def predict(self, var_binding: dict[str, torch.Tensor], ops: dict[str, Callable] | None = None) -> torch.Tensor:
-        if self.best_eval is None:
+        if self.best_term is None:
             raise RuntimeError("Solver is not fitted yet")
 
         def get_binding(root: Term, term: Term) -> Optional[torch.Tensor]:
@@ -343,5 +355,5 @@ class Evaluator:
         def set_binding(*_):
             pass
 
-        output = self._eval_one(self.best_eval.term, ops, get_binding, set_binding)
+        _, output = self._eval_one(self.best_term, ops, get_binding, set_binding)
         return output    
