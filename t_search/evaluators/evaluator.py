@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 class Evaluations(NamedTuple):
     ''' grouped evaluations of many terms '''
+    term: list[Term],
     outputs: list[torch.Tensor] | torch.Tensor
     fitness: None | list[torch.Tensor] | torch.Tensor = None
 
@@ -222,18 +223,20 @@ class Evaluator:
         if self.best_term_fitness < self.fitness_atol:
             raise (EvSearchTermination("SOLVED"))
         
-    def _eval_loop(self, terms: list[Term]):
+    def _eval_loop(self, terms: list[Term]) -> list[Term]:
         ''' Intrenal, evaluates given terms and all produced terms by listeners'''
 
+        optim_terms = []    
         if len(terms) > 0:
-            self._eval_group(self, terms)
+            optim_terms = self._eval_group(self, terms)
 
         while len(self.new_listener_terms) > 0:
             new_terms = self.new_listener_terms
             self.new_listener_terms.clear()
             self._eval_group(new_terms)
             self.new_listener_terms.extend((t for t in self.new_listener_terms if self._get_cached_output(t) is None))
-        pass          
+
+        return optim_terms
 
     def _eval_one(self, solver: 'GPSolver', term: Term, 
                   get_binding: Callable | None = None,
@@ -244,7 +247,7 @@ class Evaluator:
         else:
             new_term = term
         output = self.eval_fn(new_term, solver.ops, get_binding or self._get_binding, set_binding or self._set_binding)
-        return (term, output)
+        return (new_term, output)
     
     def _eval_group(self, solver: 'GPSolver', terms: list[Term]):
         ''' Internal, eager eval ofo many terms without caching '''
@@ -258,9 +261,7 @@ class Evaluator:
             optim_terms.append(new_term)
             outputs.append(output)
 
-        terms = optim_terms
-
-        new_terms = [t for t in terms if t in self.new_term_outputs]
+        new_terms = [t for t in optim_terms if t in self.new_term_outputs]
         if self.with_inner_evals:
             new_terms = list(self.new_term_outputs.keys())
 
@@ -297,7 +298,7 @@ class Evaluator:
 
         self.new_term_outputs.clear()
 
-        return
+        return optim_terms
 
     def eval(
         self,
@@ -316,8 +317,8 @@ class Evaluator:
         eval_ids = [i for i, output in enumerate(outputs) if output is None]
         eval_terms = [terms[i] for i in eval_ids]
         if len(eval_terms) > 0:
-            self._eval_loop(solver, eval_terms)
-            eval_outputs = [self._get_cached_output(term) for term in eval_terms]
+            optim_terms = self._eval_loop(solver, eval_terms)
+            eval_outputs = [self._get_cached_output(term) for term in optim_terms]
             for i, eval_output in zip(eval_ids, eval_outputs):
                 outputs[i] = eval_output
         output_res: list | torch.Tensor = outputs
