@@ -3,7 +3,7 @@
 from typing import TYPE_CHECKING
 from .rpx import RPX
 from t_search.syntax import Term, TermPos
-from t_search.utils.metrics import l2
+from t_search.evaluators.fitness import l2
 
 if TYPE_CHECKING:
     from t_search.solver import GPSolver 

@@ -28,7 +28,7 @@ class SGM(TermMutation):
         self.check_validity = check_validity
         self.simplifier = simplifier
 
-    def op_init(self, solver):
+    def on_start(self, solver):
         self.minus_one = solver.const_builder.fn(value = -1.0)
 
     def mutate_term(self, solver: 'GPSolver', term: Term) -> Term | None:

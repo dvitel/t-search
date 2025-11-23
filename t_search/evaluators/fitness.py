@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, Optional
 import torch
 
 
@@ -11,13 +11,16 @@ def nmse_loss_builder(target) -> Callable[[torch.Tensor], torch.Tensor]:
     # norm = torch.mean(target ** 2, dim=-1) # TODO: could be different norms: std dev
     norm = torch.var(target, dim=-1, unbiased=False)
 
-    # mse = torch.mean((output - target) ** 2, dim=-1)
-    def loss_fn(output: torch.Tensor) -> torch.Tensor:
-        mse = torch.mean((output - target) ** 2, dim=-1)
-        nmse = mse / norm
-        return nmse
+    if norm > 0:
+    
+        def loss_fn(output: torch.Tensor) -> torch.Tensor:
+            mse = torch.mean((output - target) ** 2, dim=-1)
+            nmse = mse / norm
+            return nmse
 
-    return loss_fn
+        return loss_fn
+    
+    return mse_loss_builder(target)
 
 
 # def mse_loss_nan_v(predictions, target, *, nan_error = torch.inf):
@@ -51,3 +54,16 @@ def l2(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     el_dist = (a - b) ** 2
     el_dist.nan_to_num_(nan=torch.inf)
     return torch.sqrt(torch.sum(el_dist, dim=-1))
+
+# loss and direction to the best, fit_0 -> 0 is the best
+supported_loss = {
+    'nmse': nmse_loss_builder,
+    'mse': mse_loss_builder, 
+    'l1': l1_loss_builder
+}
+
+def get_fitness_fns(name: str) -> Callable:
+    if name in supported_loss:
+        return supported_loss[name]
+    else:
+        raise ValueError(f"Loss {name} is not supported. Supported: {list(supported_loss.keys())}") 

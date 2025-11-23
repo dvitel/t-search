@@ -3,7 +3,7 @@ from .sampling import get_interval_grid, get_rand_points
 from .benchmark import Benchmark
 
 
-test_0 = Benchmark("test_0", lambda x: x + 74.3, get_rand_points, {"num_samples": 20, "ranges": [(-1.0, 1.0)]})
+test_0 = Benchmark("test_0", lambda x: x + 3.1415, get_rand_points, {"num_samples": 20, "ranges": [(-1.0, 1.0)]})
 
 koza_1 = Benchmark(
     "koza_1",

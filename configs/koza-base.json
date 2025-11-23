@@ -10,6 +10,13 @@
             { "type": "RPX", "params": { "rate": 0.9 } }
         ]
     },
-    "prohibit_ops_on_consts_only": false,
-    "with_inner_evals": true
+    "evaluator": {
+        "type": "Evaluator", 
+        "params": {
+            "fitness_name": "nmse",
+            "fitness_atol": 1e-05,
+            "with_inner_evals": true
+        }
+    },    
+    "prohibit_ops_on_consts_only": false
 }

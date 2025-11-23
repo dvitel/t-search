@@ -3,7 +3,7 @@
 from .base import TermCrossover
 from ..mutation import Reduce
 from t_search.syntax import Term
-from t_search.utils.metrics import l2
+from t_search.evaluators.fitness import l2
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from t_search.solver import GPSolver
@@ -25,7 +25,7 @@ class SGX(TermCrossover):
         self.check_validity = check_validity
         self.simplifier = simplifier
 
-    def op_init(self, solver):
+    def on_start(self, solver):
         self.minus_one = solver.const_builder.fn(value = -1.0)        
 
     def crossover_terms(self, solver: 'GPSolver', term: Term, other_term: Term) -> Term | None:

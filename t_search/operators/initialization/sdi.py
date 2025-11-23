@@ -54,8 +54,8 @@ class SDI(Initialization):
             if term is None:
                 continue
             term_outputs, *_ = solver.eval(term, return_outputs="list").outputs
-            is_const = solver.find_any_const(term_outputs)
-            if is_const is not None:
+            const_value = solver.evaluator.is_const(term_outputs)
+            if const_value is not None:
                 continue
             self.index.insert([term], term_outputs.unsqueeze(0))
         population = self.index.get_repr_terms()

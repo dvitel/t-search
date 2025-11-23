@@ -14,7 +14,7 @@ def test_const(target: float):
     x = list(range(n))
     free_vars = [x]
     target = [target + atol * (np.random.rand() - 0.5) for _ in range(n)]
-    solver._reset_state(free_vars, target)
+    solver.on_start(free_vars, target)
     assert solver._check_trivial(), "Trivial constant target was not solved"
     pass 
 
@@ -40,7 +40,7 @@ def test_var():
     xs = [[float(i) - var_id for i in range(n)] for var_id in range(num_vars)]
     for target_id in range(num_vars):
         target = list(xs[target_id])
-        solver._reset_state(xs, target)
+        solver.on_start(xs, target)
         assert solver._check_trivial(), "Trivial variable target was not solved"
     pass
 

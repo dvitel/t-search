@@ -24,8 +24,11 @@ class Operator:
             else:
                 self.metrics[key] = self.metrics[key] + value
 
-    def op_init(self, solver: 'GPSolver'):
+    def on_start(self, solver: 'GPSolver'):
         pass        
+
+    def on_end(self, solver: 'GPSolver'):
+        pass
     
     def exec(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
         ''' Executes only this operator and update existing metrics state '''
