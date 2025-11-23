@@ -32,8 +32,8 @@ class SDI(Initialization):
             return population[:pop_size]
         
         nonterminal_builders = solver.builders.get_nonleaf_builders()
-        global_try_count = 3 * (pop_size - self.index.len_sem())
-        while (self.index.len_sem() < pop_size) and (global_try_count > 0): 
+        global_try_count = 3 * (pop_size - self.index.num_sem())
+        while (self.index.num_sem() < pop_size) and (global_try_count > 0): 
             global_try_count -= 1
             rnd_builder = solver.rnd.choice(nonterminal_builders)
             args = []

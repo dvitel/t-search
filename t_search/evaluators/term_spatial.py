@@ -1,9 +1,10 @@
 ''' Adds syntax to plain vector storage '''
 
 from bisect import insort
+from typing import Optional
 from pyparsing import Callable
 import torch
-from .base import VectorStorage
+from ..spatial.base import VectorStorage
 from t_search.syntax import Term
 
 
@@ -19,6 +20,22 @@ class TermVectorStorage:
         self.term_to_sid = {}
         self.index.reset()
 
+    def get_semantics_for_term(self, term: Term) -> Optional[torch.Tensor]:
+        if term not in self.term_to_sid:
+            return None
+        sid = self.term_to_sid[term]
+        vector = self.index.get_vectors(sid)
+        return vector
+    
+    def get_term_for_semantics(self, vector: torch.Tensor) -> Optional[Term]:
+        sid, *_ = self.index.query_points(vector.unsqueeze(0))
+        if sid == -1:
+            return None
+        terms = self.sid_to_terms.get(sid, [])
+        if not terms:
+            return None
+        return terms[0] # repr
+
     def insert(self, terms: list[Term], vectors: torch.Tensor, eq_group_order_key: Callable) -> None:
         ''' Returns mapping of term to its id in the equivalence group '''
         ids = self.index.insert(vectors)
@@ -32,26 +49,14 @@ class TermVectorStorage:
     def get_repr_terms(self) -> list[Term]:
         repr_terms = [terms[0] for terms in self.sid_to_terms.values()]
         return repr_terms
-    
-    def get_repr_term(self, sem_id: int) -> Term:
-        return self.sid_to_terms[sem_id][0]
-    
-    def len_sem(self) -> int:
-        return len(self.sid_to_terms)
-    
-    def len_terms(self) -> int:
-        return len(self.term_to_sid)
-    
+        
     def get_semantics(self) -> torch.Tensor:
-        all_semantics = self.index.vectors[:self.index.cur_id]
+        all_semantics = self.index.get_vectors()
         return all_semantics
 
+    def num_sem(self) -> int:
+        return len(self.sid_to_terms)
     
-    # def get_num_terms(self) -> int:
-    #     return len(self.term_to_sid)
+    def num_terms(self) -> int:
+        return len(self.term_to_sid)
     
-    # def get_num_sids(self) -> int: 
-    #     return len(self.sid_to_terms)
-
-    # def get_term_by_index(self, index: int) -> Term:
-    #     return self.terms[index]

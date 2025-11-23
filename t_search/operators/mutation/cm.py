@@ -48,7 +48,8 @@ class CM(PositionMutation):
         if best_sem_id is None:
             return None
         
-        best_term = self.l.index.get_repr_term(best_sem_id)
+        best_vector = all_semantics[best_sem_id]
+        best_term = self.l.index.get_term_for_semantics(best_vector)
         
         mutated_term = solver.replace_position(term, position, best_term)
 

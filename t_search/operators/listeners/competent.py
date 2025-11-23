@@ -36,7 +36,7 @@ class CompetentListener(Listener):
         self.desired_target = get_desired_semantics(solver.target)
         self.index.reset()
         self.inv_cache.reset()
-        if self.index_init_depth is not None and self.index.len_sem() == 0: 
+        if self.index_init_depth is not None and self.index.num_sem() == 0: 
             init_op = Up2D(self.index_init_depth, force_pop_size=False)
             lib_terms = init_op(solver, pop_size=self.index_max_size)
             semantics = solver.eval(lib_terms, return_outputs="tensor").outputs
@@ -44,7 +44,7 @@ class CompetentListener(Listener):
             del semantics
 
     def on_eval(self, solver, terms, semantics, fitness):
-        if self.dynamic_index and self.index.len_terms() < self.index_max_size:
+        if self.dynamic_index and self.index.num_terms() < self.index_max_size:
             self.index.insert(terms, semantics)
     
     def get_desired_semantics(self, term: Term, semantics: torch.Tensor) -> DesiredSemantics:

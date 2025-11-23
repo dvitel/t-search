@@ -3,9 +3,9 @@
 from collections.abc import Callable
 from typing import Literal, NamedTuple, Optional, TYPE_CHECKING, Sequence
 
-import numpy as np
 import torch
 
+from t_search.evaluators.term_spatial import TermVectorStorage
 from t_search.operators.listeners.base import Listener
 from t_search.spatial import VectorStorage
 from t_search.syntax.evaluation import evaluate
@@ -35,7 +35,7 @@ class Evaluator:
     '''
 
     def __init__(self, *,
-                    # storage: Optional[VectorStorage], # should be injected 
+                    vector_storage: VectorStorage, # should be injected 
                     fitness_name: str = 'nmse',
                     fitness_atol: float = 1e-05,           
                     with_inner_evals: bool = True,      
@@ -45,6 +45,7 @@ class Evaluator:
                     # output_atol=1e-04, 
                 ):
 
+        self.storage: TermVectorStorage = TermVectorStorage(vector_storage)
         self.fitness_name = fitness_name
         self.fitness_atol = fitness_atol
         self.max_root_evals = max_root_evals
@@ -52,13 +53,10 @@ class Evaluator:
         self.max_evals = max_evals
         self.evals: int = 0
 
-        # self.output_atol = output_atol,
-        # self.output_rtol = output_rtol
         fitness_fn_builder = get_fitness_fns(fitness_name)
         self.fitness_fn_builder = fitness_fn_builder
         self.fitness_fn: Callable[[torch.Tensor], torch.Tensor] = lambda x: x
 
-        self.term_outputs: dict[Term, torch.Tensor] = {}
         self.new_term_outputs: dict[Term, torch.Tensor] = {}
         self.invalid_term_outputs: dict[Term, torch.Tensor] = {}
         # self.const_term_outputs: dict[Term, torch.Tensor] = {}
@@ -76,9 +74,7 @@ class Evaluator:
     def _clean_eval_caches(self):
         self.evals = 0
         self.root_evals = 0
-        for output in self.term_outputs.values():
-            del output
-        self.term_outputs.clear()
+        self.storage.reset()
         for output in self.new_term_outputs.values():
             del output
         self.new_term_outputs.clear()
@@ -89,6 +85,7 @@ class Evaluator:
             del fitness
         self.term_fitness.clear()        
         self.new_listener_terms: list[Term] = []
+        self.eq_group_term_order: Callable[[Term], float] = lambda t: 0.0
 
     def on_start(self, solver: 'GPSolver'):
         ''' Called before solver starts fitting '''
@@ -98,6 +95,7 @@ class Evaluator:
         self.fitness_fn = self.fitness_fn_builder(self.target)
         self.listeners = solver.listeners
         self.new_listener_terms.clear()
+        self.eq_group_term_order = lambda t: solver.get_size(t)
 
     def on_end(self, solver: 'GPSolver'):
         ''' Called on the end of solver search'''
@@ -164,9 +162,9 @@ class Evaluator:
         if isinstance(term, Value):
             # return self.const_binding[term.value]
             return term.value
-        if term in self.term_outputs:
-            semantics = self.term_outputs[term]
-            return semantics
+        term_semantics = self.storage.get_semantics_for_term(term)
+        if term_semantics is not None:
+            return term_semantics
         if term in self.new_term_outputs:
             return self.new_term_outputs[term]
         if term in self.invalid_term_outputs:
@@ -272,8 +270,8 @@ class Evaluator:
                 semantics = new_semantics
 
                 new_fitness: torch.Tensor = self.fitness_fn(semantics)
-                for t, o, f in zip(valid_terms, semantics, new_fitness):
-                    self.term_outputs[t] = o.clone()
+                self.storage.insert(valid_terms, semantics, self.eq_group_term_order)
+                for t, f in zip(valid_terms, new_fitness):
                     self.term_fitness[t] = f                
                 
                 # solver.on_eval(valid_terms, semantics, new_fitness)
