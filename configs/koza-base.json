@@ -1,22 +1,9 @@
 {
-    "pipeline": {
-        "listeners": [
-            {"type": "LoggingListener", "params": {}}
-        ],
-        "init": { "type": "RHH", "params": {} },
-        "operators": [
-            { "type": "TS", "params": { "tournament_size": 7 } },
-            { "type": "RPM", "params": { "rate": 0.1 } },
-            { "type": "RPX", "params": { "rate": 0.9 } }
-        ]
-    },
-    "evaluator": {
-        "type": "Evaluator", 
-        "params": {
-            "fitness_name": "nmse",
-            "fitness_atol": 1e-05,
-            "with_inner_evals": true
-        }
-    },    
-    "prohibit_ops_on_consts_only": false
+    "!base": "./base.json",
+    "service_definitions": {
+        "init": {"type": "RHH", "params": {} },
+        "selection": { "type": "TS", "params": { "selection_size": 1000, "tournament_size": 7 } },
+        "mutation": { "type": "RPM", "params": { "rate": 0.1 } },
+        "crossover": { "type": "RPX", "params": { "rate": 0.9 } }
+    }
 }

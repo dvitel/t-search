@@ -1,32 +1,38 @@
-from typing import TYPE_CHECKING, Sequence
+from typing import Sequence
 import torch
 
+from t_search.evaluators.evaluator import Evaluator
 from t_search.syntax import Term
 from .base import Selection
-
-if TYPE_CHECKING:
-    from t_search.solver import GPSolver
 
 class Lexicase(Selection):
     ''' Lexicase selection operator '''
     
-    def __init__(self, name: str = "lexicase", nan_error = torch.inf,):
-        super().__init__(name)
+    def __init__(self, 
+                 evaluator: Evaluator,
+                 target: torch.Tensor,
+                 torch_gen: torch.Generator,
+                 nan_error = torch.inf,
+                 **kwargs):
+        super().__init__(**kwargs)
         self.nan_error = nan_error
+        self.evaluator = evaluator
+        self.target = target
+        self.torch_gen = torch_gen
 
-    def select(self, solver: 'GPSolver', population, selection_size: int) -> Sequence[Term]:
-        outputs = solver.eval(population, return_outputs="tensor").outputs
+    def select(self, population, selection_size: int) -> Sequence[Term]:
+        outputs = self.evaluator.eval(population, return_outputs="tensor").outputs
 
-        nan_interactions = torch.abs(outputs - solver.target)
+        nan_interactions = torch.abs(outputs - self.target)
 
         interactions = torch.nan_to_num(nan_interactions, nan=self.nan_error)
         del nan_interactions
         
         selected_ids = torch.zeros(selection_size, dtype=torch.int, device=outputs.device)
 
-        for pos_i in range(solver.pop_size):
+        for pos_i in range(selection_size):
             shuffled_test_ids = torch.randperm(interactions.shape[-1], device=interactions.device,
-                                                generator=solver.torch_gen)
+                                                generator=self.torch_gen)
             candidate_ids = torch.arange(interactions.shape[0], device=interactions.device) # all candidates
             for test_id in shuffled_test_ids:
                 test_min_diff = torch.min(interactions[candidate_ids, test_id])
@@ -38,7 +44,7 @@ class Lexicase(Selection):
                 selected_ids[pos_i] = candidate_ids[0]
                 continue
             best_id_id = torch.randint(len(candidate_ids), (1,), device=interactions.device,
-                                        generator=solver.torch_gen)
+                                        generator=self.torch_gen)
             selected_ids[pos_i] = candidate_ids[best_id_id]
         del interactions, shuffled_test_ids
         del outputs

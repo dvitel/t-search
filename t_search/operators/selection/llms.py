@@ -6,16 +6,14 @@
 '''
 
 from dataclasses import dataclass, asdict
-from typing import TYPE_CHECKING, Annotated, Sequence
+from typing import Sequence
 
 import torch
 
+from t_search.evaluators.evaluator import Evaluator
 from t_search.syntax import Term
 from .base import Selection
 from .. import llm
-
-if TYPE_CHECKING:
-    from t_search.solver import GPSolver
 
 selection_prompt = """You are an expert in symbolic mathematics. 
 Given a set of LISP expressions and their evaluations,
@@ -37,8 +35,6 @@ Output only:
 - index: integer of selected term
 """
 
-# TODO: reasoning?? 
-
 @dataclass
 class SelectionExecution:    
     reason: list[str]
@@ -56,22 +52,27 @@ class PromptContext:
 class LLMS(Selection):
     ''' Similar to Tournament Selection, but uses model decition what to pick. '''
 
-    def __init__(self, name: str = "LLMS", *, 
+    def __init__(self, *, 
                     llm: llm.LLMCaller,
+                    evaluator: Evaluator,
+                    torch_gen: torch.Generator,
                     tournament_size: int = 7,
                     prompt_template: str = selection_prompt,
-                    loss_name: str = "NMSE"):
-        super().__init__(name)
+                    loss_name: str = "NMSE",
+                    **kwargs):
+        super().__init__(**kwargs)
         self.tournament_size = tournament_size
         from jinja2 import Template
         self.prompt_template: Template = Template(prompt_template)        
         self.loss_name = loss_name
         self.llm = llm
+        self.evaluator = evaluator
+        self.torch_gen = torch_gen
 
-    def select(self, solver: 'GPSolver', population, selection_size: int) -> Sequence[Term]:
-        fitness = solver.eval(population, return_fitness="list").fitness
+    def select(self, population, selection_size: int) -> Sequence[Term]:
+        fitness = self.evaluator.eval(population, return_fitness="list").fitness
         selected_ids = torch.randint(len(population), (selection_size, self.tournament_size), dtype=torch.int, device=fitness.device,
-                                    generator=solver.torch_gen)
+                                    generator=self.torch_gen)
         selected_fitnesses = fitness[selected_ids]
 
         children = []        
@@ -82,25 +83,25 @@ class LLMS(Selection):
 
             context = PromptContext(
                 selection=selection_info,
-                loss_name=solver.loss.name        
+                loss_name=self.loss_name        
             )
             try:
                 prompt = self.prompt_template.render(**asdict(context)) # prompt rendering 
             except Exception as e:
                 print("Error rendering prompt:", e)
-                self.add_metric(render_error=1)
+                self.add_metrics(render_error=1)
                 continue
             
             try:
                 response, usage = self.llm(prompt, SelectionExecution)
-                self.add_metric(**usage)
+                self.add_metrics(**usage)
             except Exception as e:
                 print("Error during LLM prompting:", e)
-                self.add_metric(llm_error=1)
+                self.add_metrics(llm_error=1)
                 continue
             selected_id = response.index
             if selected_id < 0 or selected_id >= len(candidiates):
-                self.add_metric(invalid_index=1)
+                self.add_metrics(invalid_index=1)
                 continue
             selected_term = candidiates[selected_id]
             children.append(selected_term)

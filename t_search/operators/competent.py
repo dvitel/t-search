@@ -328,7 +328,3 @@ def get_best_semantics(desired: DesiredSemantics, undesired: list[DesiredSemanti
 class InversionCache: 
     term_semantics: dict[Term, DesiredSemantics] = field(default_factory=dict)
     term_subtree_semantics: dict[Term, dict[tuple[Term, int], tuple[DesiredSemantics, list[DesiredSemantics]]]] = field(default_factory=dict)
-
-    def reset(self):
-        self.term_semantics.clear()
-        self.term_subtree_semantics.clear()

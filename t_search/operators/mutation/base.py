@@ -1,26 +1,32 @@
 ''' Base interface for mutation operators. '''
+from typing import Callable, Generator, Optional, Sequence
 
-from typing import TYPE_CHECKING, Generator, Optional, Sequence
+import numpy as np
+
+from t_search.syntax.syntax import Syntax
 
 from ..base import Operator
 from t_search.syntax import Term, TermPos
 from t_search.syntax.flow import shuffled_position_flow
 
-if TYPE_CHECKING:
-    from t_search.solver import GPSolver  # Import only for type checking
-
 class TermMutation(Operator): 
     ''' Abstract base. Mutates population one term at a time (1-to-1 mapping pattern to repr or mutated child)'''
-    def __init__(self, name, *, rate : float = 0.1, **kwargs):
-        super().__init__(name, **kwargs)
-        self.rate = rate
-        self.cur_parents = None
+    def __init__(self, *, 
+                 syntax: Syntax,
+                 rnd: np.random.Generator, 
+                 add_metrics: Callable,
+                 rate : float):
+        self.rate: float = rate
+        self.cur_parents: Sequence[Term] = []
+        self.rnd: np.random.Generator = rnd
+        self.add_metrics = add_metrics
+        self.syntax = syntax
 
-    def mutate_term(self, solver: 'GPSolver', term: Term) -> Term | None:
+    def mutate_term(self, term: Term) -> Term | None:
         ''' Abstract. Mutates one term in the context of parents and already generated children ''' 
         pass # to be implemented in subclasses
 
-    def exec(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]: 
+    def exec(self, population: Sequence[Term]) -> Sequence[Term]: 
         ''' 
             Some mutations could return None, we would like to reattempt if small number was mutated t guarantee mutated_size.
             However, we still stick to only one pass through population.
@@ -34,7 +40,7 @@ class TermMutation(Operator):
 
         size = len(population)
         mutated_size = int(self.rate * size)
-        permuted_term_ids = solver.rnd.permutation(size)         
+        permuted_term_ids = self.rnd.permutation(size) 
         children = [] 
 
         for term_id in permuted_term_ids:
@@ -43,7 +49,7 @@ class TermMutation(Operator):
                 children.append(term)
                 repr_cnt += 1
             else: 
-                child = self.mutate_term(solver, term)
+                child = self.mutate_term(term)
                 if child is not None:
                     success += 1
                     children.append(child)
@@ -52,39 +58,39 @@ class TermMutation(Operator):
                     fail += 1
                     children.append(term)
 
-        self.metrics["success"] = self.metrics.get("success", 0) + success
-        self.metrics["fail"] = self.metrics.get("fail", 0) + fail
-        self.metrics["repr"] = self.metrics.get("repr", 0) + repr_cnt
-        
+        self.add_metrics(success=success, fail=fail, repr=repr_cnt)        
         return children
     
 class PositionMutation(TermMutation):
     ''' Abstract base. Mutates specific position inside a term. '''
 
-    def __init__(self, name, *, max_pos_tries: int = 1e6, leaf_proba: Optional[float] = 0.1, **kwargs):
-        super().__init__(name, **kwargs)
+    def __init__(self, *,                  
+                 max_pos_tries: int = 1e6, 
+                 leaf_proba: Optional[float] = 0.1, 
+                 **kwargs):
+        super().__init__(**kwargs)
         self.max_pos_tries = max_pos_tries
         self.leaf_proba = leaf_proba
 
-    def select_positions(self, solver: 'GPSolver', term: Term) -> Generator[TermPos, None, None]:   
-        positions = solver.get_positions(term)
-        return shuffled_position_flow(positions, self.leaf_proba, solver.rnd)
+    def select_positions(self, term: Term) -> Generator[TermPos, None, None]:   
+        positions = self.syntax.get_positions(term)
+        return shuffled_position_flow(positions, self.leaf_proba, self.rnd)
 
-    def mutate_position(self, solver: 'GPSolver', term: Term, position: TermPos) -> Term | None:
+    def mutate_position(self, term: Term, position: TermPos) -> Term | None:
         ''' Abstract. Mutates term at the given position. '''
         pass # to be implemented in subclasses    
 
-    def mutate_term(self, solver: 'GPSolver', term: Term) -> Term | None:
+    def mutate_term(self, term: Term) -> Term | None:
         ''' Mutates one term in the context of parents and already generated children ''' 
         
-        positions = self.select_positions(solver, term)
+        positions = self.select_positions(term)
         
         pos_try = 0
         for position in positions:
             if pos_try >= self.max_pos_tries:
                 break
             pos_try += 1
-            mutated_term = self.mutate_position(solver, term, position)
+            mutated_term = self.mutate_position(term, position)
             if mutated_term is not None:       
                 return mutated_term
             

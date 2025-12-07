@@ -1,13 +1,12 @@
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 import torch
+
+from t_search.syntax.syntax import Syntax
 from .base import TermMutation
 from t_search.syntax import Op, Term, Value, Variable, parse_term
 from t_search.syntax.traverse import postorder_traversal, TRAVERSAL_EXIT_NODE
 import sympy as sp
-
-if TYPE_CHECKING:
-    from t_search.solver import GPSolver
 
 sp_alg_ops_f = {
     "add": sp.Add,
@@ -105,19 +104,21 @@ def sp_simplify(term: Term, *,
 class Reduce(TermMutation): 
     ''' Syntactic Simplifier based on domain axioms '''
 
-    def  __init__(self, name: str = "reduce", *,
+    def  __init__(self, *,
+                    syntax: Syntax,
                     to_ops: dict = sp_alg_ops_f, from_ops: dict = sp_alg_ops_b,
-                    check_validity: bool = False, **kwargs):
-        super().__init__(name, **kwargs)
+                    check_validity: bool = True, **kwargs):
+        super().__init__(**kwargs)
+        self.syntax = syntax
         self.to_ops = to_ops
         self.from_ops = from_ops
         self.check_validity = check_validity
-    def mutate_term(self, solver: 'GPSolver', term: Term) -> Term | None:
+    def mutate_term(self, term: Term) -> Term | None:
         new_term = sp_simplify(term, to_dict = self.to_ops, from_dict=self.from_ops,
-                               alloc_val = lambda value: solver.const_builder.fn(value = value),
-                               alloc_var = lambda var_id: solver.var_builder.fn(var_id = var_id),
-                               alloc_op = lambda op_id: lambda *args: solver.op_builders.get(op_id).fn(*args))
-        if self.check_validity and not solver.is_valid(new_term):
+                               alloc_val = lambda value: self.syntax.get_const(value = value),
+                               alloc_var = lambda var_id: self.syntax.get_vars(var_id = var_id),
+                               alloc_op = lambda op_id: lambda *args: self.syntax.get_op(op_id, *args))
+        if self.check_validity and not self.syntax.is_valid(new_term):
             return None
         return new_term
 

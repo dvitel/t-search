@@ -3,13 +3,13 @@ from typing import Generator, Optional
 
 import numpy as np
 
-from t_search.utils.rnd import GLOBAL_RNG
+from t_search.utils import GLOBAL_RNG
 from .term import TermPos
 
 
 def shuffle_positions(positions: list[TermPos],
                         select_node_leaf_prob: Optional[float] = 0.1,
-                        rnd: np.random.RandomState = np.random) -> np.ndarray:
+                        rnd: np.random.Generator = GLOBAL_RNG) -> np.ndarray:
     pos_proba = rnd.random(len(positions))
     if select_node_leaf_prob is not None:
         proba_mod = np.array([select_node_leaf_prob if pos.term.arity() == 0 else (1 - select_node_leaf_prob) for pos in positions ], dtype=float)
@@ -19,7 +19,7 @@ def shuffle_positions(positions: list[TermPos],
 
 
 
-def shuffled_position_flow(positions: list[TermPos], leaf_proba: float | None = None, rnd: np.random.RandomState = np.random) -> Generator[TermPos, None, None]:
+def shuffled_position_flow(positions: list[TermPos], leaf_proba: float | None = None, rnd: np.random.Generator = GLOBAL_RNG) -> Generator[TermPos, None, None]:
     if len(positions) == 0:
         return
     ordered_pos_ids = shuffle_positions(positions, 

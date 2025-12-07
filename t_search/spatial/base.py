@@ -5,6 +5,8 @@ import math
 from typing import Callable, Generator, Literal, Optional
 import torch
 
+from t_search.base import ServiceBase
+
 def get_by_ids(vectors: torch.Tensor, max_size: int, ids: None | int | tuple[int, int] | list[int]):
     ''' From a big store of vectors (n, dims) selects view or resort to advanced indecing 
         which leads to copying of values (materialization)
@@ -211,7 +213,7 @@ class StorageStats:
             self.dim_maxs = torch.maximum(self.dim_maxs, batch.max(dim=0).values)
         del batch, mean_batch, var_batch
 
-class VectorStorage:
+class VectorStorage(ServiceBase):
     ''' Interface for storage for indexing '''
 
     def __init__(self, capacity: int, dims: int, dtype = torch.float16,
@@ -222,7 +224,7 @@ class VectorStorage:
         self.dtype = dtype
         self.device = device
         self.dims = dims
-        self.vectors = torch.empty((capacity, dims), dtype=dtype, device=device)
+        self.vectors: torch.Tensor | None = None
         self.cur_id = 0
         self.rtol = rtol
         self.atol = atol
@@ -232,11 +234,15 @@ class VectorStorage:
         # self.stats_batch_size = stats_batch_size
         # self.stats = StorageStats(self)
 
-    def reset(self):
-        if self.cur_id > 0:
+    def init(self):
+        self.vectors = torch.empty((self.capacity, self.dims), dtype=self.dtype, device=self.device)
+        self.cur_id = 0
+
+    def get_finalizer(self):
+        def finalizer():
             del self.vectors
-            self.vectors = torch.empty((self.capacity, self.dims), dtype=self.dtype, device=self.device)
             self.cur_id = 0
+        return finalizer
 
     def __len__(self):
         return self.cur_id

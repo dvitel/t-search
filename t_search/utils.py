@@ -1,13 +1,12 @@
 ''' Set of useful objects and functions '''
 from time import perf_counter
-from typing import Callable, Sequence
+from typing import Callable, Sequence, Literal
 import numpy as np
-from pyparsing import Literal
 import torch
 
 GLOBAL_RNG = np.random.default_rng() 
 
-def add_metric(metrics: dict, **kwargs):
+def add_metrics(metrics: dict, **kwargs):
     for key, value in kwargs.items():
         if key not in metrics:
             metrics[key] = value            

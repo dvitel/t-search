@@ -1,4 +1,3 @@
-from .evaluator import Evaluator, Evaluation, Evaluations
-from .optim_evaluator import OptimEvaluator
+from .evaluator import Evaluator, DefaultEvaluator, Evaluations, OptimEvaluator
 
-__all__ = ["Evaluator", "Evaluation", "Evaluations", "OptimEvaluator"]
+__all__ = ["Evaluator", "DefaultEvaluator", "OptimEvaluator", "Evaluations"]

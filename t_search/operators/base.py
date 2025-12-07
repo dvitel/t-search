@@ -1,49 +1,22 @@
 ''' Base interfaces for different evolutionary operators '''
 
-from typing import TYPE_CHECKING, Sequence
-
-import torch
-
 from t_search.syntax import Term
 
-if TYPE_CHECKING:
-    from t_search.solver import GPSolver  # Import only for type checking
-
 class Operator:
-    def __init__(self, name: str):
-        self.name = name 
-        self.metrics = {}
-
-    def reset_metrics(self):
-        self.metrics = {}
-
-    def add_metric(self, **kwargs):
-        for key, value in kwargs.items():
-            if key not in self.metrics:
-                self.metrics[key] = value
-            else:
-                self.metrics[key] = self.metrics[key] + value
-
-    def on_start(self, solver: 'GPSolver'):
-        pass        
-
-    def on_end(self, solver: 'GPSolver'):
-        pass
     
-    def exec(self, solver: 'GPSolver', population: Sequence[Term]) -> Sequence[Term]:
+    def exec(self, population: list[Term]) -> list[Term]:
         ''' Executes only this operator and update existing metrics state '''
         return population
     
-    def call_next(self, solver: 'GPSolver', population: Sequence[Term], next_ops: list['Operator'] = []):
+    def call_next(self, population: list[Term], next_ops: list['Operator'] = []) -> list[Term]:
         if len(next_ops) > 0:
             next_op, *rest_ops = next_ops
-            children = next_op(solver, children, rest_ops)        
+            children = next_op(children, rest_ops)        
             return children
         return population
 
-    def __call__(self, solver: 'GPSolver', population: Sequence[Term], next_ops: list['Operator'] = []):
-        ''' Executes operator in the chain. New metrics are stored in self.metrics '''
-        self.reset_metrics()
-        children = self.exec(solver, population)
-        children = self.call_next(solver, children, next_ops)
+    def __call__(self, population: list[Term], next_ops: list['Operator'] = []) -> list[Term]:
+        ''' Executes operator in the chain '''
+        children = self.exec(population)
+        children = self.call_next(children, next_ops)
         return children

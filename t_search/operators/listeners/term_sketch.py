@@ -3,10 +3,12 @@ from typing import TYPE_CHECKING, Literal, Optional
 
 import torch
 
+from t_search.base import ServiceBase
+from t_search.evaluators.term_spatial import TermVectorStorage
 from t_search.syntax import Term, TermPos, Value
 from t_search.spatial import VectorStorage
 
-from .base import Listener
+from .base import EvalListener
 
 if TYPE_CHECKING:    
     from ..mutation import Reduce
@@ -43,72 +45,70 @@ def _normalize_filter(terms: list[Term], semantics: torch.Tensor, zero: torch.Te
     nonconst_terms: list[Term] = [terms[i] for i in nonconst_ids.tolist()]
     return (nonconst_terms, normalized_semantics, final_means, final_stds)
 
-class TermSketchSearch(Listener):
+class TermSketchSearch(ServiceBase, EvalListener):
     ''' For new terms search for sketches, for new sketches search for terms.  '''
 
-    def __init__(self, name="TermSketchSearch", *, 
-                    index_type = None, # type: ignore
-                    syn_simplify: 'Reduce | None' = None,
-                    **kwargs):
-        super().__init__(name, **kwargs)
-        self.zero = torch.tensor(0.0)
-        self.one = torch.tensor(1.0)  
-        self.index_type = index_type
+    def __init__(self, *, 
+                    target: torch.Tensor,
+                    term_index: TermVectorStorage,
+                    hole_index: TermVectorStorage,
+                    syn_simplify: 'Reduce | None' = None):
+        self.target = target
+        self.zero = torch.zeros((1,), dtype = target.dtype, device = target.device)
+        self.one = torch.ones((1,), dtype = target.dtype, device = target.device)    
 
-        self.term_index: VectorStorage | None = None         
-        self.term_semantics: dict[Term, TermSemantics] = {}
-        self.semantic_terms: dict[int, TermSemantics] = {}
+        self.term_index: TermVectorStorage = term_index
+        # self.term_semantics: dict[Term, TermSemantics] = {}
+        # self.semantic_terms: dict[int, TermSemantics] = {}
         
-        self.hole_index: VectorStorage | None = None
-        self.semantic_holes: dict[int, dict[tuple[Term, Term, int, int], HoleSemantics]] = {} 
+        self.hole_index: TermVectorStorage = hole_index
+        # self.semantic_holes: dict[int, dict[tuple[Term, Term, int, int], HoleSemantics]] = {} 
         self.syn_simplify = syn_simplify
 
     def on_eval(self, solver, terms, semantics, fitness):
         return self.register_terms(solver, terms, semantics)    
     
-    def on_start(self, solver):
-        super().on_start(solver)
-        self.zero = torch.zeros((1,), dtype = solver.dtype, device = solver.device)
-        self.one = torch.ones((1,), dtype = solver.dtype, device = solver.device)    
+    # def on_start(self, solver):
+    #     super().on_start(solver)
 
-        # TODO: cleanup 
+    #     # TODO: cleanup 
         
-        if self.term_index is None: 
-            self.term_index: VectorStorage = self.index_type(
-                capacity = solver.max_evals // 2, 
-                dims = solver.target.shape[0], 
-                dtype = solver.dtype, device = solver.device
-            )
-        else:
-            self.term_index.reset()
-        self.term_semantics.clear()
-        self.semantic_terms.clear()        
+    #     if self.term_index is None: 
+    #         self.term_index: VectorStorage = self.index_type(
+    #             capacity = solver.max_evals // 2, 
+    #             dims = solver.target.shape[0], 
+    #             dtype = solver.dtype, device = solver.device
+    #         )
+    #     else:
+    #         self.term_index.reset()
+    #     self.term_semantics.clear()
+    #     self.semantic_terms.clear()        
         
-        if self.hole_index is None:
-            self.hole_index: VectorStorage = self.index_type(
-                capacity = solver.max_evals // 2, 
-                dims = solver.target.shape[0], 
-                dtype = solver.dtype, device = solver.device
-            )
-        else:
-            self.hole_index.reset()
-        self.semantic_holes.clear()
+    #     if self.hole_index is None:
+    #         self.hole_index: VectorStorage = self.index_type(
+    #             capacity = solver.max_evals // 2, 
+    #             dims = solver.target.shape[0], 
+    #             dtype = solver.dtype, device = solver.device
+    #         )
+    #     else:
+    #         self.hole_index.reset()
+    #     self.semantic_holes.clear()
 
-        self.one = torch.ones((1,), dtype = solver.dtype, device = solver.device)
-
-        # if self.normalize_semantics:
-        #     if "add" not in solver.ops or "mul" not in solver.ops or solver.max_consts == 0:
-        #         print(f"Warning: normalization was disabled as there are no operations (add, mul) or consts to revert it")
-        #         self.normalize_semantics = False # normalization requires add, mul in solver.ops
+    #     # if self.normalize_semantics:
+    #     #     if "add" not in solver.ops or "mul" not in solver.ops or solver.max_consts == 0:
+    #     #         print(f"Warning: normalization was disabled as there are no operations (add, mul) or consts to revert it")
+    #     #         self.normalize_semantics = False # normalization requires add, mul in solver.ops
         
-        # if solver.max_consts > 0 and self.normalize_semantics:
-        # if self.normalize_semantics:
-        self.zero = torch.zeros((1,), dtype = solver.dtype, device = solver.device)
-        zero_id, *_ = self.term_index.insert(torch.zeros_like(solver.target).unsqueeze(0))
-        zero_const = solver.const_builder.fn(value = self.zero)
-        zero_semantics = TermSemantics(term=zero_const, sid=zero_id, std=self.zero, mean=self.zero)
-        self.term_semantics[zero_const] = zero_semantics
-        self.semantic_terms[zero_id] = zero_semantics
+    #     # if solver.max_consts > 0 and self.normalize_semantics:
+    #     # if self.normalize_semantics:
+        # self.zero = torch.zeros((1,), dtype = solver.dtype, device = solver.device)
+    def init(self):
+        pass
+        # zero_id, *_ = self.term_index.insert(torch.zeros_like(self.target).unsqueeze(0))
+        # zero_const = solver.const_builder.fn(value = self.zero)
+        # zero_semantics = TermSemantics(term=zero_const, sid=zero_id, std=self.zero, mean=self.zero)
+        # self.term_semantics[zero_const] = zero_semantics
+        # self.semantic_terms[zero_id] = zero_semantics
 
 
     def register_terms(self, solver: 'GPSolver', terms: list[Term], semantics: torch.Tensor) -> list[Term]: 

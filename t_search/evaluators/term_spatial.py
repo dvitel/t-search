@@ -1,24 +1,46 @@
 ''' Adds syntax to plain vector storage '''
 
 from bisect import insort
-from typing import Optional
-from pyparsing import Callable
+from typing import Any, Callable, Optional
 import torch
+
+from t_search.base import ServiceBase
 from ..spatial.base import VectorStorage
 from t_search.syntax import Term
+
+class InvalidTerms(ServiceBase):
+
+    def __init__(self):
+        self.terms: dict[Term, torch.Tensor] = {}
+
+    def add_invalid(self, term: Term, outputs: torch.Tensor) -> None:
+        self.terms[term] = outputs
+
+    def is_invalid(self, term: Term) -> bool:
+        return term in self.terms
+    
+    def get_outputs(self, term: Term) -> Optional[torch.Tensor]:
+        return self.terms.get(term, None)
+    
+    def __len__(self) -> int:
+        return len(self.terms)
+    
+    def get_finalizer(self):
+        def finalizer():
+            for outputs in self.terms.values():
+                del outputs
+        return finalizer
 
 
 class TermVectorStorage:
 
-    def __init__(self, index: VectorStorage):
+    def __init__(self, *, 
+                 term_order: Callable[[Term], Any],
+                 index: VectorStorage):
+        self.term_order = term_order
         self.index = index
         self.sid_to_terms: dict[int, list[Term]] = {}
         self.term_to_sid: dict[Term, int] = {}
-
-    def reset(self):
-        self.sid_to_terms = {}
-        self.term_to_sid = {}
-        self.index.reset()
 
     def get_semantics_for_term(self, term: Term) -> Optional[torch.Tensor]:
         if term not in self.term_to_sid:
@@ -36,13 +58,13 @@ class TermVectorStorage:
             return None
         return terms[0] # repr
 
-    def insert(self, terms: list[Term], vectors: torch.Tensor, eq_group_order_key: Callable) -> None:
+    def insert(self, terms: list[Term], vectors: torch.Tensor) -> None:
         ''' Returns mapping of term to its id in the equivalence group '''
         ids = self.index.insert(vectors)
         for term, sid in zip(terms, ids):
             if sid not in self.sid_to_terms:
                 self.sid_to_terms[sid] = []
-            insort(self.sid_to_terms[sid], term, key=eq_group_order_key)
+            insort(self.sid_to_terms[sid], term, key=self.term_order)
             self.term_to_sid[term] = sid
         return
     

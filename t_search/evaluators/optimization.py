@@ -24,6 +24,12 @@ class OptimState:
     best_loss: torch.Tensor | None = None
     best_term: Term | None = None
     is_optimized: bool = False
+    loss_fn: Callable | None = None
+    
+    def get_binding(self, root: Term, term: Term):
+        if isinstance(term, OptimPoint):
+            return self.binding[term]
+        # NOTE: we still allow evaluator _get_binding to speedup computations  
 
 class LRAdjust(Exception):
     pass
@@ -34,27 +40,22 @@ optim_id = -1  # for debugging
 
 def optimize(
     optim_state: OptimState,
-    loss_fn: Callable,
-    given_ops: dict[str, Callable],
-    get_binding: Callable,
     *,
-    eval_fn=evaluate,
     # num_best: int = 1,
     lr: float = 1.0,
     max_evals: int = 10,
     tolerance_change: float = 1e-6,
     tolerance_grad: float = 1e-3,
     # loss_threshold: float = 0.1,
-) -> tuple[int, int]:
+) -> None:
     global optim_id
 
     if optim_state.is_optimized:
         return 0, 0
+    
+    assert optim_state.loss_fn is not None, "Optimization loss function is not set"
         
     optim_id += 1
-
-    num_evals = 0
-    num_root_evals = 0
 
     print(f">>> [{optim_id}] {optim_state.optim_term}")
 
@@ -103,33 +104,20 @@ def optimize(
         # for k, v in optim_state.best_binding.items():
         #     iter_binding[k] = [v]
 
+    num_root_evals = 0
+
     def closure_builder(optimizer: torch.optim.Optimizer):
-        nonlocal num_root_evals, best_loss, max_evals, best_binding
+        nonlocal best_loss, max_evals, best_binding, num_root_evals
 
         # cur_lr = optimizer.param_groups[0]['lr']
-        # print(f"LR: {cur_lr}")
+        # print(f"LR: {cur_lr}")        
         if num_root_evals >= max_evals:
             raise LRAdjust(None)
-        num_root_evals += 1
         optimizer.zero_grad()
 
-        def _redirected_get_binding(root: Term, term: Term):
-            if isinstance(term, OptimPoint):
-                return optim_state.binding[term]
-            return get_binding(root, term)
 
-        def _set_binding(root: Term, term: Term, output: torch.Tensor):
-            nonlocal num_evals
-            num_evals += 1
-            # if collect_inner_binding and (root != term):
-            #     if term in optim_state.binding:
-            #         del optim_state.binding[term]
-            #     optim_state.binding[term] = output
-            return
-
-        outputs: torch.Tensor = eval_fn(optim_state.optim_term, given_ops, _redirected_get_binding, _set_binding)
-        # assert outputs is not None, "Term evaluation should be full. Term is evaluated partially"
-        loss: torch.Tensor = loss_fn(outputs)
+        loss: torch.Tensor = optim_state.loss_fn(optim_state.optim_term)
+        num_root_evals += 1
         fixed_loss = loss.nan_to_num_(torch.inf)
         # finite_loss_mask = torch.isfinite(loss)
         if not torch.all(torch.isfinite(fixed_loss)):
@@ -229,8 +217,6 @@ def optimize(
         optim_state.best_binding = best_binding
     
     optim_state.is_optimized = True
-
-    return num_evals, num_root_evals
 
 def get_pos_optim_state(
     term: Term,

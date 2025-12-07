@@ -5,13 +5,12 @@ import math
 from typing import Callable, Optional
 import numpy as np
 
-from t_search.utils.rnd import GLOBAL_RNG
+from t_search.utils import GLOBAL_RNG
 
 from .term import Term
 
-
 def alloc_tape(width: int, penalties: list[tuple[list[int] | int, float, float]] = [],
-                buf_n:int = 100, rnd: np.random.RandomState = np.random,
+                buf_n:int = 100, rnd: np.random.Generator = GLOBAL_RNG,
                 freq_skew: np.ndarray | None = None) -> np.ndarray:
     weights = rnd.random((buf_n, width))
     if freq_skew is not None:
@@ -23,7 +22,7 @@ def alloc_tape(width: int, penalties: list[tuple[list[int] | int, float, float]]
 
 def check_tape(pos_id: int, tape, 
                     penalties: list[tuple[list[int] | int, float]] = [],
-                    buf_n:int = 100, rnd: np.random.RandomState = np.random,
+                    buf_n:int = 100, rnd: np.random.Generator = GLOBAL_RNG,
                     freq_skew: np.ndarray | None = None) -> np.ndarray:    
     if pos_id >= tape.shape[0]:
         new_tape = np.zeros((tape.shape[0] + buf_n, tape.shape[1]), dtype=tape.dtype)
@@ -271,10 +270,10 @@ global_gen_id = 0 # for debugging
 
 def gen_term(builders: Builders, 
             max_depth = 5, leaf_proba: float | None = 0.1,
-            rnd: np.random.RandomState = np.random, buf_n = 100, inf = 100,
+            rnd: np.random.Generator = GLOBAL_RNG, buf_n = 100, inf = 100,
             start_context: TermGenContext | None = None,
             arg_counts: np.ndarray | None = None,
-            gen_metrics: dict | None = None,
+            add_metrics: Callable | None = None,
             freq_skew: bool = False
          ) -> Optional[Term]:
     ''' Arities should be unique and provided in sorted order.
@@ -492,9 +491,8 @@ def gen_term(builders: Builders,
     assert np.all(counts >= start_context.min_counts)
     assert np.all(counts <= start_context.max_counts)
 
-    if gen_metrics is not None:
-        gen_metrics['backtracks'] = gen_metrics.get('backtracks', 0) + backtracks
-        gen_metrics['gen_fails'] = gen_metrics.get('gen_fails', 0) + gen_fails
+    if add_metrics is not None:
+        add_metrics(backtracks=backtracks, gen_fails=gen_fails)
 
     return new_term
 
@@ -667,10 +665,10 @@ def gen_all_terms(builders: Builders, depth = 3,
 
 def grow(builders: Builders,
          grow_depth = 5, grow_leaf_prob: Optional[float] = 0.1,
-         rnd: np.random.RandomState = np.random,
+         rnd: np.random.Generator = GLOBAL_RNG,
          start_context: TermGenContext | None = None,
          arg_counts: np.ndarray | None = None,
-         gen_metrics: dict | None = None,
+         add_metrics: Callable | None = None,
          freq_skew: bool = False
          ) -> Optional[Term]:
     ''' Grow a tree with a given depth '''
@@ -679,6 +677,6 @@ def grow(builders: Builders,
     term = gen_term(builders, max_depth = grow_depth, 
                     leaf_proba = grow_leaf_prob, rnd = rnd,
                     start_context = start_context,
-                    arg_counts = arg_counts, gen_metrics=gen_metrics,
+                    arg_counts = arg_counts, add_metrics=add_metrics,
                     freq_skew = freq_skew)
     return term

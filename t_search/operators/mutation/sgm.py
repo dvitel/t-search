@@ -1,14 +1,11 @@
-
-
+from t_search.base import ServiceBase
+from t_search.evaluators.evaluator import Evaluator
+from t_search.syntax.syntax import Syntax
 from .base import TermMutation
 from .reduce import Reduce
 from t_search.syntax import Term
-from t_search.syntax.generation import grow 
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from t_search.solver import GPSolver
 
-class SGM(TermMutation):
+class SGM(TermMutation, ServiceBase):
     ''' Implementing Semantic Geometric Mutation from Moraglio 2012 
         Parent program is lineary combined with random term 
 
@@ -16,42 +13,53 @@ class SGM(TermMutation):
         r - random const 
         t1, t2 - random terms 
     '''
-    def __init__(self, name = "SGM", *, max_grow_depth = 5, num_tries = 2, epsilon = 0.02, 
-                    check_validity: bool = False,
+    def __init__(self, *, 
+                    syntax: Syntax,
+                    evaluator: Evaluator,
+                    max_grow_depth = 5, num_tries = 2, epsilon = 0.02, 
+                    check_validity: bool = True,
                     simplifier: Reduce | None = None,
                     **kwargs):
-        super().__init__(name, **kwargs)
+        super().__init__(**kwargs)
         self.num_tries = num_tries
         self.max_grow_depth = max_grow_depth
         self.epsilon = epsilon
         self.minus_one: Term | None = None
         self.check_validity = check_validity
         self.simplifier = simplifier
+        self.syntax = syntax
+        self.evaluator = evaluator
 
-    def on_start(self, solver):
-        self.minus_one = solver.const_builder.fn(value = -1.0)
+    def init(self):
+        assert self.syntax.has_op("add"), "SGX requires 'add' operator in the syntax."
+        assert self.syntax.has_op("mul"), "SGX requires 'mul' operator in the syntax."
+        self.minus_one = self.syntax.get_const(value = -1.0)   
 
-    def mutate_term(self, solver: 'GPSolver', term: Term) -> Term | None:
+    def mutate_term(self, term: Term) -> Term | None:
 
         mutated_term = None
         
         for _ in range(self.num_tries):
-            t1 = grow(grow_depth = self.max_grow_depth,
-                        builders = solver.builders,
-                        gen_metrics = self.metrics, rnd = solver.rnd) 
+            t1 = self.syntax.grow(self.max_grow_depth)
+            t2 = self.syntax.grow(self.max_grow_depth)            
 
-            t2 = grow(grow_depth = self.max_grow_depth,
-                        builders = solver.builders, 
-                        gen_metrics = self.metrics, rnd = solver.rnd)               
-                
-            neg_t2 = solver.op_builders["mul"].fn(self.minus_one, t2)
-            t1_minus_t2 = solver.op_builders["add"].fn(t1, neg_t2)
-            r = solver.const_builder.fn(value = solver.rnd.random() * self.epsilon)
-            delta_term = solver.op_builders["mul"].fn(r, t1_minus_t2)
-            mutated_term = solver.op_builders["add"].fn(term, delta_term)
+            mutated_term = self.syntax.get_op("add", 
+                                              term, 
+                                              self.syntax.get_op("mul", 
+                                                self.syntax.get_const(value = self.rnd.random() * self.epsilon),
+                                                self.syntax.get_op("add", 
+                                                    t1, 
+                                                    self.syntax.get_op("mul", 
+                                                                        self.minus_one, 
+                                                                        t2
+                                                                        )
+                                                    )
+                                                )
+                                              )
+            
             if self.simplifier is not None:
-                mutated_term = self.simplifier.mutate_term(solver, [mutated_term])
-            if self.check_validity and not solver.is_valid(mutated_term):
+                mutated_term = self.simplifier.mutate_term(mutated_term)
+            if self.check_validity and not self.syntax.is_valid(mutated_term):
                 mutated_term = None
             if mutated_term is not None:
                 break

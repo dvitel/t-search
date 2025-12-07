@@ -1,58 +1,78 @@
 
 
-from typing import TYPE_CHECKING, Optional
+from typing import Callable, Optional
+
+import numpy as np
 
 from t_search.syntax import Term
-from t_search.syntax.generation import grow
+from t_search.syntax.syntax import Syntax
+from t_search.syntax.term import Variable
 from .base import Initialization
-
-if TYPE_CHECKING:
-    from t_search.solver import GPSolver
     
 class RHH(Initialization):
     ''' Ramped Half and Half initialization operator '''
 
-    def __init__(self, name: str = "RHH", *, 
-                min_depth = 1, max_depth = 5, grow_proba = 0.5,
-                leaf_proba: Optional[float] = 0.1,
-                freq_skew: bool = False):
-        super().__init__(name)
+    def __init__(self, *, 
+                
+                 syntax: Syntax,
+                 rnd: np.random.Generator,
+                 add_metrics: Callable,
+
+                 # from config params
+                 min_depth = 1, 
+                 max_depth = 5, 
+                 grow_proba = 0.5,
+                 leaf_proba: Optional[float] = 0.1,
+                 freq_skew: bool = False):
+        self.syntax = syntax
+        self.rnd = rnd
+        self.add_metrics = add_metrics
         self.min_depth = min_depth
         self.max_depth = max_depth
         self.grow_proba = grow_proba
         self.leaf_proba = leaf_proba
         self.freq_skew = freq_skew
 
-    def _rhh(self, solver: 'GPSolver'):
-        depth = solver.rnd.integers(self.min_depth, self.max_depth + 1)
-        leaf_prob = self.leaf_proba if solver.rnd.random() < self.grow_proba else 0
-        term = grow(solver.builders, grow_depth = depth, 
-                    grow_leaf_prob = leaf_prob, rnd = solver.rnd, gen_metrics=self.metrics,
-                    freq_skew = self.freq_skew)
+    def _rhh(self) -> Term:
+        depth = self.rnd.integers(self.min_depth, self.max_depth + 1)
+        leaf_prob = self.leaf_proba if self.rnd.random() < self.grow_proba else 0
+        term = self.syntax.grow(depth, 
+                    grow_leaf_prob=leaf_prob,
+                    freq_skew=self.freq_skew)
         return term
     
-    def pop_init(self, solver: 'GPSolver', pop_size: int) -> list[Term]:
+    def __call__(self, pop_size: int) -> list[Term]:
         population = []
         for _ in range(pop_size):
-            term = self._rhh(solver)
+            term = self._rhh()
             # print(str(term))
             if term is not None:
                 population.append(term)
         return population
 
 class RHHCached(RHH):
+
+    def __init__(self, *, 
+                 
+                 # from solver context
+                 vars: dict[str, Variable],
+                 syntax: dict[tuple[str, Term], Term], # global syntax cache
+
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.vars = vars 
+        self.syntax = syntax 
+
     ''' Considers inner terms of solver syntax cache '''
-    def pop_init(self, solver: 'GPSolver', pop_size: int) -> list[Term]:
-        if not solver.cache_terms:
-            return super().pop_init(solver, pop_size)
+    def __call__(self, pop_size: int) -> list[Term]:
         none_count = 0
-        sz = pop_size - len(solver.vars)
-        while len(solver.syntax) < sz:
-            term = self._rhh(solver)
+        sz = pop_size - len(self.vars)
+        while len(self.syntax) < sz:
+            term = self._rhh() # internally adds to syntax
             if term is None:
                 none_count += 1
             if none_count == pop_size:
                 break 
-        population = list(solver.syntax.values())[:sz]
-        population.extend(solver.vars.values())    
+        population = list(self.syntax.values())[:sz]
+        population.extend(self.vars.values())
         return population

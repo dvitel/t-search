@@ -1,0 +1,45 @@
+{
+    "service_definitions": {
+        "vector_storage": {"type": "SpatialIndex", "params": {}},
+        "logger": {"type": "LoggingListener", "params": {"file_path": "data/logs/run_{}.log", "autoflush": true}},
+        "syntax": { "type": "Syntax", "params": { 
+            "max_term_depth": 17,
+            "min_consts": 0,
+            "max_consts": 100,
+            "min_vars": 1,
+            "max_vars": 100,
+            "prohibit_ops_on_consts_only": false
+        }},
+        "term_vector_storage": { "type": "TermVectorStorage", 
+            "params": { 
+                "syntax": {"!ref": "syntax"},
+                "index": {"!ref": "vector_storage"} 
+                } 
+        },        
+        "evaluator": {
+            "type": "DefaultEvaluator", 
+            "params": {
+                "syntax": {"!ref": "syntax"},
+                "storage": {"!ref": "term_vector_storage"},
+                "fitness_name": "nmse",
+                "fitness_atol": 1e-07,
+                "with_inner_evals": true,
+                "max_root_evals": 100000,
+                "max_evals": 1000000,
+                "listeners": [
+                    { "!ref": "logger" }
+                ]
+            }
+        }
+    },
+    "init_service_name": "init",
+    "operator_service_names": [
+        "selection",
+        "mutation",
+        "crossover"
+    ],
+    "evaluator_service_name": "evaluator",
+    "syntax_service_name": "syntax",
+    "max_gen": 100,
+    "pop_size": 1000
+}

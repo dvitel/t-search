@@ -1,7 +1,7 @@
 from .base import TermMutation, PositionMutation
 from .rpm import RPM
 from .cm import CM
-from .co import CO
+from .optim_mutation import OptimMutation
 from .po import PO
 from .reduce import Reduce
 from .dedupl import Dedupl
@@ -13,7 +13,7 @@ from .llmm import LLMM
 __all__ = [
     "RPM",
     "CM",
-    "CO",
+    "OptimMutation",
     "PO",
     "Dedupl",
     "Reduce",

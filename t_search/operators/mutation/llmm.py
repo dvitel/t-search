@@ -5,18 +5,17 @@
 '''
 
 from dataclasses import dataclass, asdict
-from typing import TYPE_CHECKING, Sequence
+from typing import Callable, Sequence
 
 import torch
 
+from t_search.evaluators.evaluator import Evaluator
+from t_search.evaluators.optimizer import Optimizer
 from t_search.syntax import Term
 from t_search.syntax.str import term_to_const_skeleton_str
+from t_search.syntax.syntax import Syntax
 from .base import TermMutation
 from .. import llm
-from . import CO
-
-if TYPE_CHECKING:
-    from t_search.solver import GPSolver
 
 @dataclass 
 class TestCaseContext:
@@ -113,10 +112,13 @@ class MutationExecution:
 
 class LLMM(TermMutation):
 
-    def __init__(self, name = "LLMM", *,     
+    def __init__(self, *,     
                  llm: llm.LLMCaller,
-                 const_optimizer: CO,
-                 rate = 0.8, 
+                 syntax: Syntax,
+                 evaluator: Evaluator,
+                 optimizer: Optimizer,
+                 target: torch.Tensor,
+                 add_metrics: Callable,
                 #  prompt_template_path: str = "",
                  prompt_template: str = tests_prompt,
                  op_desc: dict[str, str] = llm.ops_descriptions,
@@ -125,7 +127,7 @@ class LLMM(TermMutation):
                  max_num_demo_tests: int = 2,
                  loss_name: str = "NMSE",
                  **kwargs):
-        super().__init__(name, rate=rate, **kwargs)
+        super().__init__(**kwargs)
         self.max_num_examples = max_num_examples
         self.max_num_tests = max_num_tests
         self.max_num_demo_tests = max_num_demo_tests
@@ -135,54 +137,58 @@ class LLMM(TermMutation):
         self.llm = llm
         self.op_desc = op_desc        
         self.good_mutations: list[GoodMutationContext] = []
-        self.const_optimizer = const_optimizer
+        self.evaluator = evaluator
+        self.optimizer = optimizer
+        self.target = target
+        self.syntax = syntax
+        self.add_metrics = add_metrics
 
-    def select_exemplars(self, solver: 'GPSolver', term: str):
+    def select_exemplars(self, term: str):
         ''' Currently we pick just last N good mutations 
             TODO: consider similarity, diversity metrics and NMSE improvement
                   (article on salient aspects)
         '''
         if len(self.good_mutations) <= self.max_num_examples:
             return self.good_mutations
-        rand_good_mutations = solver.rnd.choice(
+        rand_good_mutations = self.rnd.choice(
             self.good_mutations, 
             size=self.max_num_examples, 
             replace=False
         )
         return rand_good_mutations
 
-    def mutate_term(self, solver: 'GPSolver', term: Term) -> Term | None:
+    def mutate_term(self, term: Term) -> Term | None:
         '''
             Note that term may have inf or nan in outputs - invalid term,
             this should be handled before calling this method.
         '''
 
-        evals = solver.eval(term, return_outputs="list", return_fitness='list')        
+        evals = self.evaluator.eval(term, return_outputs="list", return_fitness='list')        
         outcomes = evals.outputs[0]
         fitness = evals.fitness[0].item()
-        target = solver.target
 
         # selecting hardest tests from this term 
-        outcome_diffs = torch.abs(target - outcomes)
+        outcome_diffs = torch.abs(self.target - outcomes)
         test_ids = torch.argsort(outcome_diffs)
         hardest_test_ids = test_ids[-self.max_num_tests:]
         del test_ids
-        expected = target[hardest_test_ids].tolist()
+        expected = self.target[hardest_test_ids].tolist()
         actual = outcomes[hardest_test_ids].tolist()
-        var_values = {var_name:var_vals[hardest_test_ids].tolist() for var_name, var_vals in solver.var_binding}
-        tests = [TestCaseContext(vars = {var_name: var_values[var_name][i] for var_name in solver.vars.keys()},
+        vars, var_bindings = self.syntax.get_var_bindings()
+        var_values = {var_name:var_vals[hardest_test_ids].tolist() for var_name, var_vals in var_bindings}
+        tests = [TestCaseContext(vars = {x.var_id: var_values[x.var_id][i] for x in vars},
                                   expected = expected[i],
                                   actual = actual[i],
                                   diff = actual[i] - expected[i]
                                   ) for i in range(len(hardest_test_ids))]
 
-        demonstrations = self.select_exemplars(solver, term)
+        demonstrations = self.select_exemplars(term)
         context = PromptContext(
             term = term_to_const_skeleton_str(term),
             tests = tests,
             fitness = fitness,
             op_desc = self.op_desc,
-            free_vars=list(solver.vars.keys()),
+            free_vars=[x.var_id for x in vars],
             loss_name=self.loss_name,
             previous_good_mutations = demonstrations
         )
@@ -191,28 +197,28 @@ class LLMM(TermMutation):
             prompt = self.prompt_template.render(**asdict(context)) # prompt rendering 
         except Exception as e:
             print("Error rendering prompt:", e)
-            self.add_metric(render_error=1)
+            self.add_metrics(render_error=1)
             return None
 
         try:
             response, usage = self.llm(prompt, MutationExecution)
-            self.add_metric(**usage)
+            self.add_metrics(**usage)
         except Exception as e:
             print("Error during LLM prompting:", e)
-            self.add_metric(llm_error=1)
+            self.add_metrics(llm_error=1)
             return None
 
-        new_term = solver.parse_const_skeleton(response.mutated_term)
+        new_term = self.syntax.parse_const_skeleton(response.mutated_term)
         if new_term is None:
-            self.add_metric(llm_syn_invalid=1)
+            self.add_metrics(llm_syn_invalid=1)
             return None
-        if not solver.is_valid(new_term):
-            self.add_metric(llm_constr_invalid=1)
-            return None 
+        if not self.syntax.is_valid(new_term):
+            self.add_metrics(llm_constr_invalid=1)
+            return None
         
-        optimized_term = self.const_optimizer.mutate_term(solver, new_term) or new_term
+        optimized_term = self.optimizer.optimize(new_term)
         
-        outputs, fitnesses = solver.eval(optimized_term, return_outputs="list", return_fitness="list")
+        outputs, fitnesses = self.evaluator.eval(optimized_term, return_outputs="list", return_fitness="list")
 
         new_fitness = fitnesses[0]
         new_outcomes = outputs[0]
@@ -220,25 +226,25 @@ class LLMM(TermMutation):
         bad_mutations=1 if new_fitness > fitness else 0,
         neutral_mutations=1 if new_fitness == fitness else 0
 
-        self.add_metric(
+        self.add_metrics(
             good_mutations=good_mutations,
             bad_mutations=bad_mutations,
             neutral_mutations=neutral_mutations
         )
 
         if good_mutations == 1:
-            outcome_diffs_after = torch.abs(target - new_outcomes)
+            outcome_diffs_after = torch.abs(self.target - new_outcomes)
             outcome_improvements = outcome_diffs - outcome_diffs_after
             test_ids = torch.argsort(outcome_improvements)
             best_test_ids = test_ids[-self.max_num_demo_tests:]
             best_test_id_ids, = torch.where(outcome_improvements[best_test_ids] > 0)
             final_best_test_ids = best_test_ids[best_test_id_ids]
-            best_expected = target[final_best_test_ids].tolist()
+            best_expected = self.target[final_best_test_ids].tolist()
             best_actual = outcomes[final_best_test_ids].tolist()
             best_actual_after = new_outcomes[final_best_test_ids].tolist()
-            best_free_vars = {var_name:var_values[final_best_test_ids].tolist() for var_name, var_values in solver.var_binding}
+            best_free_vars = {var_name:var_values[final_best_test_ids].tolist() for var_name, var_values in var_bindings.items()}
 
-            tests = [TestCaseContext(vars={var_name: best_free_vars[var_name][i] for var_name in solver.vars.keys()},
+            tests = [TestCaseContext(vars={var_name: best_free_vars[var_name][i] for var_name in var_bindings.keys()},
                                         expected=best_expected[i],
                                         actual=best_actual[i],
                                         diff=best_actual[i] - best_expected[i],

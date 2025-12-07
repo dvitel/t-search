@@ -1,69 +1,83 @@
 {
-    "pipeline": {
-        "context": [
-            {"name": "storage", "type": "SpatialIndex", "params": {} }
-        ],
-        "listeners": [
-            {"type": "LoggingListener", "params": {"file_path": "data/logs/run_{}.log", "autoflush": true}}
-        ],        
-        "init": { "type": "RHH", "params": {}  },
-        "operators": [
-            { "type": "TS", "params": { "tournament_size": 7 } },
-            { "type": "RPM", "params": { "rate": 0.1 } },
-            { "type": "RPX", "params": { "rate": 0.9 } }
-        ]
-    },
-    "evaluator": {
-        "type": "Evaluator", 
-        "params": {
-            "fitness_name": "nmse",
-            "fitness_atol": 1e-05,
-            "with_inner_evals": true
+    "service_definitions": {
+        "vector_storage": {"type": "SpatialIndex", "params": {}},
+        "logger": {"type": "LoggingListener", "params": {"file_path": "data/logs/run_{}.log", "autoflush": true}},
+        "init": {"type": "RHH", "params": {} },
+        "selection": { "type": "TS", "params": { "selection_size": 1000, "tournament_size": 7 } },
+        "mutation": { "type": "RPM", "params": { "rate": 0.1 } },
+        "crossover": { "type": "RPX", "params": { "rate": 0.9 } },
+        "syntax": { "type": "Syntax", "params": { 
+            "max_term_depth": 17,
+            "min_consts": 0,
+            "max_consts": 100,
+            "min_vars": 1,
+            "max_vars": 100,
+            "ops_counts": {
+                "pow": [0, 5],
+                "neg": [0, 5],
+                "inv": [0, 5],
+                "exp": [0, 5],
+                "log": [0, 5],
+                "sin": [0, 5],
+                "cos": [0, 5]
+            },
+            "forbid_patterns": [
+                "(exp (log X))", 
+                "(log (exp X))",
+                "(inv (inv .))",
+                "(neg (neg .))",
+                "(sin (... (sin .)))",
+                "(cos (... (cos .)))",
+                "(exp (... (exp .)))",
+                "(log (... (log .)))",
+                "(... pow (pow . .))"
+            ],
+            "inner_ops_max_counts": {
+                "exp": {"exp": 0},
+                "log": {"log": 0},
+                "pow": {"pow": 1},
+                "inv": {"inv": 1},        
+                "sin": {"sin": 0},
+                "cos": {"cos": 0}
+            },
+            "immediate_arg_limits": {
+                "inv": {"inv": 0},
+                "neg": {"neg": 0},
+                "log": {"exp": 0},
+                "exp": {"log": 0}        
+            },
+            "prohibit_ops_on_consts_only": true
+        }},
+        "term_vector_storage": { "type": "TermVectorStorage", 
+            "params": { 
+                "syntax": {"!ref": "syntax"},
+                "index": {"!ref": "vector_storage"} 
+                } 
+        },        
+        "evaluator": {
+            "type": "DefaultEvaluator", 
+            "params": {                
+                "storage": {"!ref": "term_vector_storage"},
+                "fitness_name": "nmse",
+                "fitness_atol": 1e-07,
+                "with_inner_evals": true,
+                "max_root_evals": 100000,
+                "max_evals": 1000000,
+                "listeners": [
+                    { "!ref": "logger" }
+                ]
+            }
         }
     },
-    "ops": [ "add", "sub", "mul", "div", "pow", "neg", "inv", "exp", "log", "sin", "cos" ],    
-    "ops_counts": {
-        "pow": [0, 5],
-        "neg": [0, 5],
-        "inv": [0, 5],
-        "exp": [0, 5],
-        "log": [0, 5],
-        "sin": [0, 5],
-        "cos": [0, 5]
-    },
-    "forbid_patterns": [
-        "(exp (log X))", 
-        "(log (exp X))",
-        "(inv (inv .))",
-        "(neg (neg .))",
-        "(sin (... (sin .)))",
-        "(cos (... (cos .)))",
-        "(exp (... (exp .)))",
-        "(log (... (log .)))",
-        "(... pow (pow . .))"
+    "init_service_name": "init",
+    "operator_service_names": [
+        "selection",
+        "mutation",
+        "crossover"
     ],
-    "inner_ops_max_counts": {
-        "exp": {"exp": 0},
-        "log": {"log": 0},
-        "pow": {"pow": 1},
-        "inv": {"inv": 1},        
-        "sin": {"sin": 0},
-        "cos": {"cos": 0}
-    },
-    "immediate_arg_limits": {
-        "inv": {"inv": 0},
-        "neg": {"neg": 0},
-        "log": {"exp": 0},
-        "exp": {"log": 0}        
-    },
-    "max_term_depth": 17,
-    "min_consts": 0,
-    "max_consts": 100,
-    "min_vars": 1,
-    "max_vars": 100,
-    "prohibit_ops_on_consts_only": true,
+    "evaluator_service_name": "evaluator",
+    "syntax_service_name": "syntax",
+    "ops": [ "add", "sub", "mul", "div", "pow", "neg", "inv", "exp", "log", "sin", "cos" ],    
     "max_gen": 100,
-    "max_root_evals": 100000,
-    "max_evals": 1000000,
-    "pop_size": 1000    
+    "pop_size": 1000
 }

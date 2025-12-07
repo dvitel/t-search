@@ -1,17 +1,14 @@
 
 
 from collections import deque
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generator, Literal, Optional
+from typing import TYPE_CHECKING, Generator, Optional
 
 import torch
 
 from ..listeners import TermSketchSearch
 
 from .base import PositionMutation
-from .reduce import Reduce
-from t_search.spatial import VectorStorage
-from t_search.syntax import Term, TermPos, Value
+from t_search.syntax import Term, TermPos
 from ...evaluators.optimization import OptimPoint, OptimState, get_pos_optim_state, optimize_positions
 
 if TYPE_CHECKING:
@@ -24,7 +21,7 @@ if TYPE_CHECKING:
 class PO(PositionMutation):
     ''' Position Optimization, adjust selected position with optimizer ''' 
     
-    def __init__(self, name = "point_opt", *, 
+    def __init__(self, *, 
                  search: TermSketchSearch,
                  num_vals: int = 1,
                  num_evals: int = 10, lr = 1.0, delta: float = 0.1,
@@ -36,7 +33,7 @@ class PO(PositionMutation):
                 #  normalize_semantics: bool = True,
                 #  syn_simplify: Optional[Reduce] = None, 
                  **kwargs):
-        super().__init__(name, **kwargs)
+        super().__init__(**kwargs)
         self.search = search
         self.num_vals = num_vals
         self.num_evals = num_evals
