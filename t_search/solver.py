@@ -10,7 +10,7 @@ import torch
 
 from t_search.base import ServiceBase
 from t_search.evaluators.term_spatial import InvalidTerms
-from t_search.listeners.base import GenListener
+from t_search.operators.listeners import GenListener
 from t_search.pipeline import get_method_params, register_services
 from t_search.syntax.syntax import Syntax
 
