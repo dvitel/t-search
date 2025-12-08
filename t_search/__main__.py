@@ -1,4 +1,4 @@
-from t_search.pipeline import args_pipeline
+from t_search.solver import args_pipeline
 
 def main():
     args_pipeline()

@@ -4,27 +4,15 @@
 from collections import deque
 import inspect
 import os
-from typing import Any, Callable, Set, Type
-import torch
-import t_search.datasets as datasets
-import numpy as np
+from typing import Any, Callable, Type
 
 import t_search.operators as operators_module
 # import t_search.syntax as syntax_module
 import t_search.spatial as spatial_module
 import t_search.evaluators as evaluators_module
-from .solver import GPSolver
 
 # only these modules are used for injection context building
 injection_context_modules = [operators_module, spatial_module, evaluators_module]
-
-
-dtype_mapping = {
-    'float16': torch.float16,
-    'float32': torch.float32,
-    'float64': torch.float64,
-    'bfloat16': torch.bfloat16
-}
 
 def get_method_params(cls: Type, method_name: str = "__init__") -> dict[str, bool]:
     """Get all __init__ parameter names from cls and its bases."""
@@ -150,70 +138,3 @@ def read_config(config_path: str) -> dict:
         config.update(cfg)
     config['service_definitions'] = service_definitions
     return config
-
-def config_pipeline(*, dataset:str, config: str, output="koza-{}.json", device='cuda', 
-                    dtype='float16', seed=42, debug: bool = False):
-
-    dtype = dtype_mapping[dtype]
-
-    kwargs = read_config(config)
-
-    if not hasattr(datasets, dataset):
-        raise ValueError(f"Unknown dataset {dataset}")
-    
-    rnd = np.random.default_rng(seed)
-    torch_gen = torch.Generator(device=device)
-    torch_gen.manual_seed(seed)
-
-    ds: datasets.Benchmark = getattr(datasets, dataset)
-    free_vars, target = ds.sample_set("train", device=device, dtype=dtype, generator=torch_gen, sorted=True)
-
-    service_definitions = kwargs.get('service_definitions', {})
-    init_service_name = kwargs.get('init_service_name', '')
-    operator_service_names = kwargs.get('operator_service_names', [])
-    evaluator_service_name = kwargs.get('evaluator_service_name', '')
-    syntax_service_name = kwargs.get('syntax_service_name', '')
-
-    solver = GPSolver(
-        service_definitions=service_definitions,
-        init_service_name=init_service_name,
-        operator_service_names=operator_service_names,
-        evaluator_service_name=evaluator_service_name,
-        syntax_service_name=syntax_service_name,
-        device=device,
-        dtype=dtype,
-        rnd = rnd,
-        torch_gen = torch_gen,
-        debug=debug,
-        **kwargs
-    )
-
-    solver.fit(free_vars, target)
-
-    output = output.format(dataset)
-    solver.save_metrics(output)
-
-def args_pipeline():
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, required=True, help='One of datasets from t_search.datasets')
-    parser.add_argument('--config', type=str, required=True, help='Path to config json file with specified constraints')
-    parser.add_argument('--output', type=str, required=True, help='Output metrics file path pattern, use {} for dataset name')
-    parser.add_argument('--device', type=str, default='cuda')
-    parser.add_argument('--dtype', type=str, default='float16')
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
-    # parser.add_argument() 
-
-    args = parser.parse_args()
-    
-    config_pipeline(
-        dataset=args.dataset, 
-        config=args.config, 
-        output=args.output, 
-        device=args.device, 
-        dtype=args.dtype, 
-        seed=args.seed,
-        debug=args.debug
-    )
