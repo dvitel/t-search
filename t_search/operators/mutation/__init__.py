@@ -2,7 +2,7 @@ from .base import TermMutation, PositionMutation
 from .rpm import RPM
 from .cm import CM
 from .optim_mutation import OptimMutation
-from .po import PO
+from .point_optim import PointOptim
 from .reduce import Reduce
 from .dedupl import Dedupl
 from .best_inner import BestInner
@@ -14,7 +14,7 @@ __all__ = [
     "RPM",
     "CM",
     "OptimMutation",
-    "PO",
+    "PointOptim",
     "Dedupl",
     "Reduce",
     "BestInner",

@@ -46,6 +46,14 @@ def stack_rows(tensors: Sequence[torch.Tensor], target: torch.Tensor) -> torch.T
         return res  
     raise ValueError(f"Unsupported tensor shape: {tensors[0].shape}")
 
+def sorted_by_fitness(seq: Sequence, fitness: torch.Tensor, max_num: int | None = None) -> list:
+    sorted_ids = torch.argsort(fitness, dim=0)
+    if max_num is None:
+        selected_ids = sorted_ids.tolist()
+    else:
+        selected_ids = sorted_ids[:max_num].tolist()
+    return [seq[i] for i in selected_ids]
+
 GPSolverStatus = Literal["INIT", "MAX_GEN", "MAX_EVAL", "MAX_ROOT_EVAL", "SOLVED"]
 
 class EvSearchTermination(Exception):

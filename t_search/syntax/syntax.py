@@ -121,7 +121,6 @@ class Syntax(ServiceBase):
 
         self.const_id: int = 0
         self.const_tape: torch.Tensor = torch.empty(0, device=self.device, dtype=self.dtype)
-        # self.listeners: list[Listener] = listeners
         self.syntax: dict[tuple[str, Term], Term] = {}
         vars, var_binding = self.get_var_bindings(free_vars)
         self.var_binding = var_binding

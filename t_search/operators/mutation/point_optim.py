@@ -1,24 +1,21 @@
 
 
 from collections import deque
-from typing import TYPE_CHECKING, Generator, Optional
+from typing import Generator, Optional
 
 import torch
 
-from ..listeners import TermSketchSearch
+from t_search.listeners.term_sketch import TermSketchSearch
 
 from .base import PositionMutation
 from t_search.syntax import Term, TermPos
 from ...evaluators.optimization import OptimPoint, OptimState, get_pos_optim_state, optimize_positions
 
-if TYPE_CHECKING:
-    from t_search.solver import GPSolver
-
 # TODO: simplification: optimization of term only once - same in const optimization 
 # TODO: loss_threshold - may we move it outside core optimization loop? 
 # TODO: tabu list     
             
-class PO(PositionMutation):
+class PointOptim(PositionMutation):
     ''' Position Optimization, adjust selected position with optimizer ''' 
     
     def __init__(self, *, 

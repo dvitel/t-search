@@ -69,14 +69,16 @@ class LLMS(Selection):
         self.evaluator = evaluator
         self.torch_gen = torch_gen
 
-    def select(self, population, selection_size: int) -> Sequence[Term]:
+    def __call__(self, population) -> Sequence[Term]:
         fitness = self.evaluator.eval(population, return_fitness="list").fitness
-        selected_ids = torch.randint(len(population), (selection_size, self.tournament_size), dtype=torch.int, device=fitness.device,
-                                    generator=self.torch_gen)
+        selected_ids = torch.randint(len(population), 
+                                     (self.selection_size, self.tournament_size), 
+                                     dtype=torch.int, device=fitness.device,
+                                     generator=self.torch_gen)
         selected_fitnesses = fitness[selected_ids]
 
         children = []        
-        for i in range(selection_size):
+        for i in range(self.selection_size):
             candidiates = [population[idx] for idx in selected_ids[i].tolist()]
             candidiates_fitness = selected_fitnesses[i].tolist()
             selection_info = [SelectionTermInfo(term=str(candidiates[j]), fitness=candidiates_fitness[j]) for j in range(self.tournament_size)]

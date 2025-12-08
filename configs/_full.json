@@ -2,10 +2,17 @@
     "service_definitions": {
         "vector_storage": {"type": "SpatialIndex", "params": {}},
         "logger": {"type": "LoggingListener", "params": {"file_path": "data/logs/run_{}.log", "autoflush": true}},
-        "init": {"type": "RHH", "params": {} },
+        "init": {"type": "RHH", "params": { "size": 1000 } },
         "selection": { "type": "TS", "params": { "selection_size": 1000, "tournament_size": 7 } },
         "mutation": { "type": "RPM", "params": { "rate": 0.1 } },
         "crossover": { "type": "RPX", "params": { "rate": 0.9 } },
+        "survivor_selection": { "type": "MuLambdaSurvivorSelection", "params": { 
+                "mu": 1000, 
+                "strict": false, 
+                "combine": false,
+                "elitism": 10
+            } 
+        },
         "syntax": { "type": "Syntax", "params": { 
             "max_term_depth": 17,
             "min_consts": 0,
@@ -73,11 +80,11 @@
     "operator_service_names": [
         "selection",
         "mutation",
-        "crossover"
+        "crossover",
+        "survivor_selection"
     ],
     "evaluator_service_name": "evaluator",
     "syntax_service_name": "syntax",
     "ops": [ "add", "sub", "mul", "div", "pow", "neg", "inv", "exp", "log", "sin", "cos" ],    
-    "max_gen": 100,
-    "pop_size": 1000
+    "max_gen": 100
 }

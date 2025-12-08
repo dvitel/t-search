@@ -3,7 +3,7 @@
 
 from functools import partial
 from time import perf_counter
-from typing import Any, Callable, Literal, Optional, Sequence, Type
+from typing import Any, Callable, Literal, Sequence, Type
 
 import numpy as np
 import torch
@@ -70,7 +70,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
         ops: dict[str, Callable] | list[str] = default_alg_ops,
 
         max_gen: int = 100,
-        pop_size: int = 1000,
 
         device:Literal["cpu", "cuda"]="cpu",
         dtype:torch.dtype=torch.float32,
@@ -109,7 +108,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.ops = ops
 
         self.max_gen = max_gen
-        self.pop_size = pop_size
         self.device: torch.device = torch.device(device)
         self.dtype: torch.dtype = dtype
 
@@ -131,6 +129,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.evaluator: Evaluator | None = None
         self.syntax: Syntax | None = None
         self.gen_listeners: list[GenListener] = []
+        self.cur_population: list[Term] = []
 
     def on_start(
         self,
@@ -179,9 +178,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
             "target": self.target,
             "const_range": self.const_range,
             "invalid_terms": self.invalid_terms,
-            "term_order": self.get_term_order,
-            "pop_size": self.pop_size,
+            "term_order": lambda term: self.syntax.get_size(term),
             "max_gen": self.max_gen,
+            "get_cur_gen": lambda: self.gen,
+            "get_cur_population": lambda: self.cur_population,
         }
 
         self.services.clear()
@@ -220,7 +220,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.init = self.services[self.init_service_name]
         if not isinstance(self.init, Initialization):
             raise ValueError(f"Init service '{self.init_service_name}' is not Initialization instance")
-        
+                
         self.operators = []
         for op_name in self.operator_service_names:
             if op_name not in self.services:
@@ -244,6 +244,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         if not isinstance(self.syntax, Syntax):
             raise ValueError(f"Syntax service '{self.syntax_service_name}' is not Syntax instance")
 
+
         for service in self.services.values():
             if isinstance(service, ServiceBase):
                 service.init()
@@ -254,45 +255,43 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 self.gen_listeners.append(service)
 
         pass
-
-    def get_term_order(self, term: Term) -> Any:
-        return self.syntax.get_size(term)
     
     def add_metrics(self, *, scope: str = "", **kwargs):
         cur_metrics = self.metrics if scope == "" else self.metrics.setdefault(scope, {})
         add_metrics(cur_metrics, **kwargs)
-
-    def _breed(self, population: list[Term]) -> list[Term]:
-        """Pipeline that mutates parents and then applies crossover on pairs. One-point operations"""
-
-        children = population
-
-        for operator_name, operator in zip(self.operator_service_names, self.operators):
-            
-            # validation - disable in production for speed
-            if self.debug:
-                for t in children:
-                    assert self.syntax.is_valid(t), f"Invalid term before operator {operator_name}: {t}"
-
-            children, elapsed = timed(operator)(self, children)
-            self.add_metrics(scope=operator_name, step_time=[elapsed], total_time=elapsed)
-
-        return children
     
     def _loop(self):
-        population, elapsed = timed(self.init)(self, self.pop_size)
+        initial_population, elapsed = timed(self.init)()
+        self.cur_population = initial_population
         self.add_metrics(init_time=elapsed)
-        _, elapsed = timed(self.evaluator.eval)(population)
+        _, elapsed = timed(self.evaluator.eval)(self.cur_population)
         self.add_metrics(init_eval_time=elapsed, total_eval_time=elapsed)
 
         while self.gen < self.max_gen:
+            iter_start_time = perf_counter()
             for listener in self.gen_listeners:
-                listener.on_gen_start(self, self.gen, population)            
-            population = self._breed(population)
-            _, elapsed = timed(self.evaluator.eval)(population)
-            self.add_metrics(gen_eval_time=[elapsed], total_eval_time=elapsed)
+                listener.on_gen_start(self, self.gen, self.cur_population)            
+
+            children = self.cur_population
+
+            for operator_name, operator in zip(self.operator_service_names, self.operators):
+                
+                # validation - disable in production for speed
+                if self.debug:
+                    for t in children:
+                        assert self.syntax.is_valid(t), f"Invalid term before operator {operator_name}: {t}"
+
+                children, elapsed = timed(operator)(self, children)
+                self.add_metrics(scope=operator_name, step_time=[elapsed], total_time=elapsed)
+
+            self.cur_population = children
+                
+            # _, elapsed = timed(self.evaluator.eval)(self.cur_population)
+            # self.add_metrics(gen_eval_time=[elapsed], total_eval_time=elapsed)
             for listener in self.gen_listeners:
-                listener.on_gen_end(self, self.gen, population)
+                listener.on_gen_end(self, self.gen, self.cur_population)
+            iter_end_time = perf_counter()
+            self.add_metrics(iter_time=[round((iter_end_time - iter_start_time) * 1000)])
             self.gen += 1
 
     def _check_trivial(self, raise_on_solution: bool = False) -> bool:

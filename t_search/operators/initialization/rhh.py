@@ -4,10 +4,10 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from t_search.operators.base import Initialization
 from t_search.syntax import Term
 from t_search.syntax.syntax import Syntax
 from t_search.syntax.term import Variable
-from .base import Initialization
     
 class RHH(Initialization):
     ''' Ramped Half and Half initialization operator '''
@@ -19,6 +19,7 @@ class RHH(Initialization):
                  add_metrics: Callable,
 
                  # from config params
+                 size: int = 1000,
                  min_depth = 1, 
                  max_depth = 5, 
                  grow_proba = 0.5,
@@ -32,6 +33,7 @@ class RHH(Initialization):
         self.grow_proba = grow_proba
         self.leaf_proba = leaf_proba
         self.freq_skew = freq_skew
+        self.size = size
 
     def _rhh(self) -> Term:
         depth = self.rnd.integers(self.min_depth, self.max_depth + 1)
@@ -41,9 +43,9 @@ class RHH(Initialization):
                     freq_skew=self.freq_skew)
         return term
     
-    def __call__(self, pop_size: int) -> list[Term]:
+    def __call__(self) -> list[Term]:
         population = []
-        for _ in range(pop_size):
+        for _ in range(self.size):
             term = self._rhh()
             # print(str(term))
             if term is not None:
@@ -64,14 +66,14 @@ class RHHCached(RHH):
         self.syntax = syntax 
 
     ''' Considers inner terms of solver syntax cache '''
-    def __call__(self, pop_size: int) -> list[Term]:
+    def __call__(self) -> list[Term]:
         none_count = 0
-        sz = pop_size - len(self.vars)
+        sz = self.size - len(self.vars)
         while len(self.syntax) < sz:
             term = self._rhh() # internally adds to syntax
             if term is None:
                 none_count += 1
-            if none_count == pop_size:
+            if none_count == self.size:
                 break 
         population = list(self.syntax.values())[:sz]
         population.extend(self.vars.values())

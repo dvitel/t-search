@@ -2,9 +2,9 @@ import numpy as np
 import torch
 from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.term_spatial import TermVectorStorage
+from t_search.operators.base import Initialization
 from t_search.syntax import Term
 from t_search.syntax.syntax import Syntax
-from .base import Initialization
 
 class SDI(Initialization):
     ''' Semantically driven initialization Beadle and Johnson (2009a)
@@ -21,6 +21,7 @@ class SDI(Initialization):
                  rnd: np.random.Generator,
                  torch_gen: torch.Generator,
                  num_rand_consts: int = 0,
+                 size: int = 1000
                  ):
         self.syntax = syntax
         self.evaluator = evaluator
@@ -29,8 +30,9 @@ class SDI(Initialization):
         self.torch_gen: torch.Generator = torch_gen
         self.num_rand_consts = num_rand_consts
         self.const_range = const_range
+        self.size = size
     
-    def __call__(self, pop_size: int) -> list[Term]:
+    def __call__(self) -> list[Term]:
         population = self.term_vector_storage.get_repr_terms()
         if len(population) == 0:
             leaf_terms = list(self.syntax.get_vars())
@@ -42,11 +44,11 @@ class SDI(Initialization):
                     leaf_terms.append(const_term)
             self.evaluator.eval(leaf_terms)
             population = self.term_vector_storage.get_repr_terms()
-        if len(population) >= pop_size:
-            return population[:pop_size]
+        if len(population) >= self.size:
+            return population[:self.size]
         
-        global_try_count = 2 * (pop_size - len(population))
-        while (len(population) < pop_size) and (global_try_count > 0): 
+        global_try_count = 2 * (self.size - len(population))
+        while (len(population) < self.size) and (global_try_count > 0): 
             global_try_count -= 1
             term = self.syntax.get_rand_op(lambda _: self.rnd.choice(population))
             if term is None:
@@ -56,6 +58,6 @@ class SDI(Initialization):
             if const_value is not None:
                 continue
             population = self.term_vector_storage.get_repr_terms()
-        if len(population) > pop_size:
-            return population[:pop_size]
+        if len(population) > self.size:
+            return population[:self.size]
         return population

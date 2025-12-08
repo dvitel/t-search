@@ -1,6 +1,6 @@
 from t_search.evaluators.evaluator import Evaluator
 
-from ..listeners import CompetentListener
+from t_search.listeners.competent import CompetentListener
 
 from ..mutation import PositionMutation, CM
 

@@ -18,9 +18,9 @@ class CTS(TS):
         self.evaluator = evaluator
         self.target = target
 
-    def select(self, population: Sequence[Term], selection_size: int) -> Sequence[Term]:
-        half_size = selection_size // 2
-        half_parents = super().select(population, half_size + (selection_size % 2)) 
+    def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
+        half_size = self.selection_size // 2
+        half_parents = super().select(population, half_size + (self.selection_size % 2)) 
         half_parents_sems = self.evaluator.eval(half_parents, return_outputs="tensor").outputs
         half_parents_dist = l2(half_parents_sems, self.target)
         children = []
@@ -45,6 +45,6 @@ class CTS(TS):
 
         del half_parents_sems
 
-        if selection_size % 2 == 1:
+        if self.selection_size % 2 == 1:
             children.append(half_parents[-1])
         return children

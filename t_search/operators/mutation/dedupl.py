@@ -5,7 +5,7 @@ from t_search.syntax import Term
 class Dedupl(Operator):
     ''' Removes duplicate syntaxes from the population '''
 
-    def exec(self, population: list[Term]) -> list[Term]:
+    def __call__(self, population: list[Term]) -> list[Term]:
         present_terms = set()
         children = []
         for term in population:

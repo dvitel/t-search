@@ -32,14 +32,7 @@
             }
         }
     },
-    "init_service_name": "init",
-    "operator_service_names": [
-        "selection",
-        "mutation",
-        "crossover"
-    ],
     "evaluator_service_name": "evaluator",
     "syntax_service_name": "syntax",
-    "max_gen": 100,
-    "pop_size": 1000
+    "max_gen": 100
 }

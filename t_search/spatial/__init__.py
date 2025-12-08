@@ -13,9 +13,8 @@ from .rtree import RTreeIndex
 from .spearman import SpearmanCorIndex
 from .cos import RCosIndex
 from .inter import InteractionIndex
-from ..evaluators.term_spatial import TermVectorStorage
 
-__all__ = ['VectorStorage', 'SpatialIndex', 'TermVectorStorage',
+__all__ = ['VectorStorage', 'SpatialIndex',
            'BinIndex', 'GridIndex', 'RTreeIndex', 'SpearmanCorIndex', 
            'RCosIndex', 'InteractionIndex'
            ]

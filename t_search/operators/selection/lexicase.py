@@ -20,7 +20,7 @@ class Lexicase(Selection):
         self.target = target
         self.torch_gen = torch_gen
 
-    def select(self, population, selection_size: int) -> Sequence[Term]:
+    def __call__(self, population) -> Sequence[Term]:
         outputs = self.evaluator.eval(population, return_outputs="tensor").outputs
 
         nan_interactions = torch.abs(outputs - self.target)
@@ -28,9 +28,9 @@ class Lexicase(Selection):
         interactions = torch.nan_to_num(nan_interactions, nan=self.nan_error)
         del nan_interactions
         
-        selected_ids = torch.zeros(selection_size, dtype=torch.int, device=outputs.device)
+        selected_ids = torch.zeros(self.selection_size, dtype=torch.int, device=outputs.device)
 
-        for pos_i in range(selection_size):
+        for pos_i in range(self.selection_size):
             shuffled_test_ids = torch.randperm(interactions.shape[-1], device=interactions.device,
                                                 generator=self.torch_gen)
             candidate_ids = torch.arange(interactions.shape[0], device=interactions.device) # all candidates

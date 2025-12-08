@@ -18,9 +18,9 @@ class STS(TS):
         self.rtol = rtol
         self.atol = atol
 
-    def select(self, population: Sequence[Term], selection_size: int) -> Sequence[Term]:
-        half_size = selection_size // 2
-        half_parents = super().select(population, half_size + (selection_size % 2)) 
+    def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
+        half_size = self.selection_size // 2
+        half_parents = super().select(population, half_size + (self.selection_size % 2)) 
         half_parents_sems = self.evaluator.eval(half_parents, return_outputs="tensor").outputs
         children = []
         for i in range(half_size):
@@ -42,6 +42,6 @@ class STS(TS):
 
         del half_parents_sems
 
-        if selection_size % 2 == 1:
+        if self.selection_size % 2 == 1:
             children.append(half_parents[-1])
         return children

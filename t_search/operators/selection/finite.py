@@ -13,7 +13,7 @@ class Finite(Operator):
                  invalid_terms: InvalidTerms):
         self.invalid_terms = invalid_terms
 
-    def exec(self, population: list[Term]):
+    def __call__(self, population: list[Term]):
         children = [ch for ch in population if not self.invalid_terms.is_invalid(ch)]
         if len(children) == 0:
             print("WARN: all population has nans or infs")

@@ -21,11 +21,13 @@ class TS(Selection):
         self.evaluator = evaluator
         self.torch_gen = torch_gen
 
-    def select(self, population, selection_size: int) -> Sequence[Term]:
+    def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
         ''' Fitness is 1d tensor of fitness selected for tournament '''
         fitness = self.evaluator.eval(population, return_fitness="tensor").fitness
-        selected_ids = torch.randint(fitness.shape[0], (selection_size, self.tournament_size), dtype=torch.int, device=fitness.device,
-                                    generator=self.torch_gen)
+        selected_ids = torch.randint(fitness.shape[0], 
+                                     (self.selection_size, self.tournament_size), 
+                                     dtype=torch.int, device=fitness.device,
+                                     generator=self.torch_gen)
         selected_fitnesses = fitness[selected_ids]
         best_id_id = torch.argmin(selected_fitnesses, dim=-1)
         best_ids = torch.gather(selected_ids, dim=-1, index = best_id_id.unsqueeze(-1)).squeeze(-1)

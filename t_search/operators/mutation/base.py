@@ -26,7 +26,7 @@ class TermMutation(Operator):
         ''' Abstract. Mutates one term in the context of parents and already generated children ''' 
         pass # to be implemented in subclasses
 
-    def exec(self, population: Sequence[Term]) -> Sequence[Term]: 
+    def __call__(self, population: Sequence[Term]) -> Sequence[Term]: 
         ''' 
             Some mutations could return None, we would like to reattempt if small number was mutated t guarantee mutated_size.
             However, we still stick to only one pass through population.

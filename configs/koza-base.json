@@ -1,9 +1,23 @@
 {
     "!base": "./base.json",
     "service_definitions": {
-        "init": {"type": "RHH", "params": {} },
+        "init": {"type": "RHH", "params": { "size": 1000 } },
         "selection": { "type": "TS", "params": { "selection_size": 1000, "tournament_size": 7 } },
         "mutation": { "type": "RPM", "params": { "rate": 0.1 } },
-        "crossover": { "type": "RPX", "params": { "rate": 0.9 } }
-    }
+        "crossover": { "type": "RPX", "params": { "rate": 0.9 } },
+        "survivor_selection": { "type": "MuLambdaSurvivorSelection", "params": { 
+                "mu": 1000, 
+                "strict": false, 
+                "combine": false,
+                "elitism": 10
+            } 
+        }        
+    },
+    "init_service_name": "init",
+    "operator_service_names": [        
+        "selection",
+        "mutation",
+        "crossover",
+        "survivor_selection"
+    ]    
 }

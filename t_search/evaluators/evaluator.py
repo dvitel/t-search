@@ -7,7 +7,7 @@ import torch
 
 from t_search.base import ServiceBase
 from t_search.evaluators.optimizer import Optimizer
-from t_search.operators.listeners.base import EvalListener
+from t_search.listeners.base import EvalListener
 
 from .term_spatial import InvalidTerms, TermVectorStorage
 from t_search.syntax.evaluation import evaluate
