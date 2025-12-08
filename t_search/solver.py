@@ -10,11 +10,12 @@ import torch
 
 from t_search.base import ServiceBase
 from t_search.evaluators.term_spatial import InvalidTerms
+from t_search.listeners.base import GenListener
 from t_search.pipeline import get_method_params, register_services
 from t_search.syntax.syntax import Syntax
 
 from .utils import GLOBAL_RNG, EvSearchTermination, GPSolverStatus, add_metrics, timed
-from .operators import Initialization, Operator, GenListener
+from .operators import Operator
 from sklearn.base import BaseEstimator, RegressorMixin
 
 

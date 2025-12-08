@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.term_spatial import TermVectorStorage
-from t_search.operators.base import Initialization
+from t_search.operators.initialization.base import Initialization
 from t_search.syntax import Term
 from t_search.syntax.syntax import Syntax
 

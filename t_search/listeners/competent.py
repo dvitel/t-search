@@ -3,11 +3,11 @@ from typing import Callable
 
 import torch
 from t_search.base import ServiceBase
+from t_search.evaluators.term_spatial import TermVectorStorage
+from t_search.operators.competent import DesiredSemantics, InversionCache, get_desired_semantics
 from t_search.operators.initialization.up2d import Up2D
-from t_search.spatial import TermVectorStorage
 from t_search.syntax import Term
 from t_search.syntax.syntax import Syntax
-from ..competent import DesiredSemantics, InversionCache, get_desired_semantics
 from .base import EvalListener
 
 class CompetentListener(ServiceBase, EvalListener):
