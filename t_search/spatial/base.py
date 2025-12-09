@@ -218,7 +218,7 @@ class VectorStorage(ServiceBase):
 
     def __init__(self,
                  dims: int, 
-                 capacity: int = 1024, 
+                 capacity: int = 16 * 1024, 
                  dtype = torch.float16,
                  rtol: float = 1e-5, 
                  atol: float = 1e-4, 
@@ -264,8 +264,9 @@ class VectorStorage(ServiceBase):
     def _alloc_vectors(self, vectors: torch.Tensor) -> list[int]:
         ''' Adds vectors (n, dims) to storage and returns new ids. '''
         cur_end = self.cur_id + vectors.shape[0]
-        if cur_end > self.capacity: # reallocate memory 
-            new_vectors = torch.empty((self.capacity * 2, vectors.shape[1]), dtype=vectors.dtype, device=vectors.device)
+        if cur_end > self.vectors.shape[0]: # reallocate memory 
+            new_size = ((cur_end // self.capacity) + 1) * self.capacity
+            new_vectors = torch.empty((new_size, vectors.shape[1]), dtype=vectors.dtype, device=vectors.device)
             new_vectors[:self.cur_id] = self.vectors[:self.cur_id]
             old_vectors = self.vectors
             self.vectors = new_vectors

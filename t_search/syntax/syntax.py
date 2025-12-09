@@ -27,9 +27,7 @@ class Syntax(ServiceBase):
                  var_names: list[str],
                  ops_signatures: dict[str, inspect.Signature],
                  add_metrics: Callable,
-                 invalid_terms: InvalidTerms,
                  device: str = 'cpu',
-                 rnd: np.random.Generator = GLOBAL_RNG,
                  dtype: torch.dtype = torch.bfloat16,
                  
                  # from config params
@@ -44,11 +42,12 @@ class Syntax(ServiceBase):
                  inner_ops_max_counts: dict[str, dict[str, int]] = {},
                  immediate_arg_limits: dict[str, dict[str, int]] = {},
                  prohibit_ops_on_consts_only: bool = True,       
-                 capacity: int = 1024 
+                 capacity: int = 1024,
+                 rnd: np.random.Generator = GLOBAL_RNG,
+                 torch_gen: torch.Generator | None = None
                  ):
         self.ops_signatures = ops_signatures
         self.add_metrics = add_metrics
-        self.invalid_terms = invalid_terms
 
         self.max_term_depth = max_term_depth    
         self.min_consts = min_consts
@@ -59,6 +58,7 @@ class Syntax(ServiceBase):
         self.device = device
         self.dtype = dtype
         self.rnd = rnd
+        self.torch_gen = torch_gen
         self.capacity = capacity
 
         self.const_range = const_range
@@ -215,17 +215,17 @@ class Syntax(ServiceBase):
             if not self._validate_patterns(term):
                 self.syntax.pop(signature, None)
                 return None
-            if self.invalid_terms.is_invalid(term):
-                # NOTE that we increase on every cache hit
-                self.add_metrics(invalid_hit=1)
-                return None  # do not output known invalid terms
-            # elif term in self.const_term_outputs:
-            #     self.metrics["syntax_const"] = self.metrics.get("syntax_const", 0) + 1
-            #     # return Value(self.const_term_outputs[term]) # return const value
-            #     # return None
-            #     pass
-            #     # NOTE: returning value could ruin constraints. Instead, we disallow constant terms because constant leaf could be used instead.
-            #     # TODO: separate operator that transforms terms to simple forms with removed constants
+            # if self.invalid_terms.is_invalid(term):
+            #     # NOTE that we increase on every cache hit
+            #     self.add_metrics(invalid_hit=1)
+            #     return None  # do not output known invalid terms
+            # # elif term in self.const_term_outputs:
+            # #     self.metrics["syntax_const"] = self.metrics.get("syntax_const", 0) + 1
+            # #     # return Value(self.const_term_outputs[term]) # return const value
+            # #     # return None
+            # #     pass
+            # #     # NOTE: returning value could ruin constraints. Instead, we disallow constant terms because constant leaf could be used instead.
+            # #     # TODO: separate operator that transforms terms to simple forms with removed constants
             return term
 
         # else:
@@ -307,12 +307,13 @@ class Syntax(ServiceBase):
         return replaced_term
 
     def is_valid(self, term: Term) -> bool:
+        ''' Checks validity according to syntactic constraints only (not evaluations)'''
         term_depth = self.get_depth(term)
         if term_depth > self.max_term_depth:
             return False
-        eval_valid = not self.invalid_terms.is_invalid(term)
-        if not eval_valid:
-            return False
+        # eval_valid = not self.invalid_terms.is_invalid(term)
+        # if not eval_valid:
+        #     return False
         term_is_valid = is_valid(term, builders=self.builders, counts_cache=self.counts_cache)
         if not term_is_valid:
             return False
@@ -346,7 +347,7 @@ class Syntax(ServiceBase):
         return op
     
     def get_vars(self) -> list[Variable]: 
-        return list(self.vars.values())
+        return self.vars
     
     def grow(self, max_term_depth: int | None = None,
              start_context: TermGenContext | None = None,

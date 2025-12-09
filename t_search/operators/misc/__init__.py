@@ -2,12 +2,12 @@
 
 from .best_inner import BestInner
 from .dedupl import Dedupl
-from .finite import Finite
+from .valid import Valid
 from .logging import Logging
 
 __all__ = [
     "BestInner",
     "Dedupl",
-    "Finite",
+    "Valid",
     "Logging",
 ]

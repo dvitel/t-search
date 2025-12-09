@@ -116,7 +116,7 @@ class Reduce(TermMutation):
     def mutate_term(self, term: Term) -> Term | None:
         new_term = sp_simplify(term, to_dict = self.to_ops, from_dict=self.from_ops,
                                alloc_val = lambda value: self.syntax.get_const(value = value),
-                               alloc_var = lambda var_id: self.syntax.get_vars(var_id = var_id),
+                               alloc_var = lambda var_id: self.syntax.get_var(var_id = var_id),
                                alloc_op = lambda op_id: lambda *args: self.syntax.get_op(op_id, *args))
         if self.check_validity and not self.syntax.is_valid(new_term):
             return None

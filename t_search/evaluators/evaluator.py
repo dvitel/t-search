@@ -28,6 +28,10 @@ class Evaluator:
         ''' Checks if variability of outputs signals is close to contant according to config'''
         pass 
 
+    def is_valid(self, term: Term) -> bool:
+        ''' Checks validity of term according to semantic constraints '''
+        pass
+
     def eval(
         self,
         terms: Sequence[Term] | Term,
@@ -57,7 +61,6 @@ class DefaultEvaluator(Evaluator, ServiceBase):
                     var_bindings: dict[str, torch.Tensor],
                     ops: dict[str, Callable],
                     storage: TermVectorStorage, # should be injected 
-                    invalid_terms: InvalidTerms,
                     add_metrics: Callable[..., None],
                     fitness_name: str = 'nmse',
                     fitness_atol: float = 1e-05,           
@@ -80,10 +83,10 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         fitness_fn_builder = get_fitness_fns(fitness_name)
         self.fitness_fn_builder = fitness_fn_builder
-        self.fitness_fn: Callable[[torch.Tensor], torch.Tensor] = lambda x: x
+        self.fitness_fn: Callable[[torch.Tensor], torch.Tensor] = fitness_fn_builder(target)
 
         self.new_term_outputs: dict[Term, torch.Tensor] = {}
-        self.invalid_terms = invalid_terms
+        self.invalid_terms: dict[Term, torch.Tensor] = {}
         # self.const_term_outputs: dict[Term, torch.Tensor] = {}
 
         self.term_fitness: dict[Term, torch.Tensor] = {}
@@ -110,7 +113,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         add_metrics(
             evals = self.evals,
             root_evals = self.root_evals,            
-            invalid_terms = len(self.invalid_terms.terms),
+            invalid_terms = len(self.invalid_terms),
             best_term = self.best_term,
             best_fitness = self.best_term_fitness,
             **best_term_metrics
@@ -133,6 +136,10 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         if fitness < self.fitness_atol:
             return mean
         return None 
+    
+    def is_valid(self, term: Term) -> bool:
+        ''' All outputs are non-infinite and non-nan '''
+        return term not in self.invalid_terms
 
     def _get_cached_output(self, term: Term) -> Optional[torch.Tensor]:
         if isinstance(term, Variable):
@@ -145,8 +152,8 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             return term_semantics
         if term in self.new_term_outputs:
             return self.new_term_outputs[term]
-        if self.invalid_terms.is_invalid(term):
-            return self.invalid_terms.get_outputs(term)
+        if term in self.invalid_terms:
+            return self.invalid_terms[term]
         # if term in self.const_term_outputs:
         #     return self.const_term_outputs[term]
         return None    
@@ -154,7 +161,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
     def _get_fitness(self, term: Term) -> torch.Tensor:
         if term in self.term_fitness:
             return self.term_fitness[term]
-        elif self.invalid_terms.is_invalid(term):
+        elif term in self.invalid_terms:
             return self.bad_fitness
         raise ValueError(f"Term {term} has no fitness computed")    
 
@@ -202,7 +209,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         optim_terms = []    
         if len(terms) > 0:
-            optim_terms = self._eval_group(self, terms)
+            optim_terms = self._eval_group(terms)
 
         while len(self.new_listener_terms) > 0:
             new_terms = self.new_listener_terms
@@ -243,7 +250,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             (infinite_ids,) = torch.where(~finite_semantics_mask)
             for infinite_id in infinite_ids.tolist():
                 invalid_term = new_terms[infinite_id]
-                self.invalid_terms.add_invalid(invalid_term, outputs[infinite_id])
+                self.invalid_terms[invalid_term] = outputs[infinite_id]
             new_semantics = semantics[valid_ids]
             valid_terms = [new_terms[i] for i in valid_ids.tolist()]
             del semantics, finite_semantics_mask, infinite_ids, valid_ids
@@ -344,6 +351,9 @@ class OptimEvaluator(Evaluator):
 
     def is_const(self, outputs: torch.Tensor) -> Optional[torch.Tensor]:
         return self.evaluator.is_const(outputs)
+    
+    def is_valid(self, term: Term) -> bool:
+        return self.evaluator.is_valid(term)
 
     def eval(
         self,

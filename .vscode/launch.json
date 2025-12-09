@@ -21,7 +21,7 @@
                 "--config", "configs/koza-set1.json",
                 "--output", "data/koza-set1-{}-results.json",
                 "--device", "cuda",
-                "--dtype", "float16",
+                "--dtype", "float32",
                 "--seed", "42",
                 "--debug"
             ],

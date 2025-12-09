@@ -127,7 +127,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.free_vars: torch.Tensor | None = None
         self.target: torch.Tensor | None = None 
         self.const_range: torch.Tensor | None = None
-        self.invalid_terms: InvalidTerms | None = None
 
         self.gen: int = 0
         self.is_fitted_: bool = False
@@ -179,8 +178,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         self.const_range = detect_const_range(self.target, self.free_vars)
 
-        self.invalid_terms = InvalidTerms()
-
         default_context = {
             "rnd": self.rnd,
             "torch_gen": self.torch_gen,
@@ -192,7 +189,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
             "target": self.target,
             "dims": self.target.shape[0],
             "const_range": self.const_range,
-            "invalid_terms": self.invalid_terms,
             "term_order": lambda term: self.syntax.get_size(term),
             "max_gen": self.max_gen,
             "get_cur_gen": lambda: self.gen,
@@ -237,10 +233,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
             if self.debug:
                 print(f"Building {service_name}:{service_cls.__name__}:")
                 for k, v in service_context.items():
-                    print(f"\t{k}: {v}")
-                print(f"---- Default params:")
-                for k, v in default_params.items():
-                    print(f"\t{k}: {v}")
+                    if k == "add_metrics":
+                        print(f"\t{k}: <function>")
+                    else:
+                        print(f"\t{k}: {v}")
+                if len(default_params) > 0:
+                    print(f"---- Default params:")
+                    for k, v in default_params.items():
+                        print(f"\t{k}: {v}")
                 print(f"--------------------------------")
             service = service_cls(**service_context)
             return service
@@ -303,7 +303,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         while self.gen < self.max_gen:
             iter_start_time = perf_counter()
             for listener in self.gen_listeners:
-                listener.on_gen_start(self, self.gen, self.cur_population)            
+                listener.on_gen_start(self.gen, self.cur_population)            
 
             children = self.cur_population
 
@@ -322,7 +322,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             # _, elapsed = timed(self.evaluator.eval)(self.cur_population)
             # self.add_metrics(gen_eval_time=[elapsed], total_eval_time=elapsed)
             for listener in self.gen_listeners:
-                listener.on_gen_end(self, self.gen, self.cur_population)
+                listener.on_gen_end(self.gen, self.cur_population)
             iter_end_time = perf_counter()
             self.add_metrics(iter_time=[round((iter_end_time - iter_start_time) * 1000)])
             self.gen += 1
