@@ -1,6 +1,7 @@
 ''' Syntax cache with builders '''
 
 
+import inspect
 from typing import Callable, Optional, Type
 
 import numpy as np
@@ -23,8 +24,8 @@ class Syntax(ServiceBase):
 
     def __init__(self, *,
                  # from solver context
-                 ops: dict[str, Callable],
-                 free_vars: torch.Tensor,
+                 var_names: list[str],
+                 ops_signatures: dict[str, inspect.Signature],
                  add_metrics: Callable,
                  invalid_terms: InvalidTerms,
                  device: str = 'cpu',
@@ -42,9 +43,10 @@ class Syntax(ServiceBase):
                  ops_counts: dict[str, tuple[int, int]] = {},
                  inner_ops_max_counts: dict[str, dict[str, int]] = {},
                  immediate_arg_limits: dict[str, dict[str, int]] = {},
-                 prohibit_ops_on_consts_only: bool = True,        
+                 prohibit_ops_on_consts_only: bool = True,       
+                 capacity: int = 1024 
                  ):
-        self.ops = ops
+        self.ops_signatures = ops_signatures
         self.add_metrics = add_metrics
         self.invalid_terms = invalid_terms
 
@@ -57,6 +59,7 @@ class Syntax(ServiceBase):
         self.device = device
         self.dtype = dtype
         self.rnd = rnd
+        self.capacity = capacity
 
         self.const_range = const_range
 
@@ -82,8 +85,8 @@ class Syntax(ServiceBase):
         builders[Variable] = self.var_builder
 
         self.op_builders: dict[str, Builder] = {}
-        for op_id, op_fn in self.ops.items():
-            op_arity = get_fn_arity(op_fn)
+        for op_id, op_signatrue in self.ops_signatures.items():
+            op_arity = get_fn_arity(op_signatrue)
             op_builder = Builder(
                 op_id,
                 self._alloc_op_builder(op_id),
@@ -122,9 +125,8 @@ class Syntax(ServiceBase):
         self.const_id: int = 0
         self.const_tape: torch.Tensor = torch.empty(0, device=self.device, dtype=self.dtype)
         self.syntax: dict[tuple[str, Term], Term] = {}
-        vars, var_binding = self.get_var_bindings(free_vars)
-        self.var_binding = var_binding
-        self.vars = {v.var_id: v for v in vars}        
+        self.vars = [Variable(var_id) for var_id in var_names]
+        self.vars_dict = {x.var_id: x for x in self.vars}
 
         arg_limits = {}
         if self.prohibit_ops_on_consts_only:
@@ -152,23 +154,11 @@ class Syntax(ServiceBase):
                 self.op_builders[inner_op_id]: cnt for inner_op_id, cnt in op_limits.items()
             }
 
-        self.builders.limit_context(context_limits)        
+        self.builders.limit_context(context_limits)                
 
-
-    def get_var_bindings(self, free_vars: torch.Tensor | None = None):
-        if free_vars is None:
-            return list(self.vars.values()), self.var_binding
-        vars: list[Variable] = []
-        var_binding: dict[str, torch.Tensor] = {}
-        for i, fv in enumerate(free_vars):
-            v = Variable(f"x{i}")
-            vars.append(v)
-            var_binding[v.var_id] = fv
-        return vars, var_binding        
-    
     def _alloc_const(self, *, value: Optional[float | torch.Tensor] = None) -> Value:
         if self.const_id >= self.const_tape.shape[0]:
-            delta = max(1, self.max_consts) * self.pop_size
+            delta = max(1, self.max_consts) * self.capacity
             new_tape = torch.empty(
                 self.const_tape.shape[0] + delta,
                 device=self.device,
@@ -198,10 +188,10 @@ class Syntax(ServiceBase):
 
     def _alloc_var(self, *, var_id: Optional[str] = None) -> Variable:
         if var_id is not None:
-            var = self.vars.get(var_id, None)
+            var = self.vars_dict.get(var_id, None)
             if var is not None:
                 return var
-        var = self.rnd.choice(list(self.vars.values()))
+        var = self.rnd.choice(self.vars)
         return var
     
     def _validate_patterns(self, term: Term) -> bool:

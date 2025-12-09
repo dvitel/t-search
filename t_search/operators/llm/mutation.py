@@ -115,6 +115,7 @@ class LLMMutation(TermMutation):
     def __init__(self, *,     
                  llm: LLMCaller,
                  syntax: Syntax,
+                 var_bindings: dict[str, torch.Tensor],
                  evaluator: Evaluator,
                  optimizer: Optimizer,
                  target: torch.Tensor,
@@ -141,6 +142,7 @@ class LLMMutation(TermMutation):
         self.optimizer = optimizer
         self.target = target
         self.syntax = syntax
+        self.var_bindings = var_bindings
         self.add_metrics = add_metrics
 
     def select_exemplars(self, term: str):
@@ -174,9 +176,8 @@ class LLMMutation(TermMutation):
         del test_ids
         expected = self.target[hardest_test_ids].tolist()
         actual = outcomes[hardest_test_ids].tolist()
-        vars, var_bindings = self.syntax.get_var_bindings()
-        var_values = {var_name:var_vals[hardest_test_ids].tolist() for var_name, var_vals in var_bindings}
-        tests = [TestCaseContext(vars = {x.var_id: var_values[x.var_id][i] for x in vars},
+        var_values = {var_name:var_vals[hardest_test_ids].tolist() for var_name, var_vals in self.var_bindings}
+        tests = [TestCaseContext(vars = {x: var_values[x][i] for x in self.var_bindings.keys()},
                                   expected = expected[i],
                                   actual = actual[i],
                                   diff = actual[i] - expected[i]

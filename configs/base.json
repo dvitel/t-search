@@ -1,20 +1,28 @@
 {
     "service_definitions": {
         "vector_storage": {"type": "SpatialIndex", "params": {}},
-        "logger": {"type": "LoggingListener", "params": {"file_path": "data/logs/run_{}.log", "autoflush": true}},
-        "syntax": { "type": "Syntax", "params": { 
-            "max_term_depth": 17,
-            "min_consts": 0,
-            "max_consts": 100,
-            "min_vars": 1,
-            "max_vars": 100,
-            "prohibit_ops_on_consts_only": false
-        }},
-        "term_vector_storage": { "type": "TermVectorStorage", 
+        "logger": {
+            "type": "Logging", 
+            "module": "t_search.operators.misc",
+            "params": {"file_path": "data/logs/run_{}.log", "autoflush": true}
+        },
+        "syntax": { 
+            "type": "Syntax", 
+            "params": { 
+                "max_term_depth": 17,
+                "min_consts": 0,
+                "max_consts": 100,
+                "min_vars": 1,
+                "max_vars": 100,
+                "prohibit_ops_on_consts_only": false
+            }
+        },
+        "term_vector_storage": { 
+            "type": "TermVectorStorage", 
             "params": { 
                 "syntax": {"!ref": "syntax"},
                 "index": {"!ref": "vector_storage"} 
-                } 
+            } 
         },        
         "evaluator": {
             "type": "DefaultEvaluator", 

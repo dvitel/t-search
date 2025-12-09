@@ -1,11 +1,30 @@
 {
     "!base": "./base.json",
     "service_definitions": {
-        "init": {"type": "RHH", "params": { "size": 1000 } },
-        "selection": { "type": "TS", "params": { "selection_size": 1000, "tournament_size": 7 } },
-        "mutation": { "type": "RPM", "params": { "rate": 0.1 } },
-        "crossover": { "type": "RPX", "params": { "rate": 0.9 } },
-        "survivor_selection": { "type": "MuLambdaSurvivorSelection", "params": { 
+        "init": {
+            "type": "RHH", 
+            "module": "t_search.operators.classic",
+            "params": { "size": 1000 } 
+        },
+        "selection": { 
+            "type": "TS", 
+            "module": "t_search.operators.classic",
+            "params": { "selection_size": 1000, "tournament_size": 7 } 
+        },
+        "mutation": { 
+            "type": "RPM", 
+            "module": "t_search.operators.classic",
+            "params": { "rate": 0.1 } 
+        },
+        "crossover": { 
+            "type": "RPX", 
+            "module": "t_search.operators.classic",
+            "params": { "rate": 0.9 } 
+        },
+        "survivor_selection": { 
+            "type": "MuLambdaSurvivorSelection", 
+            "module": "t_search.operators.classic",
+            "params": { 
                 "mu": 1000, 
                 "strict": false, 
                 "combine": false,

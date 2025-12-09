@@ -2,6 +2,7 @@
 """
 
 from functools import partial
+import inspect
 from time import perf_counter
 from typing import Any, Callable, Literal, Sequence, Type
 
@@ -44,6 +45,12 @@ def detect_const_range(target: torch.Tensor, var_bindings: Sequence[torch.Tensor
     const_range[1] += 0.1 * dist
     return const_range
 
+def get_var_bindings(free_vars: torch.Tensor) -> dict[str, torch.Tensor]:
+    var_bindings: dict[str, torch.Tensor] = {}
+    for i, fv in enumerate(free_vars):
+        var_id = f"x{i}"
+        var_bindings[var_id] = fv
+    return var_bindings
 
 # operational semantics of default symbols
 default_alg_ops = {
@@ -108,6 +115,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                     raise ValueError(f"Operator {op_id} is not in default set. Supported: {list(default_alg_ops.keys())}")
                 
         self.ops = ops
+        self.ops_signatures = {op_id: inspect.signature(op_fn) for op_id, op_fn in ops.items()}
 
         self.max_gen = max_gen
         self.device: torch.device = torch.device(device)
@@ -157,6 +165,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         self.free_vars = free_vars.to(device=self.device, dtype=self.dtype)
 
+        self.var_bindings = get_var_bindings(self.free_vars)
+        self.var_names = list(self.var_bindings.keys())
+
         if not torch.is_tensor(target):
             target = torch.tensor(
                 target,
@@ -176,14 +187,19 @@ class GPSolver(BaseEstimator, RegressorMixin):
             "device": self.device,
             "dtype": self.dtype,
             "ops": self.ops,
+            "ops_signatures": self.ops_signatures,
             "free_vars": self.free_vars,
             "target": self.target,
+            "dims": self.target.shape[0],
             "const_range": self.const_range,
             "invalid_terms": self.invalid_terms,
             "term_order": lambda term: self.syntax.get_size(term),
             "max_gen": self.max_gen,
             "get_cur_gen": lambda: self.gen,
             "get_cur_population": lambda: self.cur_population,
+            "var_bindings": self.var_bindings,
+            "var_names": self.var_names,
+            "debug": self.debug,
         }
 
         self.services.clear()
@@ -192,25 +208,40 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
             service_params = get_method_params(service_cls, "__init__")
 
-            service_context = {}
+            service_context = {}            
 
             for param_name in service_params:
                 # if param_name in self.services:
                 #     service_context[param_name] = self.services[param_name]
                 if param_name in default_context:
                     service_context[param_name] = default_context[param_name]
-                if param_name == "add_metrics":
+                elif param_name == "add_metrics":
                     service_context[param_name] = partial(self.add_metrics, scope=service_name)
-                if param_name in params:
+                elif param_name in params:
                     service_context[param_name] = params[param_name]
+                elif param_name in ("syntax", "evaluator") and param_name in self.services:
+                    service_context[param_name] = self.services[param_name]
 
             inited_params = set(service_context.keys())
-            left_params = [p for p, has_default in service_params.items() if p not in inited_params and not has_default]
+            left_params = []
+            default_params = {}
+            for p, (has_default, default_opt) in service_params.items():
+                if p not in inited_params:
+                    if has_default:
+                        default_params[p] = default_opt
+                    else:
+                        left_params.append(p)
             if len(left_params) > 0:
                 raise ValueError(f"Cannot build service '{service_name}': missing parameters {left_params}")
                 
             if self.debug:
-                print(f"Building '{service_name}' of type {service_cls.__name__} with params {service_context}")
+                print(f"Building {service_name}:{service_cls.__name__}:")
+                for k, v in service_context.items():
+                    print(f"\t{k}: {v}")
+                print(f"---- Default params:")
+                for k, v in default_params.items():
+                    print(f"\t{k}: {v}")
+                print(f"--------------------------------")
             service = service_cls(**service_context)
             return service
 
@@ -368,9 +399,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         free_vars = X.to(device=self.device, dtype=self.dtype)
 
-        _, var_binding = self.syntax.get_var_bindings(free_vars)
+        var_bindings = get_var_bindings(free_vars)
 
-        output: torch.Tensor = self.evaluator.eval_best(var_binding, ops = self.ops)
+        output: torch.Tensor = self.evaluator.eval_best(var_bindings, ops = self.ops)
         if output is None:
             raise RuntimeError("Evaluation of the best term returned None, not all terminals may be bound")
         output_numpy = output.cpu().numpy()

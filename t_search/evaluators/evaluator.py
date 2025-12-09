@@ -38,7 +38,7 @@ class Evaluator:
         ''' Evaluates given terms. '''
         pass
 
-    def eval_best(self, var_binding: dict[str, torch.Tensor], ops: dict[str, Callable] | None = None) -> torch.Tensor:
+    def eval_best(self, var_bindings: dict[str, torch.Tensor], ops: dict[str, Callable] | None = None) -> torch.Tensor:
         ''' Evaluates the best term found so far with given variable bindings and operations '''
         pass
 
@@ -54,6 +54,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
     def __init__(self, *,
                     target: torch.Tensor, 
+                    var_bindings: dict[str, torch.Tensor],
                     ops: dict[str, Callable],
                     storage: TermVectorStorage, # should be injected 
                     invalid_terms: InvalidTerms,
@@ -93,6 +94,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         self.best_term_fitness: Optional[torch.Tensor] = None
 
         self.target: torch.Tensor = target
+        self.var_bindings: dict[str, torch.Tensor] = var_bindings
         self.ops: dict[str, Callable] = ops
         self.listeners: list[EvalListener] = listeners
 
@@ -134,7 +136,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
     def _get_cached_output(self, term: Term) -> Optional[torch.Tensor]:
         if isinstance(term, Variable):
-            return self.var_binding[term.var_id]
+            return self.var_bindings[term.var_id]
         if isinstance(term, Value):
             # return self.const_binding[term.value]
             return term.value
@@ -311,13 +313,13 @@ class DefaultEvaluator(Evaluator, ServiceBase):
                 fitness_res = torch.stack(fitness, dim=0)
         return Evaluations(output_res, fitness_res)   
 
-    def eval_best(self, var_binding: dict[str, torch.Tensor], ops: dict[str, Callable] | None = None) -> torch.Tensor:
+    def eval_best(self, var_bindings: dict[str, torch.Tensor], ops: dict[str, Callable] | None = None) -> torch.Tensor:
         if self.best_term is None:
             raise RuntimeError("Evaluator is not fitted yet")
 
         def get_binding(root: Term, term: Term) -> Optional[torch.Tensor]:
             if isinstance(term, Variable):
-                return var_binding[term.var_id]
+                return var_bindings[term.var_id]
             if isinstance(term, Value):
                 # return self.const_binding[term.value]
                 return term.value
@@ -361,8 +363,8 @@ class OptimEvaluator(Evaluator):
         )
         return res
 
-    def eval_best(self, var_binding: dict[str, torch.Tensor], ops: dict[str, Callable] | None = None) -> torch.Tensor:
-        return self.evaluator.eval_best(var_binding, ops)
+    def eval_best(self, var_bindings: dict[str, torch.Tensor], ops: dict[str, Callable] | None = None) -> torch.Tensor:
+        return self.evaluator.eval_best(var_bindings, ops)
 
     def get_loss_fn(self, get_binding, set_binding):
         return self.evaluator.get_loss_fn(get_binding, set_binding)

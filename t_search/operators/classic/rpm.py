@@ -6,13 +6,11 @@ class RPM(PositionMutation):
     """One Random Position Mutation"""
 
     def __init__(self, *, 
-                 syntax: Syntax,
                  max_grow_depth=5, 
                  freq_skew: bool = False,
                  **kwargs):
         super().__init__(**kwargs)
         self.max_grow_depth = max_grow_depth
-        self.syntax = syntax
         self.freq_skew = freq_skew
 
     def mutate_position(

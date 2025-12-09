@@ -6,15 +6,17 @@ import inspect
 import os
 from typing import Any, Callable, Type
 
+from pyparsing import Optional
+
 import t_search.operators as operators_module
-# import t_search.syntax as syntax_module
+import t_search.syntax.syntax as syntax_module
 import t_search.spatial as spatial_module
 import t_search.evaluators as evaluators_module
 
 # only these modules are used for injection context building
-injection_context_modules = [operators_module, spatial_module, evaluators_module]
+injection_context_modules = [operators_module, spatial_module, syntax_module, evaluators_module ]
 
-def get_method_params(cls: Type, method_name: str = "__init__") -> dict[str, bool]:
+def get_method_params(cls: Type, method_name: str = "__init__") -> dict[str, tuple[bool, Any]]:
     """Get all __init__ parameter names from cls and its bases."""
     params = {}
     
@@ -31,7 +33,7 @@ def get_method_params(cls: Type, method_name: str = "__init__") -> dict[str, boo
                 if param.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):
                     continue
                 has_default = param.default is not inspect.Parameter.empty
-                params[param_name] = has_default
+                params[param_name] = (has_default, param.default)
         except (ValueError, TypeError):
             # Some built-in types don't have inspectable signatures
             continue

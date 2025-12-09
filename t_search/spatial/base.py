@@ -216,9 +216,16 @@ class StorageStats:
 class VectorStorage(ServiceBase):
     ''' Interface for storage for indexing '''
 
-    def __init__(self, capacity: int, dims: int, dtype = torch.float16,
-                 rtol: float = 1e-5, atol: float = 1e-4, device: str = "cpu",
-                 store_batch_size: int = 1024, query_batch_size: int = 128, dim_batch_size: int = 8, **kwargs):
+    def __init__(self,
+                 dims: int, 
+                 capacity: int = 1024, 
+                 dtype = torch.float16,
+                 rtol: float = 1e-5, 
+                 atol: float = 1e-4, 
+                 device: str = "cpu",
+                 store_batch_size: int = 1024, 
+                 query_batch_size: int = 128, 
+                 dim_batch_size: int = 8):
                 #  stats_batch_size: int = math.inf, dim_delta: int = 64):
         self.capacity = capacity 
         self.dtype = dtype

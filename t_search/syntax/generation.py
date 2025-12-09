@@ -73,8 +73,11 @@ def _add_factorize(total: int, min_counts: np.ndarray, max_counts: np.ndarray,
 # test4 = _add_factorize(5, np.array([0, 0, 0]), np.array([3, 3, 3]))
 # pass 
 
-def get_fn_arity(fn: Callable) -> int:
-    signature = inspect.signature(fn)
+def get_fn_arity(fn: inspect.Signature | Callable) -> int:
+    if isinstance(fn, inspect.Signature):
+        signature = fn
+    else:
+        signature = inspect.signature(fn)
     params = [p for p in signature.parameters.values() if p.kind != inspect.Parameter.KEYWORD_ONLY]
     return len(params)
 

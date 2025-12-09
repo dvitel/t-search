@@ -24,9 +24,9 @@ class TermCrossover(TermMutation):
 class PositionCrossover(TermCrossover):
     ''' Abstract base. Crossovers selected positions of two terms '''
 
-    def __init__(self, name, *, max_pos_tries: int = 1e6, leaf_proba: Optional[float] = 0.1, 
+    def __init__(self, *, max_pos_tries: int = 1e6, leaf_proba: Optional[float] = 0.1, 
                                 exclude_values: bool = True, **kwargs):
-        super().__init__(name, **kwargs)
+        super().__init__(**kwargs)
         self.max_pos_tries = max_pos_tries    
         self.leaf_proba = leaf_proba
         self.exclude_values = exclude_values
