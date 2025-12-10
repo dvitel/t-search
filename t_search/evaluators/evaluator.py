@@ -32,7 +32,7 @@ class Evaluator:
     #     ''' Checks validity of term according to semantic constraints '''
     #     pass
 
-    def test(self, term: Term, get_binding: Callable) -> torch.Tensor:    
+    def test(self, get_binding: Callable) -> torch.Tensor:    
         ''' Test mode evaluation with test bindings '''
         pass
 
@@ -319,7 +319,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
     #             fitness_res = torch.stack(fitness, dim=0)
     #     return Evaluations(output_res, fitness_res)   
 
-    def test(self, term: Term, get_binding: Callable[[Term], torch.Tensor]) -> torch.Tensor:
+    def test(self, get_binding: Callable[[Term], torch.Tensor]) -> torch.Tensor:
         # if self.best_term is None:
         #     raise RuntimeError("Evaluator is not fitted yet")
 
@@ -334,7 +334,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         def set_binding(*_):
             pass
 
-        _, output = self._eval_one(term, self.ops, get_binding, set_binding, mode="test")
+        _, output = self._eval_one(self.fitness.best_term, self.ops, get_binding, set_binding, mode="test")
         return output    
     
 

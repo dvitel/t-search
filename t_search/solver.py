@@ -16,6 +16,7 @@ from t_search.operators.initialization import Initialization
 from t_search.operators.listeners import GenListener
 from t_search.solver_utils import get_method_params, read_config, register_services
 from t_search.syntax.syntax import Syntax
+from t_search.syntax.term import Value, Variable
 
 from .utils import GLOBAL_RNG, EvSearchTermination, GPSolverStatus, add_metrics, timed
 from .operators import Operator
@@ -366,6 +367,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
             final_time = round((perf_counter() - self.start_time) * 1000),
             status = self.status,
             # consts = self.const_id,
+            best_term=self.fitness.best_term, 
+            best_fitness=self.fitness.best_term_fitness.item() if self.fitness.best_term_fitness is not None else None,
+            best_term_depth=self.syntax.get_depth(self.fitness.best_term) if self.fitness.best_term is not None else None,
+            best_term_size=self.syntax.get_size(self.fitness.best_term) if self.fitness.best_term is not None else None
         )
 
         finalizers = []
@@ -373,7 +378,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             if isinstance(service, ServiceBase):
                 finalizer = service.get_finalizer()
                 if finalizer is not None:
-                    finalizers.append(finalizer)
+                    finalizers.append(finalizer)                    
 
         for finalizer in finalizers:
             finalizer()
@@ -419,7 +424,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         var_bindings = get_var_bindings(free_vars)
 
-        output: torch.Tensor = self.evaluator.test(var_bindings, ops = self.ops)
+        def get_binding(term: Term) -> torch.Tensor:
+            if isinstance(term, Variable):
+                return var_bindings[term.var_id]
+            if isinstance(term, Value):
+                return term.value
+            return None
+
+        output: torch.Tensor = self.evaluator.test(get_binding)
         if output is None:
             raise RuntimeError("Evaluation of the best term returned None, not all terminals may be bound")
         output_numpy = output.cpu().numpy()

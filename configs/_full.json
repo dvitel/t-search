@@ -105,7 +105,10 @@
             "params": { 
                 "with_inner_evals": true,
                 "max_root_evals": 100000,
-                "max_evals": 1000000
+                "max_evals": 1000000,
+                "listeners": [
+                    {"!ref": "logger"}
+                ]
             }
         }
     },
