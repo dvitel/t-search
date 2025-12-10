@@ -32,7 +32,7 @@ class MuLambdaSurvivorSelection(SurvivorSelection):
         if self.combine:
             combined = parents + offspring
         elif self.elitism > 0:
-            fitness = self.fitness.get_fitness(parents, return_fitness="tensor")
+            fitness = self.fitness.get_fitness(parents, return_type="tensor")
             elite_parents = sorted_by_fitness(parents, fitness, max_num=self.elitism)
             del fitness 
             combined = elite_parents + offspring
@@ -43,7 +43,7 @@ class MuLambdaSurvivorSelection(SurvivorSelection):
             if self.strict and len(combined) < self.mu:
                 raise ValueError(f"Not enough individuals to select {self.mu} individuals.")
             return combined
-        fitness = self.fitness.get_fitness(combined, return_fitness="tensor")
+        fitness = self.fitness.get_fitness(combined, return_type="tensor")
         new_population = sorted_by_fitness(combined, fitness, max_num=self.mu)
         del fitness
         return new_population

@@ -126,7 +126,7 @@ class PointOptim(PositionMutation):
         if optim_state is None:
             return None
         
-        pos_output, *_ = solver.eval(position.term, return_outputs="list").outputs
+        pos_output, *_ = solver.eval(position.term, return_type="list").outputs
         output_range = solver.stack_rows([pos_output, solver.target])
         range_mins = torch.minimum(output_range[0], output_range[1])
         range_maxs = torch.maximum(output_range[0], output_range[1])

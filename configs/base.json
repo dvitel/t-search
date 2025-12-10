@@ -39,6 +39,8 @@
         "evaluator": {
             "type": "DefaultEvaluator", 
             "params": {
+                "semantics": {"!ref": "semantics"},
+                "fitness": {"!ref": "fitness"},                
                 "with_inner_evals": true,
                 "max_root_evals": 100000,
                 "max_evals": 1000000,

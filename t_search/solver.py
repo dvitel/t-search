@@ -223,7 +223,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                     service_context[param_name] = partial(self.add_metrics, scope=service_name)
                 elif param_name in params:
                     service_context[param_name] = params[param_name]
-                elif param_name in ("fitness", "semantics", "syntax", "evaluator") and param_name in self.services:
+                elif param_name in ("fitness", "semantics", "syntax") and param_name in self.services:
                     service_context[param_name] = self.services[param_name]
 
             inited_params = set(service_context.keys())
@@ -333,7 +333,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                     for t in children:
                         assert self.syntax.is_valid(t), f"Invalid term before operator {operator_name}: {t}"
 
-                children, elapsed = timed(operator)(self, children)
+                children, elapsed = timed(operator)(children)
                 self.add_metrics(scope=operator_name, step_time=[elapsed], total_time=elapsed)
 
             self.cur_population = children
@@ -349,7 +349,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
     def _check_trivial(self, raise_on_solution: bool = False) -> bool:
         ''' If target is constant or var, evaluator will rise 'Solution Found' error '''
         try:
-            const_val = self.evaluator.is_const(self.target)
+            const_val = self.semantics.is_const(self.target)
             if const_val is not None:
                 const_term = self.syntax.get_const(value=const_val)
                 self.evaluator.eval(const_term)

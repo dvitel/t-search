@@ -22,19 +22,19 @@ class SemanticTournamentSelection(TS):
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
         half_size = self.selection_size // 2
         half_parents = super().select(population, half_size + (self.selection_size % 2)) 
-        half_parents_sems = self.semantics.get_outputs(half_parents, return_outputs="tensor")
+        half_parents_sems = self.semantics.get_outputs(half_parents, return_type="tensor")
         children = []
         for i in range(half_size):
             first_parent = half_parents[i]
             first_sem = half_parents_sems[i]
             # find second parent
             candidiates = self.rnd.choice(population, size = self.tournament_size)
-            candidate_sem = self.semantics.get_outputs(candidiates, return_outputs="tensor")
+            candidate_sem = self.semantics.get_outputs(candidiates, return_type="tensor")
             mask = torch.isclose(candidate_sem, first_sem, rtol=self.rtol, atol=self.atol).all(dim=-1)
             del candidate_sem
             filter_ids, = torch.where(~mask)
             filtered_candidates = [candidiates[i] for i in filter_ids.tolist()]
-            c_fitness = self.semantics.get_outputs(filtered_candidates, return_fitness="tensor")
+            c_fitness = self.semantics.get_outputs(filtered_candidates, return_type="tensor")
             best_id = torch.argmin(c_fitness).item()
             best_parent = candidiates[best_id]
             del c_fitness

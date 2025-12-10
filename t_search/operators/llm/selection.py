@@ -71,7 +71,7 @@ class LLMSelection(Selection):
         self.torch_gen = torch_gen
 
     def __call__(self, population) -> Sequence[Term]:
-        fitness = self.fitness.get_fitness(population, return_fitness="tensor")
+        fitness = self.fitness.get_fitness(population, return_type="tensor")
         selected_ids = torch.randint(len(population), 
                                      (self.selection_size, self.tournament_size), 
                                      dtype=torch.int, device=fitness.device,

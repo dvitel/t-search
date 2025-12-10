@@ -24,7 +24,7 @@ class TS(Selection):
 
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
         ''' Fitness is 1d tensor of fitness selected for tournament '''
-        fitness = self.fitness.get_fitness(population, return_fitness="tensor").fitness
+        fitness = self.fitness.get_fitness(population, return_type="tensor")
         selected_ids = torch.randint(fitness.shape[0], 
                                      (self.selection_size, self.tournament_size), 
                                      dtype=torch.int, device=fitness.device,

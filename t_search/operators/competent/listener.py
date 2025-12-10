@@ -3,6 +3,7 @@ from typing import Callable
 
 import torch
 from t_search.base import ServiceBase
+from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.semantics import Semantics
 from t_search.evaluators.term_spatial import TermVectorStorage
 from t_search.operators.classic.up2d import Up2D
@@ -18,15 +19,16 @@ class CompetentListener(ServiceBase, EvalListener):
     '''
 
     def __init__(self, *,
+                    evaluator: Evaluator,
                     syntax: Syntax,
                     semantics: Semantics,
                     target: torch.Tensor, 
-                    eval: Callable,
                     term_vector_storage: TermVectorStorage,
                     index_init_depth: int | None = None, 
                     dynamic_index: bool = False,
                     index_max_size: int = 1e10,
                  ):
+        self.evaluator = evaluator
         self.syntax = syntax
         self.semantics = semantics
         self.index = term_vector_storage # used as library of semantics 
@@ -36,14 +38,16 @@ class CompetentListener(ServiceBase, EvalListener):
         self.inv_cache = InversionCache()
         self.desired_target: DesiredSemantics | None = None
         self.target: torch.Tensor = target
-        self.eval: Callable = eval
         self.desired_target = get_desired_semantics(target)
         self.init_op = Up2D(syntax = self.syntax, depth = self.index_init_depth)
 
     def init(self):
         if self.index_init_depth is not None and self.index.num_sem() == 0:             
             lib_terms = self.init_op()
-            semantics = self.eval(lib_terms, return_outputs="tensor").outputs
+            self.evaluator.eval(lib_terms)
+            if self.term_vector_storage is self.semantics.storage:
+                return
+            semantics = self.semantics.get_outputs(lib_terms, return_type="tensor")
             self.index.insert(lib_terms, semantics) 
             del semantics
 

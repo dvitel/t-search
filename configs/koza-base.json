@@ -25,6 +25,7 @@
             "type": "MuLambdaSurvivorSelection", 
             "module": "t_search.operators.classic",
             "params": { 
+                "evaluator": {"!ref": "evaluator"},
                 "mu": 1000, 
                 "strict": false, 
                 "combine": false,

@@ -29,7 +29,7 @@ class CompetentCrossover(TermCrossover):
 
     def crossover_terms(self, term: Term, other_term: Term) -> Term | None:
 
-        term_sem, other_term_sem, *_ = self.semantics.get_outputs([term, other_term], return_outputs="list")
+        term_sem, other_term_sem, *_ = self.semantics.get_outputs([term, other_term], return_type="list")
 
         desired_term_sem = self.l.get_desired_semantics(term, term_sem)
         desired_other_term_sem = self.l.get_desired_semantics(other_term, other_term_sem)

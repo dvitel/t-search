@@ -21,7 +21,7 @@ class Lexicase(Selection):
         self.torch_gen = torch_gen
 
     def __call__(self, population) -> Sequence[Term]:
-        outputs = self.semantics.get_outputs(population, return_outputs="tensor")
+        outputs = self.semantics.get_outputs(population, return_type="tensor")
 
         nan_interactions = torch.abs(outputs - self.target)
 

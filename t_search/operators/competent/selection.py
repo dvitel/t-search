@@ -20,7 +20,7 @@ class CompetentSelection(TS):
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
         half_size = self.selection_size // 2
         half_parents = super().select(population, half_size + (self.selection_size % 2)) 
-        half_parents_sems = self.semantics.get_outputs(half_parents, return_outputs="tensor")
+        half_parents_sems = self.semantics.get_outputs(half_parents, return_type="tensor")
         half_parents_dist = l2(half_parents_sems, self.target)
         children = []
         for i in range(half_size):
@@ -29,7 +29,7 @@ class CompetentSelection(TS):
             first_target_dist = half_parents_dist[i]
             # find second parent
             candidiates = self.rnd.choice(population, size = self.tournament_size)
-            candidate_sem = self.semantics.get_outputs(candidiates, return_outputs="tensor")
+            candidate_sem = self.semantics.get_outputs(candidiates, return_type="tensor")
 
             candidate_target_dist = l2(candidate_sem, self.target)
             candidate_parent_dist = l2(candidate_sem, first_sem)

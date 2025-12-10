@@ -85,7 +85,7 @@ class Fitness(ServiceBase):
         self.fitness: dict[Term, torch.Tensor] = {}
         self.fitness_fn = get_fitness_fns(name)(target)
         self.invalid_terms: set[Term] = set()
-        self.bad_fitness = torch.tensor(float.inf, dtype=target.dtype, device=target.device)
+        self.bad_fitness = torch.tensor(torch.inf, dtype=target.dtype, device=target.device)
         self.best_term: Optional[Term] = None
         self.best_term_fitness: Optional[torch.Tensor] = None
         self.best_term_outputs: Optional[torch.Tensor] = None

@@ -21,7 +21,7 @@ class BestInner(TermMutation):
             return child 
         inner_terms = get_inner_terms(term)
         # self.term_inner_terms_cache[term] = inner_terms
-        inner_fitness = self.fitness.get_fitness(inner_terms, return_fitness="tensor")
+        inner_fitness = self.fitness.get_fitness(inner_terms, return_type="tensor")
         best_id = torch.argmin(inner_fitness).item()
         best_inner = inner_terms[best_id]
         self.term_best_inner_term_cache[term] = best_inner
