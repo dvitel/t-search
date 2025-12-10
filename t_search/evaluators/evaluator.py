@@ -10,6 +10,7 @@ from t_search.evaluators.fitness import Fitness
 from t_search.evaluators.optimizer import Optimizer
 
 from t_search.evaluators.semantics import Semantics
+from t_search.operators.listeners import EvalListener
 from t_search.syntax.evaluation import evaluate
 from t_search.syntax.term import Term
 from t_search.utils import EvSearchTermination, stack_rows
@@ -74,7 +75,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
                     max_root_evals: int = 100_000,
                     max_evals: int = 1_000_000,
                     # eval_fn: Callable = evaluate,
-                    # listeners: list[EvalListener] = [],
+                    listeners: list[EvalListener] = [],
                 ):
         
         # self.storage: TermVectorStorage = storage
@@ -106,7 +107,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         # self.target: torch.Tensor = target
         self.ops: dict[str, Callable] = ops
-        # self.listeners: list[EvalListener] = listeners
+        self.listeners: list[EvalListener] = listeners
 
         # self.bad_fitness = torch.tensor(torch.inf, device=target.device, dtype=target.dtype)
 
@@ -232,6 +233,8 @@ class DefaultEvaluator(Evaluator, ServiceBase):
                                     invalid_terms, invalid_semantics)
             self.fitness.set_fitness(valid_terms, valid_semantics, invalid_terms)
             del semantics, finite_semantics_mask, infinite_ids, valid_ids, valid_semantics, invalid_semantics
+            for l in self.listeners:
+                l.on_eval(valid_terms)
 
         if return_tensor:
             outputs = term_outputs[terms[0]]

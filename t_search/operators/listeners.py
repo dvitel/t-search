@@ -14,3 +14,10 @@ class GenListener:
     def on_gen_end(self, gen: int, population: Sequence[Term]):
         ''' Called at end of each generation '''
         pass 
+
+
+class EvalListener:  
+
+    def on_eval(self, terms: list[Term]):
+        ''' Called on new evaluation '''
+        pass

@@ -3,6 +3,7 @@ from typing import Callable
 
 import torch
 from t_search.base import ServiceBase
+from t_search.evaluators.semantics import Semantics
 from t_search.evaluators.term_spatial import TermVectorStorage
 from t_search.operators.classic.up2d import Up2D
 from t_search.operators.competent.utils import DesiredSemantics, InversionCache, get_desired_semantics
@@ -18,6 +19,7 @@ class CompetentListener(ServiceBase, EvalListener):
 
     def __init__(self, *,
                     syntax: Syntax,
+                    semantics: Semantics,
                     target: torch.Tensor, 
                     eval: Callable,
                     term_vector_storage: TermVectorStorage,
@@ -26,6 +28,7 @@ class CompetentListener(ServiceBase, EvalListener):
                     index_max_size: int = 1e10,
                  ):
         self.syntax = syntax
+        self.semantics = semantics
         self.index = term_vector_storage # used as library of semantics 
         self.index_init_depth = index_init_depth # if None, dynamic library - uses any available term. 
         self.dynamic_index = dynamic_index
@@ -44,8 +47,11 @@ class CompetentListener(ServiceBase, EvalListener):
             self.index.insert(lib_terms, semantics) 
             del semantics
 
-    def on_eval(self, terms, semantics, fitness):
+    def on_eval(self, terms: list[Term]):
+        if self.term_vector_storage is self.semantics.storage:
+            return
         if self.dynamic_index and self.index.num_terms() < self.index_max_size:
+            semantics = self.semantics.get_outputs(terms, return_type="tensor")
             self.index.insert(terms, semantics)
     
     def get_desired_semantics(self, term: Term, semantics: torch.Tensor) -> DesiredSemantics:

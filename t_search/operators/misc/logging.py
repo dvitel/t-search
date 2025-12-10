@@ -6,7 +6,9 @@ from typing import TextIO
 import torch
 
 from t_search.base import ServiceBase
+from t_search.evaluators.fitness import Fitness
 from t_search.operators.listeners import EvalListener, GenListener
+from t_search.syntax.term import Term
 
 # TODO: formatter
 class Logging(ServiceBase, EvalListener, GenListener):
@@ -57,11 +59,8 @@ class Logging(ServiceBase, EvalListener, GenListener):
         if self.file_path != "" and self.autoflush:
             self.file_stream.flush()
 
-    def on_eval(self, terms, semantics, fitness: torch.Tensor | None = None):
+    def on_eval(self, terms: list[Term]):
         for term_i, term in enumerate(terms):
-            fstr = "N/A"
-            if fitness is not None:
-                fstr = str(fitness[term_i].item())
-            self.file_stream.write(f"{str(term)} {fstr}\n")
+            self.file_stream.write(f"{str(term)}\n")
         if self.file_path != "" and self.autoflush:
             self.file_stream.flush()
