@@ -120,6 +120,7 @@
         "selection",
         "mutation",
         "crossover",
+        "evaluator",
         "survivor_selection"
     ],
     "evaluator_service_name": "evaluator",

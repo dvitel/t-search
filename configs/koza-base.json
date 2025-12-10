@@ -31,13 +31,24 @@
                 "combine": false,
                 "elitism": 10
             } 
-        }        
+        },
+        "reduce_consts": {
+            "type": "ReduceConsts",
+            "module": "t_search.operators.syntax",
+            "params": {
+                "semantics": {"!ref": "semantics"},
+                "syntax": {"!ref": "syntax"},
+                "rate": 1.0
+            }
+        }
     },
     "init_service_name": "init",
     "operator_service_names": [        
         "selection",
         "mutation",
         "crossover",
+        "evaluator",
+        "reduce_consts",
         "survivor_selection"
     ]    
 }

@@ -301,7 +301,7 @@ class Syntax(ServiceBase):
             child = replace_pos(pos, new_subterm, self.builders)
         return child
     
-    def replace_fn(self, term: Term, get_replacement_fn: Callable[[Term, list[Term]], Term]) -> Term:
+    def replace_fn(self, term: Term, get_replacement_fn: Callable[[Term, int], Optional[Term]]) -> Term:
         replaced_term = replace_fn(term, get_replacement_fn, self.builders)
         return replaced_term
 

@@ -30,12 +30,10 @@ class Semantics(ServiceBase):
 
     def get_outputs(self, terms: list[Term] | Term, return_type: Literal["list", "tensor"] = "list") -> list[torch.Tensor] | torch.Tensor | None:
         if isinstance(terms, Term):
-            if terms in self.invalid_terms:
-                return self.invalid_terms[terms]
-            return self.storage.get_semantics_for_term(terms)
+            return self.get_binding(terms)
         selected_outputs = []
         for t in terms:
-            t_outputs = self.invalid_terms[t] if t in self.invalid_terms else self.storage.get_semantics_for_term(terms)
+            t_outputs = self.get_binding(t)
             if t_outputs is None:
                 raise ValueError(f"Term {t} semantics not found")
             selected_outputs.append(t_outputs)
@@ -62,6 +60,8 @@ class Semantics(ServiceBase):
             outputs is 2d --> returns list of Optional means
             Returns mask 1d batch_id, and means 
         """
+        if outputs.numel() == 1:
+            return outputs.item()
         if outputs.dim() == 1:
             mean = outputs.mean()
             if torch.allclose(outputs, mean, atol=self.storage.index.atol, rtol=self.storage.index.rtol):
@@ -80,15 +80,28 @@ class Semantics(ServiceBase):
         ''' All outputs are non-infinite and non-nan '''
         return term not in self.invalid_terms    
               
-    def set_binding(self, valid_terms: list[Term], 
+    def set_binding(self, valid_terms: list[Term] | Term, 
                           valid_semantics: torch.Tensor,
-                          invalid_terms: list[Term], 
-                          invalid_outputs: torch.Tensor) -> None:
-        if len(valid_terms) > 0:
+                          invalid_terms: list[Term] = [], 
+                          invalid_outputs: torch.Tensor | None = None) -> None:
+        if isinstance(valid_terms, Term):
+            self.storage.insert([valid_terms], valid_semantics.unsqueeze(0))
+        elif len(valid_terms) > 0:
             self.storage.insert(valid_terms, valid_semantics)
 
+        if len(invalid_terms) == 0 or invalid_outputs is None:
+            return
         for term, outputs in zip(invalid_terms, invalid_outputs):
             self.invalid_terms[term] = outputs
+        return
+    
+    def copy_binding(self, from_term: Term, to_term: Term) -> None:
+        if from_term in self.invalid_terms:
+            self.invalid_terms[to_term] = self.invalid_terms[from_term]
+        else:
+            from_sem = self.storage.get_semantics_for_term(from_term)
+            if from_sem is not None:
+                self.storage.insert([to_term], from_sem.unsqueeze(0))
         return
     
     def get_finalizer(self):

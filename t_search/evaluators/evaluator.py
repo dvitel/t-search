@@ -11,6 +11,7 @@ from t_search.evaluators.optimizer import Optimizer
 
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.listeners import EvalListener
+from t_search.operators.operator import Operator
 from t_search.syntax.evaluation import evaluate
 from t_search.syntax.term import Term
 from t_search.utils import EvSearchTermination, stack_rows
@@ -22,7 +23,7 @@ from t_search.utils import EvSearchTermination, stack_rows
 #     outputs: list[torch.Tensor] | torch.Tensor
 #     fitness: None | list[torch.Tensor] | torch.Tensor = None
 
-class Evaluator:
+class Evaluator(Operator):
 
     # def is_const(self, outputs: torch.Tensor) -> Optional[torch.Tensor]:
     #     ''' Checks if variability of outputs signals is close to contant according to config'''
@@ -53,6 +54,11 @@ class Evaluator:
     def get_loss_fn(self, get_binding):
         ''' Differentiable loss function aligned with fitness '''
         pass
+
+    def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
+        ''' Evaluate given population of terms and return them'''
+        self.eval(population)
+        return population
 
 
 class DefaultEvaluator(Evaluator, ServiceBase):

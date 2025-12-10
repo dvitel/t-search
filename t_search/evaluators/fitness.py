@@ -127,12 +127,19 @@ class Fitness(ServiceBase):
             return torch.stack(selected_fitness)
         return selected_fitness
 
-    def set_fitness(self, valid_terms: list[Term], valid_semantics: torch.Tensor, invalid_terms: list[Term]) -> None:
+    def set_fitness(self, valid_terms: list[Term], valid_semantics: torch.Tensor, invalid_terms: list[Term] = []) -> None:
         fitness = self.fitness_fn(valid_semantics)
         for term, fit in zip(valid_terms, fitness):
             self.fitness[term] = fit
         self.invalid_terms.update(invalid_terms)
         self.set_best_term(valid_terms, valid_semantics, fitness)
+        return
+    
+    def copy_fitness(self, from_term: Term, to_term: Term) -> None:
+        if from_term in self.invalid_terms:
+            self.invalid_terms.add(to_term)
+        elif from_term in self.fitness:
+            self.fitness[to_term] = self.fitness[from_term]
         return
 
     def get_finalizer(self):
