@@ -10,7 +10,6 @@ import numpy as np
 import torch
 
 from t_search.base import ServiceBase
-from t_search.evaluators.term_spatial import InvalidTerms
 from t_search.operators.initialization import Initialization
 from t_search.operators.listeners import GenListener
 from t_search.solver_utils import get_method_params, read_config, register_services
@@ -215,7 +214,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                     service_context[param_name] = partial(self.add_metrics, scope=service_name)
                 elif param_name in params:
                     service_context[param_name] = params[param_name]
-                elif param_name in ("syntax", "evaluator") and param_name in self.services:
+                elif param_name in ("fitness", "semantics", "syntax", "evaluator") and param_name in self.services:
                     service_context[param_name] = self.services[param_name]
 
             inited_params = set(service_context.keys())
@@ -332,7 +331,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         try:
             const_val = self.evaluator.is_const(self.target)
             if const_val is not None:
-                const_term = self.syntax.get_const(const_val)
+                const_term = self.syntax.get_const(value=const_val)
                 self.evaluator.eval(const_term)
             self.evaluator.eval(self.syntax.get_vars())
         except EvSearchTermination as e:
@@ -401,7 +400,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         var_bindings = get_var_bindings(free_vars)
 
-        output: torch.Tensor = self.evaluator.eval_best(var_bindings, ops = self.ops)
+        output: torch.Tensor = self.evaluator.test(var_bindings, ops = self.ops)
         if output is None:
             raise RuntimeError("Evaluation of the best term returned None, not all terminals may be bound")
         output_numpy = output.cpu().numpy()

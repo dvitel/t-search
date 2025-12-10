@@ -49,7 +49,7 @@ class ConstOptimizer(Optimizer):
         self.optim_term_cache = {}
         self.optim_state_cache = {}
 
-    def _get_optim_state(self, term: Term, initial_term_loss: torch.Tensor | None = None) -> OptimState:
+    def _get_optim_state(self, term: Term) -> OptimState:
         if term not in self.optim_term_cache:  # need to build optim term with optim points
 
             optim_points: list[OptimPoint] = []
@@ -75,13 +75,8 @@ class ConstOptimizer(Optimizer):
             self.optim_term_cache[term] = optim_term
             self.term_values_cache[term] = values
             if optim_term not in self.optim_state_cache:
-                if initial_term_loss is not None:
-                    best_binding = dict(binding)
-                    best_loss = initial_term_loss,
-                    best_term = term
                 
-                optim_state = OptimState(optim_term, optim_points, binding, best_binding, best_loss, best_term,
-                                            is_optimized=len(optim_points) == 0)
+                optim_state = OptimState(optim_term, optim_points, binding, is_optimized=len(optim_points) == 0)
                 if not optim_state.is_optimized:
                     optim_state.loss_fn = self.evaluator.get_loss_fn(
                                 get_binding = optim_state.get_binding)
@@ -101,9 +96,7 @@ class ConstOptimizer(Optimizer):
         Restarts will reinitialize the constants.
         """
 
-        initial_term_loss, *_ = self.evaluator.eval(term, return_fitness="list").fitness
-
-        optim_state = self._get_optim_state(term, initial_term_loss = initial_term_loss)
+        optim_state = self._get_optim_state(term)
         if optim_state.is_optimized:
             return optim_state.best_term
 

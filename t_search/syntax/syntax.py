@@ -8,7 +8,6 @@ import numpy as np
 import torch
 
 from t_search.base import ServiceBase
-from t_search.evaluators.term_spatial import InvalidTerms
 from t_search.syntax.generation import Builder, Builders, TermGenContext, gen_all_terms, get_fn_arity, grow
 from t_search.syntax.replacement import replace_fn, replace_pos, replace_pos_protected
 from t_search.syntax.stats import get_depth, get_positions

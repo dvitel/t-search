@@ -1,5 +1,4 @@
 from t_search.evaluators.evaluator import Evaluator
-from t_search.evaluators.term_spatial import InvalidTerms
 from t_search.operators.operator import Operator
 from t_search.syntax import Term
 from t_search.syntax.syntax import Syntax

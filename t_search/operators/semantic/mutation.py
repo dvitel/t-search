@@ -19,7 +19,7 @@ class SemanticallyDrivenMutation(RPM):
             return None
         
         # check semantic difference
-        parent_sem, mutated_term_sem, *_ = self.evaluator.eval([term, mutated_term], return_outputs="list").outputs
+        parent_sem, mutated_term_sem, *_ = self.evaluator.eval([term, mutated_term])
         dist = l2(parent_sem, mutated_term_sem)
         if dist < self.min_d or dist > self.max_d:
             return None        

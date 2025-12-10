@@ -2,7 +2,7 @@ from typing import Sequence
 
 import torch
 
-from t_search.evaluators.evaluator import Evaluator
+from t_search.evaluators.semantics import Semantics
 from t_search.operators.classic.ts import TS
 from t_search.syntax import Term
 from t_search.evaluators.fitness import l2
@@ -10,17 +10,17 @@ from t_search.evaluators.fitness import l2
 class CompetentSelection(TS):
     ''' Competent tournament Selection  '''
     def __init__(self, *, 
-                  evaluator: Evaluator,
+                  semantics: Semantics,
                   target: torch.Tensor,
                   **kwargs):
         super().__init__(**kwargs)
-        self.evaluator = evaluator
+        self.semantics = semantics
         self.target = target
 
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
         half_size = self.selection_size // 2
         half_parents = super().select(population, half_size + (self.selection_size % 2)) 
-        half_parents_sems = self.evaluator.eval(half_parents, return_outputs="tensor").outputs
+        half_parents_sems = self.semantics.get_outputs(half_parents, return_outputs="tensor")
         half_parents_dist = l2(half_parents_sems, self.target)
         children = []
         for i in range(half_size):
@@ -29,7 +29,7 @@ class CompetentSelection(TS):
             first_target_dist = half_parents_dist[i]
             # find second parent
             candidiates = self.rnd.choice(population, size = self.tournament_size)
-            candidate_sem = self.evaluator.eval(candidiates, return_outputs="tensor").outputs
+            candidate_sem = self.semantics.get_outputs(candidiates, return_outputs="tensor")
 
             candidate_target_dist = l2(candidate_sem, self.target)
             candidate_parent_dist = l2(candidate_sem, first_sem)

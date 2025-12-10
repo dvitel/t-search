@@ -1,7 +1,7 @@
 from typing import Sequence
 import torch
 
-from t_search.evaluators.evaluator import Evaluator
+from t_search.evaluators.semantics import Semantics
 from t_search.operators.selection import Selection
 from t_search.syntax import Term
 
@@ -9,19 +9,19 @@ class Lexicase(Selection):
     ''' Lexicase selection operator '''
     
     def __init__(self, 
-                 evaluator: Evaluator,
+                 semantics: Semantics,
                  target: torch.Tensor,
                  torch_gen: torch.Generator,
                  nan_error = torch.inf,
                  **kwargs):
         super().__init__(**kwargs)
         self.nan_error = nan_error
-        self.evaluator = evaluator
+        self.semantics = semantics
         self.target = target
         self.torch_gen = torch_gen
 
     def __call__(self, population) -> Sequence[Term]:
-        outputs = self.evaluator.eval(population, return_outputs="tensor").outputs
+        outputs = self.semantics.get_outputs(population, return_outputs="tensor")
 
         nan_interactions = torch.abs(outputs - self.target)
 

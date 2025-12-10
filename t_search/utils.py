@@ -28,16 +28,17 @@ def timed(fn: Callable) -> Callable:
 
     return wrapper
 
-def stack_rows(tensors: Sequence[torch.Tensor], target: torch.Tensor) -> torch.Tensor:
+def stack_rows(tensors: Sequence[torch.Tensor], dims: int) -> torch.Tensor:
     if len(tensors) == 0:
-        return torch.empty((0, target.shape[0]), dtype=target.dtype, device=target.device)
+        raise ValueError("No tensors to stack")
+        # return torch.empty((0, dims), dtype=target.dtype, device=target.device)
     if tensors[0].ndim <= 1:
-        res = torch.empty((len(tensors), target.shape[0]), dtype=tensors[0].dtype, device=tensors[0].device)
+        res = torch.empty((len(tensors), dims), dtype=tensors[0].dtype, device=tensors[0].device)
         for i, ti in enumerate(tensors):
             res[i] = ti # assuming broadcastable
         return res  
     if tensors[0].ndim == 2:
-        sz = (sum(t.shape[0] for t in tensors), target.shape[0])
+        sz = (sum(t.shape[0] for t in tensors), dims)
         res = torch.empty(sz, dtype=tensors[0].dtype, device=tensors[0].device)
         cur_start = 0
         for ti in tensors:

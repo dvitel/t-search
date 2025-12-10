@@ -1,5 +1,4 @@
-from t_search.evaluators.evaluator import Evaluator
-
+from t_search.evaluators.semantics import Semantics
 from t_search.operators.competent.listener import CompetentListener
 from t_search.operators.competent.mutation import CompetentMutation
 from t_search.operators.competent.utils import alg_inv, backward_desired, get_desired_semantics
@@ -12,7 +11,7 @@ class CompetentCrossover(TermCrossover):
     ''' Competent crossover operator '''
 
     def __init__(self, *, 
-                    evaluator: Evaluator,
+                    semantics: Semantics,
                     listener: CompetentListener,
                     op_invs = alg_inv,
                     max_tries: int = 2,
@@ -22,7 +21,7 @@ class CompetentCrossover(TermCrossover):
         self.op_invs = op_invs
         self.desired_at_pos = {} # temp cache
         self.max_tries = max_tries
-        self.evaluator = evaluator
+        self.semantics = semantics
 
     def mutate_position(self, term: Term, position: TermPos) -> Term | None:
         child = CompetentMutation.mutate_position(self, term, position)
@@ -30,7 +29,7 @@ class CompetentCrossover(TermCrossover):
 
     def crossover_terms(self, term: Term, other_term: Term) -> Term | None:
 
-        term_sem, other_term_sem, *_ = self.evaluator.eval([term, other_term], return_outputs="list").outputs
+        term_sem, other_term_sem, *_ = self.semantics.get_outputs([term, other_term], return_outputs="list")
 
         desired_term_sem = self.l.get_desired_semantics(term, term_sem)
         desired_other_term_sem = self.l.get_desired_semantics(other_term, other_term_sem)
@@ -40,7 +39,7 @@ class CompetentCrossover(TermCrossover):
 
 
         self.desired_at_pos = backward_desired(term, mid_desired, [desired_term_sem, desired_other_term_sem], 
-                                     lambda args: self.evaluator.eval(args, return_outputs="list").outputs, 
+                                     lambda t: self.semantics.get_outputs(t),
                                      self.l.get_desired_semantics, self.op_invs)
         
         child = PositionMutation.mutate_term(self, term)

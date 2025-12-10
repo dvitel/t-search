@@ -11,6 +11,7 @@ from typing import Sequence
 import torch
 
 from t_search.evaluators.evaluator import Evaluator
+from t_search.evaluators.fitness import Fitness
 from t_search.operators.llm.utils import LLMCaller
 from t_search.operators.selection import Selection
 from t_search.syntax import Term
@@ -54,7 +55,7 @@ class LLMSelection(Selection):
 
     def __init__(self, *, 
                     llm: LLMCaller,
-                    evaluator: Evaluator,
+                    fitness: Fitness,
                     torch_gen: torch.Generator,
                     tournament_size: int = 7,
                     prompt_template: str = selection_prompt,
@@ -66,16 +67,16 @@ class LLMSelection(Selection):
         self.prompt_template: Template = Template(prompt_template)        
         self.loss_name = loss_name
         self.llm = llm
-        self.evaluator = evaluator
+        self.fitness = fitness
         self.torch_gen = torch_gen
 
     def __call__(self, population) -> Sequence[Term]:
-        fitness = self.evaluator.eval(population, return_fitness="list").fitness
+        fitness = self.fitness.get_fitness(population, return_fitness="tensor")
         selected_ids = torch.randint(len(population), 
                                      (self.selection_size, self.tournament_size), 
                                      dtype=torch.int, device=fitness.device,
                                      generator=self.torch_gen)
-        selected_fitnesses = fitness[selected_ids]
+        selected_fitnesses = fitness[selected_ids]        
 
         children = []        
         for i in range(self.selection_size):
@@ -107,5 +108,7 @@ class LLMSelection(Selection):
                 continue
             selected_term = candidiates[selected_id]
             children.append(selected_term)
+
+        del fitness
 
         return children

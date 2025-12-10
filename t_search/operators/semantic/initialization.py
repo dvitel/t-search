@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from t_search.evaluators.evaluator import Evaluator
+from t_search.evaluators.semantics import Semantics
 from t_search.evaluators.term_spatial import TermVectorStorage
 from t_search.operators.initialization import Initialization
 from t_search.syntax import Term
@@ -16,7 +17,7 @@ class SemanticallyDrivenInitialization(Initialization):
     def __init__(self, *,                
                  syntax: Syntax,
                  evaluator: Evaluator,
-                 term_vector_storage: TermVectorStorage,
+                 semantics: Semantics,
                  const_range: torch.Tensor,
                  rnd: np.random.Generator,
                  torch_gen: torch.Generator,
@@ -25,7 +26,7 @@ class SemanticallyDrivenInitialization(Initialization):
                  ):
         self.syntax = syntax
         self.evaluator = evaluator
-        self.term_vector_storage = term_vector_storage
+        self.semantics = semantics
         self.rnd = rnd
         self.torch_gen: torch.Generator = torch_gen
         self.num_rand_consts = num_rand_consts
@@ -33,7 +34,7 @@ class SemanticallyDrivenInitialization(Initialization):
         self.size = size
     
     def __call__(self) -> list[Term]:
-        population = self.term_vector_storage.get_repr_terms()
+        population = self.semantics.get_repr_terms()
         if len(population) == 0:
             leaf_terms = list(self.syntax.get_vars())
             if self.num_rand_consts > 0:    
@@ -43,7 +44,7 @@ class SemanticallyDrivenInitialization(Initialization):
                     const_term = self.syntax.get_const(value=const_value)
                     leaf_terms.append(const_term)
             self.evaluator.eval(leaf_terms)
-            population = self.term_vector_storage.get_repr_terms()
+            population = self.semantics.get_repr_terms()
         if len(population) >= self.size:
             return population[:self.size]
         
@@ -53,11 +54,11 @@ class SemanticallyDrivenInitialization(Initialization):
             term = self.syntax.get_rand_op(lambda _: self.rnd.choice(population))
             if term is None:
                 continue
-            term_outputs = self.evaluator.eval(term, return_outputs="list").output
-            const_value = self.evaluator.is_const(term_outputs)
+            term_outputs = self.evaluator.eval(term)
+            const_value = self.semantics.is_const(term_outputs)
             if const_value is not None:
                 continue
-            population = self.term_vector_storage.get_repr_terms()
+            population = self.semantics.get_repr_terms()
         if len(population) > self.size:
             return population[:self.size]
         return population

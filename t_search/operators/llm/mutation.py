@@ -10,7 +10,9 @@ from typing import Callable, Sequence
 import torch
 
 from t_search.evaluators.evaluator import Evaluator
+from t_search.evaluators.fitness import Fitness
 from t_search.evaluators.optimizer import Optimizer
+from t_search.evaluators.semantics import Semantics
 from t_search.operators.llm.utils import ops_descriptions, LLMCaller
 from t_search.operators.mutation import TermMutation
 from t_search.syntax import Term
@@ -117,6 +119,8 @@ class LLMMutation(TermMutation):
                  syntax: Syntax,
                  var_bindings: dict[str, torch.Tensor],
                  evaluator: Evaluator,
+                 fitness: Fitness,
+                 semantics: Semantics,
                  optimizer: Optimizer,
                  target: torch.Tensor,
                  add_metrics: Callable,
@@ -165,9 +169,8 @@ class LLMMutation(TermMutation):
             this should be handled before calling this method.
         '''
 
-        evals = self.evaluator.eval(term, return_outputs="list", return_fitness='list')        
-        outcomes = evals.outputs[0]
-        fitness = evals.fitness[0].item()
+        outcomes = self.semantics.get_outputs(term)
+        fitness = self.fitness.get_fitness(term)
 
         # selecting hardest tests from this term 
         outcome_diffs = torch.abs(self.target - outcomes)
@@ -219,10 +222,10 @@ class LLMMutation(TermMutation):
         
         optimized_term = self.optimizer.optimize(new_term)
         
-        outputs, fitnesses = self.evaluator.eval(optimized_term, return_outputs="list", return_fitness="list")
+        self.evaluator.eval(optimized_term)
+        new_fitness = self.fitness.get_fitness(optimized_term)
+        new_outcomes = self.semantics.get_outputs(optimized_term)
 
-        new_fitness = fitnesses[0]
-        new_outcomes = outputs[0]
         good_mutations=1 if new_fitness < fitness else 0, 
         bad_mutations=1 if new_fitness > fitness else 0,
         neutral_mutations=1 if new_fitness == fitness else 0
@@ -243,9 +246,9 @@ class LLMMutation(TermMutation):
             best_expected = self.target[final_best_test_ids].tolist()
             best_actual = outcomes[final_best_test_ids].tolist()
             best_actual_after = new_outcomes[final_best_test_ids].tolist()
-            best_free_vars = {var_name:var_values[final_best_test_ids].tolist() for var_name, var_values in var_bindings.items()}
+            best_free_vars = {var_name:var_values[final_best_test_ids].tolist() for var_name, var_values in self.var_bindings.items()}
 
-            tests = [TestCaseContext(vars={var_name: best_free_vars[var_name][i] for var_name in var_bindings.keys()},
+            tests = [TestCaseContext(vars={var_name: best_free_vars[var_name][i] for var_name in self.var_bindings.keys()},
                                         expected=best_expected[i],
                                         actual=best_actual[i],
                                         diff=best_actual[i] - best_expected[i],

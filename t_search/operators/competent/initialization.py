@@ -33,7 +33,8 @@ class CompetentInitialization(SemanticallyDrivenInitialization):
         while len(ci_population) < self.size and (i < max_try_count):
             i += 1
             population = super().__call__(i * self.size)
-            semantics = self.evaluator.eval(population, return_outputs="tensor").outputs
+            self.evaluator.eval(population)
+            semantics = self.semantics.get_outputs(population, return_type="tensor")
             np_semantics = semantics.cpu().numpy()
             del semantics
             convex_hull = ConvexHull(np_semantics)

@@ -5,6 +5,7 @@ from typing import Sequence
 import torch
 
 from t_search.evaluators.evaluator import Evaluator
+from t_search.evaluators.fitness import Fitness
 from t_search.operators.selection import Selection
 from t_search.syntax import Term
 
@@ -12,18 +13,18 @@ class TS(Selection):
     ''' Tournament selection operator '''
     
     def __init__(self, *,
-                 evaluator: Evaluator,
+                 fitness: Fitness,
                  torch_gen: torch.Generator,
                  tournament_size: int = 7, 
                  **kwargs):
         super().__init__(**kwargs)
         self.tournament_size = tournament_size
-        self.evaluator = evaluator
+        self.fitness = fitness
         self.torch_gen = torch_gen
 
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
         ''' Fitness is 1d tensor of fitness selected for tournament '''
-        fitness = self.evaluator.eval(population, return_fitness="tensor").fitness
+        fitness = self.fitness.get_fitness(population, return_fitness="tensor").fitness
         selected_ids = torch.randint(fitness.shape[0], 
                                      (self.selection_size, self.tournament_size), 
                                      dtype=torch.int, device=fitness.device,

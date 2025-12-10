@@ -8,30 +8,6 @@ from t_search.base import ServiceBase
 from ..spatial.base import VectorStorage
 from t_search.syntax import Term
 
-class InvalidTerms(ServiceBase):
-
-    def __init__(self):
-        self.terms: dict[Term, torch.Tensor] = {}
-
-    def add_invalid(self, term: Term, outputs: torch.Tensor) -> None:
-        self.terms[term] = outputs
-
-    def is_invalid(self, term: Term) -> bool:
-        return term in self.terms
-    
-    def get_outputs(self, term: Term) -> Optional[torch.Tensor]:
-        return self.terms.get(term, None)
-    
-    def __len__(self) -> int:
-        return len(self.terms)
-    
-    def get_finalizer(self):
-        def finalizer():
-            for outputs in self.terms.values():
-                del outputs
-        return finalizer
-
-
 class TermVectorStorage:
 
     def __init__(self, *, 

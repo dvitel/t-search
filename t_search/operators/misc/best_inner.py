@@ -1,6 +1,5 @@
 import torch
-
-from t_search.evaluators.evaluator import Evaluator
+from t_search.evaluators.fitness import Fitness
 from t_search.operators.mutation import TermMutation
 from t_search.syntax import Term
 from t_search.syntax.stats import get_inner_terms
@@ -10,10 +9,10 @@ class BestInner(TermMutation):
 
     def __init__(self, 
                  *,
-                 evaluator: Evaluator,
+                 fitness: Fitness,
                  **kwargs):
         super().__init__(**kwargs)
-        self.evaluator = evaluator
+        self.fitness = fitness
         self.term_best_inner_term_cache: dict[Term, Term] = {}
 
     def mutate_term(self, term: Term) -> Term | None:
@@ -22,7 +21,7 @@ class BestInner(TermMutation):
             return child 
         inner_terms = get_inner_terms(term)
         # self.term_inner_terms_cache[term] = inner_terms
-        inner_fitness = self.evaluator.eval(inner_terms, return_fitness="tensor").fitness
+        inner_fitness = self.fitness.get_fitness(inner_terms, return_fitness="tensor")
         best_id = torch.argmin(inner_fitness).item()
         best_inner = inner_terms[best_id]
         self.term_best_inner_term_cache[term] = best_inner
