@@ -118,6 +118,8 @@
     ],
     "evaluator_service_name": "evaluator",
     "syntax_service_name": "syntax",
+    "fitness_service_name": "fitness",
+    "semantics_service_name": "semantics",
     "ops": [ "add", "sub", "mul", "div", "pow", "neg", "inv", "exp", "log", "sin", "cos" ],    
     "max_gen": 100
 }

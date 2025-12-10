@@ -3,6 +3,7 @@ import torch
 
 from t_search.base import ServiceBase
 from t_search.evaluators.semantics import Semantics
+from t_search.syntax.syntax import Syntax
 from t_search.syntax.term import Term
 from t_search.utils import EvSearchTermination
 
@@ -76,6 +77,8 @@ def get_fitness_fns(name: str) -> Callable:
 class Fitness(ServiceBase): 
 
     def __init__(self, *,
+                 syntax: Syntax,
+                 add_metrics: Callable,
                  name: str = "nmse",
                  target: torch.Tensor,
                  fitness_atol: float = 1e-6):
@@ -89,6 +92,8 @@ class Fitness(ServiceBase):
         self.best_term_fitness: Optional[torch.Tensor] = None
         self.best_term_outputs: Optional[torch.Tensor] = None
         self.fitness_atol = fitness_atol
+        self.syntax = syntax
+        self.add_metrics = add_metrics
 
     def set_best_term(self, terms: list[Term], outputs: torch.Tensor, fitness: torch.Tensor):
         if len(outputs) == 0:
@@ -135,6 +140,12 @@ class Fitness(ServiceBase):
         return
 
     def get_finalizer(self):
+
+        self.add_metrics(best_term=self.best_term, 
+                         best_fitness=self.best_term_fitness.item() if self.best_term_fitness is not None else None,
+                         best_term_depth=self.syntax.get_depth(self.best_term) if self.best_term is not None else None,
+                         best_term_size=self.syntax.get_size(self.best_term) if self.best_term is not None else None)
+
         def finalize():
             for fit in self.fitness.values():
                 del fit

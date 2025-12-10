@@ -10,6 +10,8 @@ import numpy as np
 import torch
 
 from t_search.base import ServiceBase
+from t_search.evaluators.fitness import Fitness
+from t_search.evaluators.semantics import Semantics
 from t_search.operators.initialization import Initialization
 from t_search.operators.listeners import GenListener
 from t_search.solver_utils import get_method_params, read_config, register_services
@@ -74,6 +76,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         operator_service_names: list[str],
         evaluator_service_name: str,
         syntax_service_name: str,
+        fitness_service_name: str,
+        semantics_service_name: str,
 
         ops: dict[str, Callable] | list[str] = default_alg_ops,
 
@@ -91,6 +95,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.operator_service_names = operator_service_names
         self.evaluator_service_name = evaluator_service_name
         self.syntax_service_name = syntax_service_name
+        self.fitness_service_name = fitness_service_name
+        self.semantics_service_name = semantics_service_name
 
         self.services = {}
 
@@ -136,6 +142,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.operators: list[Operator] = []
         self.evaluator: Evaluator | None = None
         self.syntax: Syntax | None = None
+        self.fitness: Fitness | None = None
+        self.semantics: Semantics | None = None
         self.gen_listeners: list[GenListener] = []
         self.cur_population: list[Term] = []
 
@@ -275,7 +283,18 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.syntax = self.services[self.syntax_service_name]
         if not isinstance(self.syntax, Syntax):
             raise ValueError(f"Syntax service '{self.syntax_service_name}' is not Syntax instance")
-
+        
+        if self.fitness_service_name not in self.services:
+            raise ValueError(f"Fitness service '{self.fitness_service_name}' not found among registered services")
+        self.fitness = self.services[self.fitness_service_name]
+        if not isinstance(self.fitness, Fitness):
+            raise ValueError(f"Fitness service '{self.fitness_service_name}' is not Fitness instance")
+        
+        if self.semantics_service_name not in self.services:
+            raise ValueError(f"Semantics service '{self.semantics_service_name}' not found among registered services")
+        self.semantics = self.services[self.semantics_service_name]
+        if not isinstance(self.semantics, Semantics):
+            raise ValueError(f"Semantics service '{self.semantics_service_name}' is not Semantics instance")
 
         for service in self.services.values():
             if isinstance(service, ServiceBase):
