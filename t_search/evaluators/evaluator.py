@@ -51,7 +51,7 @@ class Evaluator(Operator):
     #     ''' Evaluates the best term found so far with given variable bindings and operations '''
     #     pass
 
-    def get_loss_fn(self, get_binding):
+    def get_loss_fn(self, get_binding: Callable | None = None, set_binding: Callable | None = None, no_cache: bool = False):
         ''' Differentiable loss function aligned with fitness '''
         pass
 
@@ -228,19 +228,11 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             new_terms = list(new_term_outputs.keys())
             new_outputs = list(new_term_outputs.values())
             semantics = stack_rows(new_outputs, self.dims)
-            finite_semantics_mask = torch.isfinite(semantics).all(dim=-1)  # we do not insert nans and infs
-            (valid_ids,) = torch.where(finite_semantics_mask)
-            (infinite_ids,) = torch.where(~finite_semantics_mask)
-            valid_terms = [new_terms[i] for i in valid_ids.tolist()]
-            valid_semantics = semantics[valid_ids]
-            invalid_terms = [new_terms[i] for i in infinite_ids.tolist()]
-            invalid_semantics = semantics[infinite_ids]
-            self.semantics.set_binding(valid_terms, valid_semantics,
-                                    invalid_terms, invalid_semantics)
-            self.fitness.set_fitness(valid_terms, valid_semantics, invalid_terms)
-            del semantics, finite_semantics_mask, infinite_ids, valid_ids, valid_semantics, invalid_semantics
+            self.semantics.set_binding(new_terms, semantics)
+            self.fitness.set_fitness(new_terms, semantics)
             for l in self.listeners:
-                l.on_eval(valid_terms)
+                l.on_eval(new_terms, semantics)
+            del semantics
 
         if return_tensor:
             outputs = term_outputs[terms[0]]
@@ -281,16 +273,27 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         # return optim_terms
     
-    def get_loss_fn(self, get_binding):
+    def get_loss_fn(self, get_binding: Callable | None = None, set_binding: Callable | None = None, no_cache: bool = False):
         ''' Differentiable function for optimization that iss aligned with fitness (nmse by default) '''
         # TODO: probably define better loss_fn - we use just (f(x) - target)^2)
-        def new_get_binding(root: Term, term: Term) -> Optional[torch.Tensor]:
-            outputs = get_binding(root, term)
-            if outputs is not None:
-                return outputs
-            return self._get_binding(root, term)
+        if get_binding is None: 
+            new_get_binding = self._get_binding
+        elif no_cache:
+            new_get_binding = get_binding        
+        else:
+            def new_get_binding(root: Term, term: Term) -> Optional[torch.Tensor]:
+                outputs = get_binding(root, term)
+                if outputs is not None:
+                    return outputs
+                return self._get_binding(root, term)
+        if set_binding is None:
+            new_set_binding = self._default_set_binding
+        else:
+            def new_set_binding(root: Term, term: Term, value: torch.Tensor):
+                set_binding(root, term, value)
+                self._default_set_binding(root, term)
         def loss_fn(term: Term) -> torch.Tensor:
-            outputs = evaluate(term, self.ops, new_get_binding, self._default_set_binding)
+            outputs = evaluate(term, self.ops, new_get_binding, new_set_binding)
             return self.fitness.get_loss(outputs)
         return loss_fn
 
@@ -369,5 +372,5 @@ class OptimEvaluator(Evaluator):
         res = super()._eval_one(optim_term, get_binding, set_binding, mode)
         return res
 
-    def get_loss_fn(self, get_binding, set_binding):
-        return self.evaluator.get_loss_fn(get_binding, set_binding)
+    def get_loss_fn(self, get_binding: Callable | None = None, set_binding: Callable | None = None, no_cache: bool = False):
+        return self.evaluator.get_loss_fn(get_binding=get_binding, set_binding=set_binding, no_cache = no_cache)

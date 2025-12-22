@@ -59,7 +59,7 @@ class Logging(ServiceBase, EvalListener, GenListener):
         if self.file_path != "" and self.autoflush:
             self.file_stream.flush()
 
-    def on_eval(self, terms: list[Term]):
+    def on_eval(self, terms: list[Term], semantics: torch.Tensor):
         for term_i, term in enumerate(terms):
             self.file_stream.write(f"{str(term)}\n")
         if self.file_path != "" and self.autoflush:

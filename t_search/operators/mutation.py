@@ -26,6 +26,13 @@ class TermMutation(Operator):
         ''' Abstract. Mutates one term in the context of parents and already generated children ''' 
         pass # to be implemented in subclasses
 
+    def select_terms(self, population: Sequence[Term]) -> Generator[Term, None, None]:
+        ''' Produces the order of terms to try. Default: random shuffle '''
+        size = len(population)
+        permuted_term_ids = self.rnd.permutation(size) 
+        for term_id in permuted_term_ids:
+            yield population[term_id]
+
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]: 
         ''' 
             Some mutations could return None, we would like to reattempt if small number was mutated t guarantee mutated_size.
@@ -40,12 +47,10 @@ class TermMutation(Operator):
 
         size = len(population)
         mutated_size = int(self.rate * size)
-        permuted_term_ids = self.rnd.permutation(size) 
         children = [] 
 
-        for term_id in permuted_term_ids:
-            term = population[term_id]
-            if mutated_size <= 0: 
+        for term in self.select_terms(population):
+            if mutated_size <= 0: # reproduce
                 children.append(term)
                 repr_cnt += 1
             else: 

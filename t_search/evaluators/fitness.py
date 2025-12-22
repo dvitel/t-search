@@ -84,8 +84,6 @@ class Fitness(ServiceBase):
         self.target = target
         self.fitness: dict[Term, torch.Tensor] = {}
         self.fitness_fn = get_fitness_fns(name)(target)
-        self.invalid_terms: set[Term] = set()
-        self.bad_fitness = torch.tensor(torch.inf, dtype=target.dtype, device=target.device)
         self.best_term: Optional[Term] = None
         self.best_term_fitness: Optional[torch.Tensor] = None
         self.best_term_outputs: Optional[torch.Tensor] = None
@@ -109,17 +107,15 @@ class Fitness(ServiceBase):
     def get_missing(self, terms: list[Term] | Term) -> list[Term]:
         if isinstance(terms, Term):
             terms = [terms]
-        missing_terms = [t for t in terms if t not in self.fitness and t not in self.invalid_terms]
+        missing_terms = [t for t in terms if t not in self.fitness]
         return missing_terms
 
     def get_fitness(self, terms: list[Term] | Term, return_type: Literal["list", "tensor"] = "list") -> list[torch.Tensor] | torch.Tensor | None:
         if isinstance(terms, Term):
-            if terms in self.invalid_terms:
-                return self.bad_fitness
             return self.fitness.get(terms, None)
         selected_fitness = []
         for t in terms:
-            t_fitness = self.bad_fitness if t in self.invalid_terms else self.fitness.get(t, None)
+            t_fitness = self.fitness.get(t, None)
             if t_fitness is None:
                 raise ValueError(f"Term {t} fitness not found")
             selected_fitness.append(t_fitness)
@@ -127,19 +123,17 @@ class Fitness(ServiceBase):
             return torch.stack(selected_fitness)
         return selected_fitness
 
-    def set_fitness(self, valid_terms: list[Term], valid_semantics: torch.Tensor, invalid_terms: list[Term] = []) -> None:
+    def set_fitness(self, valid_terms: list[Term], valid_semantics: torch.Tensor) -> None:
         fitness = self.fitness_fn(valid_semantics)
+        fitness.nan_to_num_(nan=torch.inf)
         for term, fit in zip(valid_terms, fitness):
-            self.fitness[term] = fit
-        self.invalid_terms.update(invalid_terms)
+            self.fitness[term] = fit.clone()
+        del fitness
         self.set_best_term(valid_terms, valid_semantics, fitness)
         return
     
     def copy_fitness(self, from_term: Term, to_term: Term) -> None:
-        if from_term in self.invalid_terms:
-            self.invalid_terms.add(to_term)
-        elif from_term in self.fitness:
-            self.fitness[to_term] = self.fitness[from_term]
+        self.fitness[to_term] = self.fitness[from_term]
         return
 
     def get_finalizer(self):

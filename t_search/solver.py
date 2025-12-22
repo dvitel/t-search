@@ -186,6 +186,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         self.const_range = detect_const_range(self.target, self.free_vars)
 
+        self.zero = torch.zeros((1,), dtype = self.target.dtype, device = self.target.device)
+        self.one = torch.ones((1,), dtype = self.target.dtype, device = self.target.device)
+
         default_context = {
             "rnd": self.rnd,
             "torch_gen": self.torch_gen,
@@ -204,6 +207,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
             "var_bindings": self.var_bindings,
             "var_names": self.var_names,
             "debug": self.debug,
+            "zero": self.zero,
+            "one": self.one,
         }
 
         self.services.clear()

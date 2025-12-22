@@ -7,7 +7,7 @@ from t_search.evaluators.evaluator import Evaluator
 from t_search.syntax.syntax import Syntax
 from .optimizer import Optimizer
 
-from .optimization import OptimPoint, OptimState, optimize
+from .optimization import OptimPoint, optimize
 from t_search.syntax.term import Term, Value
     
 class ConstOptimizer(Optimizer):
@@ -21,15 +21,16 @@ class ConstOptimizer(Optimizer):
                     device: torch.device,
                     dtype: torch.dtype,
                     torch_gen: torch.Generator,
+                    const_range: torch.Tensor,
                     
                     # parameters from config
-                    num_vals: int = 10,
+                    num_starts: int = 10,
                     max_evals: int = 20,
                     lr:float = 0.1,
                     tolerance_change: float = 1e-6,
                     tolerance_grad: float = 1e-3,
                  ):
-        self.num_vals = num_vals
+        self.num_starts = num_starts
         self.max_evals = max_evals
         self.tolerance_change = tolerance_change
         self.tolerance_grad = tolerance_grad
@@ -40,55 +41,52 @@ class ConstOptimizer(Optimizer):
         self.torch_gen = torch_gen
         self.device = device
         self.dtype = dtype
-        self.term_values_cache: dict[Term, list[Value]] = {}
         self.optim_term_cache: dict[Term, Term] = {}
-        self.optim_state_cache: dict[Term, OptimState] = {}
+        self.best_terms_cache: dict[Term, tuple[Term, float]] = {} # optim term to term
+        self.default_loss_fn = evaluator.get_loss_fn()
+        self.const_range = const_range
 
-    def get_finalizer(self):
-        self.term_values_cache = {}
-        self.optim_term_cache = {}
-        self.optim_state_cache = {}
+    def _get_optim_state(self, term: Term) -> Term | tuple[Term, dict[OptimPoint, torch.Tensor]]:
+        ''' Either returns already optimized term or optimization state'''
+        if term in self.optim_term_cache:
+            return self.best_terms_cache[self.optim_term_cache[term]][0]
+        optim_points: list[OptimPoint] = []
+        binding = {}
+        values = []        
 
-    def _get_optim_state(self, term: Term) -> OptimState:
-        if term not in self.optim_term_cache:  # need to build optim term with optim points
+        def const_to_optim_point(term, *_):
+            if isinstance(term, Value):
+                point_id = len(optim_points)
+                point = OptimPoint(point_id)
+                optim_points.append(point)
 
-            optim_points: list[OptimPoint] = []
-            binding = {}
-            values = []
+                del steps, rand_points
+                binding[point] = term.value
+                values.append(term)
+                return point
 
-            def const_to_optim_point(term, *_):
-                if isinstance(term, Value):
-                    point_id = len(optim_points)
-                    point = OptimPoint(point_id)
-                    optim_points.append(point)
-                    value = torch.zeros(
-                        (self.num_vals, 1 if len(term.value.shape) == 0 else term.value.shape[0]),
-                        dtype=self.dtype,
-                        device=self.device,
-                    )
-                    binding[point] = value
-                    values.append(term)
-                    return point
+        optim_term = self.syntax.replace_fn(term, const_to_optim_point)
 
-            optim_term = self.syntax.replace_fn(term, const_to_optim_point)
+        default_loss = self.default_loss_fn(term).item()
 
-            self.optim_term_cache[term] = optim_term
-            self.term_values_cache[term] = values
-            if optim_term not in self.optim_state_cache:
-                
-                optim_state = OptimState(optim_term, optim_points, binding, is_optimized=len(optim_points) == 0)
-                if not optim_state.is_optimized:
-                    optim_state.loss_fn = self.evaluator.get_loss_fn(
-                                get_binding = optim_state.get_binding)
-                self.optim_state_cache[optim_term] = optim_state
+        self.optim_term_cache[term] = optim_term
+
+        if len(binding) == 0:
+            self.best_terms_cache[optim_term] = (term, default_loss) 
+            return term    
+
+        if optim_term in self.best_terms_cache: # already optimized
+            cur_best_term, cur_best_loss = self.best_terms_cache[optim_term]
+            if default_loss < cur_best_loss:
+                self.best_terms_cache[optim_term] = (term, default_loss)
+                return term
             else:
-                optim_state = self.optim_state_cache[optim_term]
-        else:
-            optim_term = self.optim_term_cache[term]
-            optim_state = self.optim_state_cache[optim_term]
+                return cur_best_term  
 
-        return optim_state
-
+        self.best_terms_cache[optim_term] = (term, default_loss)          
+        
+        return (optim_term, binding)
+    
     def optimize(self,
         term: Term,
     ) -> Term:
@@ -97,61 +95,33 @@ class ConstOptimizer(Optimizer):
         """
 
         optim_state = self._get_optim_state(term)
-        if optim_state.is_optimized:
-            return optim_state.best_term
+        if isinstance(optim_state, Term): # already optimized
+            return optim_state # return best known term
+        
+        optim_term, start_binding = optim_state
 
-        starts_to_attempt = []
-
-        rand_points_to_attempt = self.num_vals
-        if optim_state.best_binding is not None:  # at first try we also optimize current values
-            starts_to_attempt.append([optim_state.best_binding[op] for op in optim_state.optim_points])
-            rand_points_to_attempt -= 1
-
-        if rand_points_to_attempt > 0:  # we use grid sampling with rand shifts
-            should_del_ranges = False
-            if len(start_range.shape) == 1:  # 1d range
-                should_del_ranges = True
-                start_range = torch.tile(start_range, (len(optim_state.optim_points), 1))
-            steps = (start_range[:, 1] - start_range[:, 0]) / (rand_points_to_attempt + 1)
-            rand_points = get_interval_grid(steps, start_range, rand_deltas=True, generator=self.trnd)
-            if rand_points.shape[0] > rand_points_to_attempt:
-                selected_ids = torch.randperm(rand_points.shape[0], device=rand_points.device, generator=self.trnd)[
-                    :rand_points_to_attempt
-                ]
-                new_rand_points = rand_points[selected_ids, :]
-                del rand_points
-                rand_points = new_rand_points
-            starts_to_attempt.extend([[v for v in p] for p in rand_points])
-            if should_del_ranges:
-                del start_range
-
-        const_vectors = []
-        for point in optim_state.optim_points:
-            const_values = torch.tensor(
-                [[p[point.point_id]] for p in starts_to_attempt], device=self.device, dtype=self.dtype
-            )
-            const_vectors.append(const_values)
-
-        for p, cv in zip(optim_state.optim_points, const_vectors):
-            binding = optim_state.binding[p]
-            binding.requires_grad = False
-            binding.copy_(cv)  # copy new value to optim point
-            binding.requires_grad = True
-
-        optimize(
-            optim_state,
+        best_loss, best_binding = optimize(
+            optim_term,
+            self.const_range,
+            start_binding,
+            loss_fn_builder=self.evaluator.get_loss_fn,
+            num_starts=self.num_starts,
             lr=self.lr,
             max_evals=self.max_evals,
             tolerance_change=self.tolerance_change,
-            tolerance_grad=self.tolerance_grad
+            tolerance_grad=self.tolerance_grad,
+            torch_gen=self.torch_gen,
         )
 
-        if optim_state.best_loss is not None:
+        if best_loss is not None:
 
-            def bind_optim_points(term, occur, **_):
+            def bind_optim_points(term, **_):
                 if isinstance(term, OptimPoint):
-                    return self.syntax.get_const(value=optim_state.best_binding[term])
+                    return self.syntax.get_const(value=best_binding[term])
 
-            optim_state.best_term = self.syntax.replace_fn(optim_state.optim_term, bind_optim_points)
+            best_term = self.syntax.replace_fn(optim_state.optim_term, bind_optim_points)
+            self.best_terms_cache[optim_term] = (best_term, best_loss.item())
+            del best_loss, best_binding
+            return best_term            
 
-        return optim_state.best_term or term
+        return term

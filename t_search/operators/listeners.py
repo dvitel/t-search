@@ -18,6 +18,6 @@ class GenListener:
 
 class EvalListener:  
 
-    def on_eval(self, terms: list[Term]):
+    def on_eval(self, terms: list[Term], semantics: torch.Tensor):
         ''' Called on new evaluation '''
         pass

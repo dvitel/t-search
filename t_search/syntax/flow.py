@@ -18,7 +18,6 @@ def shuffle_positions(positions: list[TermPos],
     return np.argsort(pos_proba)
 
 
-
 def shuffled_position_flow(positions: list[TermPos], leaf_proba: float | None = None, rnd: np.random.Generator = GLOBAL_RNG) -> Generator[TermPos, None, None]:
     if len(positions) == 0:
         return

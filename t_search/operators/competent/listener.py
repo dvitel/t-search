@@ -51,7 +51,7 @@ class CompetentListener(ServiceBase, EvalListener):
             self.index.insert(lib_terms, semantics) 
             del semantics
 
-    def on_eval(self, terms: list[Term]):
+    def on_eval(self, terms: list[Term], semantics: torch.Tensor):
         if self.term_vector_storage is self.semantics.storage:
             return
         if self.dynamic_index and self.index.num_terms() < self.index_max_size:
