@@ -194,15 +194,39 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
                 found_ids = self.index.query_range(range)
                 if len(found_ids) > 0:
                     vectors = self.index.get_vectors(found_ids)
-                    l2 = torch.norm(vectors - q.unsqueeze(0), dim=1)
+                    l2 = torch.sum((vectors - q.unsqueeze(0)) ** 2, dim=1)
                     l2_sort_order = torch.argsort(l2)
                     min_l2_ids = l2_sort_order[:num_closest]
                     q_res = [(l2[fid].item(), self.sid_to_term[found_ids[fid]]) for fid in min_l2_ids.tolist()]
+                    del l2, vectors, found_ids
                     break
                 delta *= multiplier    
                 num_steps -= 1                        
             res.append(q_res)
         return res
     
+    def closest_or_self(self, queries: torch.Tensor,
+                            start_delta: float = 1e-5,
+                            multiplier: float = 10,
+                            num_steps: int = 3) -> torch.Tensor:
+        ''' Returns closest vector or self '''
+        
+        closest = torch.clone(queries)
+        for qid, q in enumerate(queries):
+            delta = start_delta
+            while num_steps > 0:
+                range = torch.stack([q - delta, q + delta], dim=0)
+                found_ids = self.index.query_range(range)
+                if len(found_ids) > 0:
+                    vectors = self.index.get_vectors(found_ids)
+                    l2 = torch.sum((vectors - q.unsqueeze(0)) ** 2, dim=1)
+                    l2_id = torch.argmin(l2)
+                    closest[qid] = vectors[l2_id]
+                    break
+                delta *= multiplier    
+                num_steps -= 1   
+        
+        return closest
+        
 TermVectorStorage = BaseVectorStorage[Term]
 HoleVectorStorage = BaseVectorStorage[tuple[Term, TermPos]]

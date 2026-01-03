@@ -276,7 +276,7 @@ def get_best_semantics(desired: DesiredSemantics, undesired: list[DesiredSemanti
     assert len(desired) > 0
 
     if any(d is None for d in desired): # unsat desired at position 
-        return None
+        return None, None, None
 
     # if all(len(d) == 0 for d in desired): # any term will work
     #     return None 
@@ -307,22 +307,30 @@ def get_best_semantics(desired: DesiredSemantics, undesired: list[DesiredSemanti
     # test_ids = [i for i, d in enumerate(desired) if len(d) > 0]
     # selected_semantics = all_semantics[:, test_ids]
     sem_score = torch.zeros((all_semantics.shape[0],), dtype=all_semantics.dtype, device=all_semantics.device)
+    closest_desired = []
+    closest_test_ids = []
     for test_id, allowed_values in enumerate(desired):
         if len(allowed_values) == 0:
             continue 
         sem_values = all_semantics[:, test_id].unsqueeze(-1) # (num_terms, 1)
-        allowed_tensor = torch.tensor(list(forbit_values), dtype=all_semantics.dtype, device=all_semantics.device)
+        allowed_tensor = torch.tensor(list(allowed_values), dtype=all_semantics.dtype, device=all_semantics.device)
         diffs = torch.abs(sem_values - allowed_tensor.unsqueeze(0)) # (num_terms, num_allowed)
         sem_score += torch.min(diffs, dim=1).values # (num_terms,) 
+        closest_term_id, closest_desired_id = torch.unravel_index(torch.argmin(diffs), diffs.shape)
+        closest_desired.append(allowed_tensor[closest_desired_id].item())
+        closest_test_ids.append(test_id)
 
     sem_score[forbidden_mask] = torch.inf
 
     best_sem_id = torch.argmin(sem_score).item()
 
     if sem_score[best_sem_id] == torch.inf:
-        return None
+        return None, None, None
+    
+    closest_desired = torch.tensor(closest_desired, dtype=all_semantics.dtype, device=all_semantics.device)
+    closest_test_ids = torch.tensor(closest_test_ids, dtype=torch.long, device=all_semantics.device)
 
-    return best_sem_id
+    return best_sem_id, closest_desired, closest_test_ids
 
 @dataclass 
 class InversionCache: 

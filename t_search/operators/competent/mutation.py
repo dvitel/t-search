@@ -1,7 +1,8 @@
+import torch
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.competent.listener import CompetentListener
 from t_search.operators.competent.utils import alg_inv, backward_desired, get_best_constant, get_best_semantics
-from t_search.operators.mutation import PositionMutation
+from t_search.operators.mutation import PositionMutation, TermMutation
 from t_search.syntax import Term, TermPos
 
 class CompetentMutation(PositionMutation):
@@ -12,12 +13,14 @@ class CompetentMutation(PositionMutation):
                     semantics: Semantics,
                     listener: CompetentListener,
                     op_invs = alg_inv,
+                    syn_simplifier: TermMutation | None = None,
                     **kwargs):
         super().__init__(**kwargs)
         self.l = listener        
         self.op_invs = op_invs
         self.desired_at_pos = {} # temp cache
         self.semantics = semantics
+        self.syn_simplifier = syn_simplifier
 
     def mutate_position(self, term: Term, position: TermPos) -> Term | None:
         
@@ -26,7 +29,6 @@ class CompetentMutation(PositionMutation):
         
         desired, undesired = self.desired_at_pos[(position.term, position.occur)]
 
-        all_semantics = self.l.index.get_semantics()
 
         best_const = get_best_constant(desired)
 
@@ -35,17 +37,43 @@ class CompetentMutation(PositionMutation):
             mutated_term = self.syntax.replace_position(term, position, best_term)
             return mutated_term
 
-        best_sem_id = get_best_semantics(desired, undesired, all_semantics)
+        all_semantics = self.l.index.get_semantics()
+        
+        best_sem_id, closest_desired, closest_test_ids = get_best_semantics(desired, undesired, all_semantics)
 
         if best_sem_id is None:
             return None
         
         best_vector = all_semantics[best_sem_id]
         best_term = self.l.index.get_term_for_semantics(best_vector)
+
+        # bring best_term closer to desired with linear trnsformation k * t + b
+
+        # we compute k * ts + b that is closest to hs
+        # (k * ts + b - hs)^2 --> min
+        # Sx = sum(ts), Sy = sum(hs), Sxx = sum(ts^2), Sxy = sum(ts * hs)
+
+        selected_values = best_vector[closest_test_ids]
+        Sx = selected_values.sum()
+        Sy = closest_desired.sum()
+        Sxx = (selected_values * selected_values).sum()
+        Sxy = (selected_values * closest_desired).sum()
+        n = selected_values.shape[0]
+        k = (n * Sxy - Sx * Sy) / (n * Sxx - Sx * Sx)
+        b = (Sy - k * Sx) / n
+        if torch.isfinite(k) == True and torch.isfinite(b) == True:
+            best_term = self.syntax.get_op("add", 
+                            self.syntax.get_op("mul", self.syntax.get_const(value=k), term),
+                            self.syntax.get_const(value=b))                
         
         mutated_term = self.syntax.replace_position(term, position, best_term)
 
-        return mutated_term
+        if self.syn_simplifier is None:
+            return mutated_term
+        
+        new_simplified = self.syn_simplifier.mutate_term(mutated_term)
+
+        return new_simplified
 
     
     def mutate_term(self, term: Term) -> Term | None:

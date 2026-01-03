@@ -42,6 +42,8 @@ class PointOptim(Operator):
                  tolerance_grad: float = 1e-3,
                  min_loss_rtol: float = 1e-1,
                  with_tabu: bool = True,
+                 closer_to_points: bool = False,
+                 closer_to_points_lambda: float = 1e-2,
                  **kwargs):
         super().__init__(**kwargs)
         self.term_hole_pairs = term_hole_pairs
@@ -68,6 +70,8 @@ class PointOptim(Operator):
         self.tolerance_grad = tolerance_grad
         self.min_loss_rtol = min_loss_rtol
         self.default_loss_fn = evaluator.get_loss_fn()
+        self.closer_to_points = closer_to_points
+        self.closer_to_points_lambda = closer_to_points_lambda
 
     def rand_position_order(self, term: Term) -> Optional[TermPos]:
         positions = self.syntax.get_positions(term)
@@ -175,6 +179,19 @@ class PointOptim(Operator):
             return True
         best_term_loss = self.default_loss_fn(best_term)
         return (best_term_loss - best_loss) > (self.min_loss_rtol * best_term_loss)
+    
+    def get_optim_loss_fn(self, **kwargs) -> callable:
+        if self.closer_to_points: # add term that attracts the search to existing points
+            base_loss_fn = self.evaluator.get_loss_fn(**kwargs)
+            def optim_loss_fn(term: Term, *, binding) -> torch.Tensor:
+                one_binding = next(binding.values())
+                closest = self.term_hole_pairs.term_index.closest_or_self(one_binding)
+                base_loss = base_loss_fn(term, binding=binding)
+                point_loss = torch.sum((one_binding - closest) ** 2, dim=1)
+                total_loss = base_loss + self.closer_to_points_lambda * point_loss
+                return total_loss
+            return optim_loss_fn
+        return self.evaluator.get_loss_fn(**kwargs)
 
     def create_hole(self, term: Term) -> tuple[Term, TermPos, torch.Tensor] | None:
         ''' we optimize the term at position only once '''

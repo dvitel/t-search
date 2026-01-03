@@ -17,7 +17,7 @@ class TermHolePairs(EvalListener):
                     syntax: Syntax,
                     term_index: TermVectorStorage,
                     hole_index: HoleVectorStorage,
-                    syn_simplifier: TermMutation,
+                    syn_simplifier: TermMutation | None = None,
                     start_delta: float = 1e-5,
                     multiplier: float = 10,
                     num_steps: int = 3,
@@ -116,6 +116,9 @@ class TermHolePairs(EvalListener):
         if new_term is None:
             return None
 
+        if self.syn_simplifier is None:
+            return new_term
+        
         new_simplified = self.syn_simplifier.mutate_term(new_term)
         
         return new_simplified  

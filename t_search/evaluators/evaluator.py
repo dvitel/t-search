@@ -292,7 +292,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             def new_set_binding(root: Term, term: Term, value: torch.Tensor):
                 set_binding(root, term, value)
                 self._default_set_binding(root, term)
-        def loss_fn(term: Term) -> torch.Tensor:
+        def loss_fn(term: Term, *, binding = {}) -> torch.Tensor:
             outputs = evaluate(term, self.ops, new_get_binding, new_set_binding)
             return self.fitness.get_loss(outputs)
         return loss_fn

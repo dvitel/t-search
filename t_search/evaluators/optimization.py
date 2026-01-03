@@ -111,7 +111,7 @@ def optimize(
         optimizer.zero_grad()
 
 
-        loss: torch.Tensor = loss_fn(optim_term)
+        loss: torch.Tensor = loss_fn(optim_term, binding=binding)
         num_root_evals += 1
         fixed_loss = loss.nan_to_num_(torch.inf)
         # finite_loss_mask = torch.isfinite(loss)
