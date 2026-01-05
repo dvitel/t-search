@@ -1,10 +1,14 @@
 {
     "service_definitions": {
+        "identity": {
+            "type": "IdentityNormalizer",
+            "params": {}
+        },
         "fitness": { 
             "type": "Fitness", 
             "params": {
                 "fitness_name": "nmse",
-                "fitness_atol": 1e-07
+                "fitness_atol": 1e-05
             }
         },
         "semantics": {
@@ -33,7 +37,8 @@
         "term_vector_storage": { 
             "type": "TermVectorStorage", 
             "params": { 
-                "index": {"!ref": "vector_storage"} 
+                "index": {"!ref": "vector_storage"},
+                "normalizer": {"!ref": "identity"}
             } 
         },        
         "evaluator": {

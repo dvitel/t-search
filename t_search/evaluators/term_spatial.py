@@ -228,5 +228,8 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
         
         return closest
         
-TermVectorStorage = BaseVectorStorage[Term]
-HoleVectorStorage = BaseVectorStorage[tuple[Term, TermPos]]
+class TermVectorStorage(BaseVectorStorage[Term]):
+    pass 
+
+class HoleVectorStorage(BaseVectorStorage[tuple[Term, TermPos]]):
+    pass

@@ -14,7 +14,7 @@ from t_search.operators.listeners import EvalListener
 from t_search.operators.operator import Operator
 from t_search.syntax.evaluation import evaluate
 from t_search.syntax.term import Term
-from t_search.utils import EvSearchTermination, stack_rows
+from t_search.utils import EvSearchTermination, stack_rows, timed
 
 
 # class Evaluations(NamedTuple):
@@ -214,10 +214,15 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         self.new_term_outputs.clear()
 
-        term_outputs: dict[Term, torch.Tensor] = {}
-        for term in terms:
-            output = self._eval_one(term, mode="train")
-            term_outputs[term] = output
+        def eval_timed():
+            term_outputs: dict[Term, torch.Tensor] = {}        
+            for term in terms:
+                output = self._eval_one(term, mode="train")
+                term_outputs[term] = output
+            return term_outputs
+        
+        term_outputs, elapsed = timed(eval_timed)()
+        self.add_metrics(eval_time=elapsed)
 
         if self.with_inner_evals:
             new_term_outputs = self.new_term_outputs
@@ -343,7 +348,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         def set_binding(*_):
             pass
 
-        _, output = self._eval_one(self.fitness.best_term, self.ops, get_binding, set_binding, mode="test")
+        _, output = self._eval_one(self.fitness.best_term, get_binding, set_binding, mode="test")
         return output    
     
 

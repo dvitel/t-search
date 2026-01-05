@@ -36,6 +36,7 @@
             "type": "ReduceConsts",
             "module": "t_search.operators.syntax",
             "params": {
+                "evaluator": {"!ref": "evaluator"},
                 "semantics": {"!ref": "semantics"},
                 "syntax": {"!ref": "syntax"},
                 "rate": 1.0

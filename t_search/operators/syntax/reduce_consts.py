@@ -1,3 +1,4 @@
+from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.fitness import Fitness
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.mutation import TermMutation
@@ -8,10 +9,12 @@ class ReduceConsts(TermMutation):
 
     def __init__(self, 
                  *,
+                 evaluator: Evaluator,
                  semantics: Semantics,
                  fitness: Fitness,
                  **kwargs):
         super().__init__(**kwargs)
+        self.evaluator = evaluator
         self.semantics = semantics
         self.fitness = fitness
 
@@ -24,6 +27,8 @@ class ReduceConsts(TermMutation):
             if cur_term in already_checked:
                 return already_checked[cur_term]
             semantics = self.semantics.get_outputs(cur_term)
+            if semantics is None:
+                _, semantics = self.evaluator.eval(cur_term)
             is_const = self.semantics.is_const(semantics)
             if is_const is not None:
                 new_term = self.syntax.get_const(value=is_const)

@@ -19,7 +19,7 @@
             "args": [
                 "--dataset", "test_0",
                 "--config", "configs/koza-set1.json",
-                "--output", "data/koza-set1-{}-results.json",
+                "--output", "data/koza-set1-{}-results.jsonlist",
                 "--device", "cuda",
                 "--dtype", "float32",
                 "--seed", "42",

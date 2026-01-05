@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from t_search.base import ServiceBase
-from t_search.evaluators.fitness import Fitness
+from t_search.evaluators.fitness import Fitness, nmse_loss_builder
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.initialization import Initialization
 from t_search.operators.listeners import GenListener
@@ -413,10 +413,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         return self
 
-    def predict(self, X: np.ndarray | torch.Tensor) -> np.ndarray:
+    def predict(self, X: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
 
         if not self.is_fitted_:
             raise RuntimeError("Solver is not fitted yet")
+        
+        return_tensor = True
 
         if not torch.is_tensor(X):
             X = torch.tensor(
@@ -424,12 +426,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 device=self.device,
                 dtype=self.dtype,
             )
+            return_tensor = True
 
         free_vars = X.to(device=self.device, dtype=self.dtype)
 
         var_bindings = get_var_bindings(free_vars)
 
-        def get_binding(term: Term) -> torch.Tensor:
+        def get_binding(root: Term, term: Term) -> torch.Tensor:
             if isinstance(term, Variable):
                 return var_bindings[term.var_id]
             if isinstance(term, Value):
@@ -439,22 +442,29 @@ class GPSolver(BaseEstimator, RegressorMixin):
         output: torch.Tensor = self.evaluator.test(get_binding)
         if output is None:
             raise RuntimeError("Evaluation of the best term returned None, not all terminals may be bound")
+        if return_tensor:
+            return output
         output_numpy = output.cpu().numpy()
         return output_numpy
     
-    def save_metrics(self, filepath: str):
-        """Saves metrics to a JSON file."""
-        import json
+    def get_metrics(self) -> dict:
+        return dict(self.metrics)
+    
+def save_metrics_to_json(metrics: dict, filepath: str):
+    """Saves metrics to a JSON list file."""
+    import json
 
-        def metrics_serializer(obj):
-            if isinstance(obj, torch.Tensor):
-                return obj.cpu().numpy().tolist()
-            if isinstance(obj, Term):
-                return str(obj)
-            raise TypeError(f"Type {type(obj)} not serializable")
+    def metrics_serializer(obj):
+        if isinstance(obj, torch.Tensor):
+            return obj.cpu().numpy().tolist()
+        if isinstance(obj, Term):
+            return str(obj)
+        raise TypeError(f"Type {type(obj)} not serializable")
 
-        with open(filepath, "w") as f:
-            json.dump(self.metrics, f, indent=4, default=metrics_serializer)
+    with open(filepath, "a") as f:
+        json.dump(metrics, f, indent=4, default=metrics_serializer)
+        # adding newline 
+        f.write("\n")
 
 def config_pipeline(*, dataset:str, config: str, output="koza-{}.json", device='cuda', 
                     dtype='float16', seed=42, debug: bool = False):
@@ -494,7 +504,15 @@ def config_pipeline(*, dataset:str, config: str, output="koza-{}.json", device='
     solver.fit(free_vars, target)
 
     output = output.format(dataset)
-    solver.save_metrics(output)
+
+    free_vars_test, target_test = ds.sample_set("test", device=device, dtype=dtype, generator=torch_gen, sorted=True)
+    y_pred = solver.predict(free_vars_test)
+
+    nmse_fn = nmse_loss_builder(target_test)
+    nmse = nmse_fn(y_pred).item()
+    metrics = {'test_nmse':nmse, "seed":seed, **solver.get_metrics(), "config":config}
+    save_metrics_to_json(metrics, output)
+    pass
 
 def args_pipeline():
     import argparse

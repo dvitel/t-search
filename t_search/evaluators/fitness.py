@@ -128,8 +128,8 @@ class Fitness(ServiceBase):
         fitness.nan_to_num_(nan=torch.inf)
         for term, fit in zip(valid_terms, fitness):
             self.fitness[term] = fit.clone()
-        del fitness
         self.set_best_term(valid_terms, valid_semantics, fitness)
+        del fitness
         return
     
     def copy_fitness(self, from_term: Term, to_term: Term) -> None:
