@@ -1,8 +1,10 @@
+from typing import Callable
 from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.fitness import Fitness
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.mutation import TermMutation
 from t_search.syntax.term import Term, TermPos
+from t_search.utils import timed
 
 class ReduceConsts(TermMutation):
     ''' Removes constant semantics from terms '''
@@ -28,7 +30,9 @@ class ReduceConsts(TermMutation):
                 return already_checked[cur_term]
             semantics = self.semantics.get_outputs(cur_term)
             if semantics is None:
-                _, semantics = self.evaluator.eval(cur_term)
+                (_, semantics), elapsed = timed(self.evaluator.eval)(cur_term)
+                self.add_metrics(sem_cache_miss = 1, eval_time = elapsed)
+
             is_const = self.semantics.is_const(semantics)
             if is_const is not None:
                 new_term = self.syntax.get_const(value=is_const)

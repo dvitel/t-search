@@ -15,12 +15,14 @@ class TermMutation(Operator):
                  syntax: Syntax,
                  rnd: np.random.Generator, 
                  add_metrics: Callable,
-                 rate : float):
+                 rate : float = 1.0,
+                 debug: bool = False):
         self.rate: float = rate
         self.cur_parents: Sequence[Term] = []
         self.rnd: np.random.Generator = rnd
         self.add_metrics = add_metrics
         self.syntax = syntax
+        self.debug = debug
 
     def mutate_term(self, term: Term) -> Term | None:
         ''' Abstract. Mutates one term in the context of parents and already generated children ''' 

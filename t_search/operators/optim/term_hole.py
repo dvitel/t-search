@@ -112,6 +112,9 @@ class TermHolePairs(EvalListener):
                         self.syntax.get_op("mul", self.syntax.get_const(value=k), term),
                         self.syntax.get_const(value=b))
         
+        if hole_term is None:
+            return None
+        
         new_term = self.syntax.replace_position(hole_root, hole_pos, hole_term)
         if new_term is None:
             return None

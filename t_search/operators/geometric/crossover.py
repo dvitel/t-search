@@ -64,11 +64,13 @@ class SemanticGeometricCrossover(TermCrossover, ServiceBase):
 
             if self.min_d is not None: # check effectiveness of the operator
                 term1_sem, term2_sem, mutated_term_sem, *_ = self.evaluator.eval([term, other_term, mutated_term])
-                dist1 = l2(term1_sem, mutated_term_sem)
-                dist2 = l2(term2_sem, mutated_term_sem)
+                dist1 = l2(term1_sem[1], mutated_term_sem[1])
+                dist2 = l2(term2_sem[1], mutated_term_sem[1])
                 if dist1 < self.min_d or dist2 < self.min_d:
                     mutated_term = None
                     continue
+                else:
+                    mutated_term = mutated_term_sem[0]
             if mutated_term is not None:
                 break
 

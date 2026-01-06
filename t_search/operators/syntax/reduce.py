@@ -2,11 +2,14 @@ from typing import Callable
 
 import torch
 
+from t_search.evaluators.evaluator import Evaluator
 from t_search.operators.mutation import TermMutation
 from t_search.syntax.syntax import Syntax
 from t_search.syntax import Op, Term, Value, Variable, parse_term
 from t_search.syntax.traverse import postorder_traversal, TRAVERSAL_EXIT_NODE
 import sympy as sp
+
+from t_search.utils import timed
 
 sp_alg_ops_f = {
     "add": sp.Add,
@@ -63,31 +66,70 @@ def to_sympy(root: Term, ops: dict[str, Callable] = sp_alg_ops_f) -> sp.Expr:
 def from_sympy(root: sp.Expr, op_mapping: dict[sp.Expr, str] = sp_alg_ops_b,
                 alloc_val: Callable = lambda v: Value(v),
                 alloc_var: Callable = lambda var_id: Variable(var_id),
-                alloc_op: Callable = lambda op_id: (lambda *args: Op(op_id, args))
-                ) -> Term:
-    if root.is_Symbol:
+                alloc_op: Callable = lambda op_id: (lambda *args: Op(op_id, args)),
+                use_unary: bool = True,
+                use_pow: bool = True) -> Term | None:
+    if root.is_Symbol or root.is_symbol:
         return alloc_var(str(root))
-    if root.is_Number:
+    if root.is_Number or root.is_number:
+        if not root.is_real:
+            return None
         return alloc_val(float(root))
     if root.is_Mul and -1 in root.args:
         args_wo_minus = [a for a in root.args if a != -1]
         if len(args_wo_minus) == 1:  # just -x
-            arg = from_sympy(args_wo_minus[0], op_mapping, alloc_val, alloc_var, alloc_op)
-            op_res =  alloc_op("neg")(arg)
+            arg = from_sympy(args_wo_minus[0], op_mapping, alloc_val, alloc_var, alloc_op, use_unary=use_unary, use_pow=use_pow)
+            if arg is None:
+                return None
+            if use_unary:
+                op_res = alloc_op("neg")(arg)
+            else: # asssumes sub in func set 
+                op_res = alloc_op("sub")(alloc_val(0), arg)
             return op_res 
     if root.is_Pow and root.exp == -1:
-        arg = from_sympy(root.base, op_mapping, alloc_val, alloc_var, alloc_op)
-        op_res = alloc_op("inv")(arg)
+        arg = from_sympy(root.base, op_mapping, alloc_val, alloc_var, alloc_op, use_unary=use_unary, use_pow=use_pow)
+        if arg is None:
+            return None
+        if use_unary:
+            op_res = alloc_op("inv")(arg)
+        else: # assumes div in func set
+            op_res = alloc_op("div")(alloc_val(1), arg)
         return op_res
     
     if root.is_Function and root.func not in op_mapping:
-        args = [from_sympy(a, op_mapping, alloc_val, alloc_var, alloc_op) for a in root.args]
-        op = alloc_op(str(root.func))(*args)
+        args = []
+        for a in root.args:
+            arg = from_sympy(a, op_mapping, alloc_val, alloc_var, alloc_op, use_unary=use_unary, use_pow=use_pow) 
+            if arg is None:
+                return None
+            args.append(arg)
+        func_name = str(root.func)
+        if func_name == "tan": # go back to sin/cos
+            if use_unary:
+                op = alloc_op("mul")(alloc_op('sin')(*args), alloc_op("inv")(alloc_op("cos")(*args)))
+            else:
+                op = alloc_op("div")(alloc_op('sin')(*args), alloc_op("cos")(*args))
+        else:
+            op = alloc_op(func_name)(*args)
+        # assert len(op.args) <= 2
         return op
     
     # op is assumed 
-    args = [from_sympy(a, op_mapping, alloc_val, alloc_var, alloc_op) for a in root.args]
-    op = alloc_op(op_mapping[root.func])(*args)
+    args = []
+    for a in root.args:
+        arg = from_sympy(a, op_mapping, alloc_val, alloc_var, alloc_op, use_unary=use_unary, use_pow=use_pow)
+        if arg is None:
+            return None
+        args.append(arg)
+    if not use_pow and (op_mapping[root.func] == "pow"): # express pow through exp log
+        # pow(x, y) = exp(y * log(x))
+        arg1 = alloc_op("log")(args[0])
+        arg2 = args[1]
+        mul_op = alloc_op("mul")(arg2, arg1)
+        op = alloc_op("exp")(mul_op)
+    else:
+        op = alloc_op(op_mapping[root.func])(*args)
+    # assert len(op.args) <= 2
     return op
 
 def sp_simplify(term: Term, *, 
@@ -95,31 +137,54 @@ def sp_simplify(term: Term, *,
                 from_dict: dict = sp_alg_ops_b,
                 alloc_val: Callable = lambda v: Value(v),
                 alloc_var: Callable = lambda var_id: Variable(var_id),
-                alloc_op: Callable = lambda op_id: lambda *args: Op(op_id, args)) -> Term:
+                alloc_op: Callable = lambda op_id: lambda *args: Op(op_id, args),
+                use_unary:bool = True,
+                use_pow:bool = True) -> Term | None:
     sp_expr = to_sympy(term, to_dict)
     sp_expr_simple = sp.simplify(sp_expr)
-    term_simple = from_sympy(sp_expr_simple, from_dict, alloc_val, alloc_var, alloc_op)
-    return term_simple    
+    term_simple = from_sympy(sp_expr_simple, from_dict, alloc_val, alloc_var, alloc_op, use_unary=use_unary, use_pow=use_pow)
+    return term_simple
     
 class Reduce(TermMutation): 
     ''' Syntactic Simplifier based on domain axioms '''
 
     def  __init__(self, *,
-                    syntax: Syntax,
+                    evaluator: Evaluator,
                     to_ops: dict = sp_alg_ops_f, from_ops: dict = sp_alg_ops_b,
                     check_validity: bool = True, **kwargs):
         super().__init__(**kwargs)
-        self.syntax = syntax
         self.to_ops = to_ops
         self.from_ops = from_ops
         self.check_validity = check_validity
+        self.evaluator = evaluator
     def mutate_term(self, term: Term) -> Term | None:
-        new_term = sp_simplify(term, to_dict = self.to_ops, from_dict=self.from_ops,
-                               alloc_val = lambda value: self.syntax.get_const(value = value),
-                               alloc_var = lambda var_id: self.syntax.get_var(var_id = var_id),
-                               alloc_op = lambda op_id: lambda *args: self.syntax.get_op(op_id, *args))
-        if self.check_validity and not self.syntax.is_valid(new_term):
+        def simplify():
+            new_term = sp_simplify(term, to_dict = self.to_ops, from_dict=self.from_ops,
+                                alloc_val = lambda value: self.syntax.get_const(value = value),
+                                alloc_var = lambda var_id: self.syntax.get_var(var_id = var_id),
+                                alloc_op = lambda op_id: lambda *args: self.syntax.get_op(op_id, *args),
+                                use_unary=self.syntax.has_op("inv"),
+                                use_pow=self.syntax.has_op("pow"))
+            return new_term
+        new_term, elapsed = timed(simplify)()
+        self.add_metrics(simplify_time = elapsed)
+        if new_term is None:
             return None
+        if self.check_validity:
+            is_valid, v_elapsed = timed(self.syntax.is_valid)(new_term)
+            self.add_metrics(validity_check_time = v_elapsed)
+            if not is_valid:
+                return None
+        # if self.debug:
+        #     eval_before = self.evaluator.eval(term)
+        #     eval_after = self.evaluator.eval(new_term)
+        #     existing_eval_before = eval_before[1]
+        #     existing_eval_after = eval_after[1]
+        #     before_mask = torch.isfinite(existing_eval_before)
+        #     after_mask = torch.isfinite(existing_eval_after)
+        #     common_mask = before_mask & after_mask
+        #     assert torch.allclose(existing_eval_before[common_mask], existing_eval_after[common_mask], rtol=1, atol=1e-1), f"Simplification changed semantics from {eval_before} to {eval_after}"
+        #     pass
         return new_term
 
 if __name__ == "__main__":

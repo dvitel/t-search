@@ -14,7 +14,7 @@ from t_search.operators.listeners import EvalListener
 from t_search.operators.operator import Operator
 from t_search.syntax.evaluation import evaluate
 from t_search.syntax.term import Term
-from t_search.utils import EvSearchTermination, stack_rows, timed
+from t_search.utils import EvSearchTermination, stack_rows
 
 
 # class Evaluations(NamedTuple):
@@ -43,7 +43,7 @@ class Evaluator(Operator):
         # *,
         # return_outputs: Literal["list", "tensor"] = "list",
         # return_fitness: Literal["none", "list", "tensor"] = "none",
-    ) -> list[torch.Tensor] | torch.Tensor:
+    ) -> list[tuple[Term, torch.Tensor]] | tuple[Term, torch.Tensor]:
         ''' Evaluates given terms. '''
         pass
 
@@ -82,6 +82,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
                     max_evals: int = 1_000_000,
                     # eval_fn: Callable = evaluate,
                     listeners: list[EvalListener] = [],
+                    device: torch.device
                 ):
         
         # self.storage: TermVectorStorage = storage
@@ -96,6 +97,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         self.evals: int = 0
         # self.eval_fn = eval_fn
         self.add_metrics = add_metrics
+        self.is_cuda = device.type == 'cuda'
 
         # fitness_fn_builder = get_fitness_fns(fitness_name)
         # self.fitness_fn_builder = fitness_fn_builder
@@ -204,7 +206,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         output = evaluate(term, self.ops, get_binding or self._get_binding, set_binding or self._set_binding)
         return (term, output)
     
-    def eval(self, terms: list[Term] | Term) -> list[torch.Tensor] | torch.Tensor:
+    def eval(self, terms: list[Term] | Term) -> list[tuple[Term, torch.Tensor]] | tuple[Term, torch.Tensor]:
         ''' Evaluate given term or terms '''
 
         return_tensor: bool = False
@@ -214,20 +216,28 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         self.new_term_outputs.clear()
 
-        def eval_timed():
-            term_outputs: dict[Term, torch.Tensor] = {}        
-            for term in terms:
-                output = self._eval_one(term, mode="train")
-                term_outputs[term] = output
-            return term_outputs
+        term_outputs: dict[Term, torch.Tensor] = {}        
+        for term in terms:
+            # if self.is_cuda:
+            #     cuda_stream = torch.cuda.Stream()
+            #     with torch.cuda.stream(cuda_stream):
+            #         output = self._eval_one(term, mode="train")
+            #         term_outputs[term] = output
+            # else:
+            output = self._eval_one(term, mode="train")
+            term_outputs[term] = output
+        # if self.is_cuda:
+        #     torch.cuda.synchronize()
+
+            # return term_outputs
         
-        term_outputs, elapsed = timed(eval_timed)()
-        self.add_metrics(eval_time=elapsed)
+        # term_outputs, elapsed = timed(eval_timed)()
+        # self.add_metrics(eval_time=elapsed)
 
         if self.with_inner_evals:
             new_term_outputs = self.new_term_outputs
         else:
-            new_term_outputs = {t:v for t, v in term_outputs.items() if t in self.new_term_outputs}
+            new_term_outputs = {t:v[1] for t, v in term_outputs.items() if t in self.new_term_outputs}
 
         if len(new_term_outputs) > 0:
             new_terms = list(new_term_outputs.keys())

@@ -177,6 +177,10 @@ class Syntax(ServiceBase):
             self.const_tape = new_tape
             del new_rands
         if value is not None:  # const value provided - no alloc of consts
+            if value < -1e30:
+                value = -torch.inf
+            if value > 1e30:
+                value = torch.inf
             self.const_tape[self.const_id] = value
             # if not torch.is_tensor(value):
             #     value = torch.tensor(value, dtype=self.dtype, device=self.device)
@@ -333,11 +337,20 @@ class Syntax(ServiceBase):
     def get_op(self, op_id: str, *args) -> Op | None:
         if any(arg is None for arg in args):
             return None
-        new_term = self.op_builders[op_id].fn(*args)
+        arity = self.op_builders[op_id].arity()
+        if arity == 1 and len(args) != 1:
+            return None
+        cur_args = args[:arity]
+        left_args = args[arity:]
+        cur_term = self.op_builders[op_id].fn(*cur_args)
+        while len(left_args) > 0:
+            new_args = [cur_term, *left_args[:arity - 1]]
+            cur_term = self.op_builders[op_id].fn(*new_args)
+            left_args = left_args[arity - 1:]
         # if check_validity and new_term is not None:
         #     if not self.is_valid(new_term):
         #         return None
-        return new_term
+        return cur_term
     
     def get_rand_op(self, arg_builder: Callable[[int], Term]) -> Op | None:
         op_builder = self.rnd.choice(list(self.op_builders.values()))

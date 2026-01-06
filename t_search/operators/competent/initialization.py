@@ -37,7 +37,7 @@ class CompetentInitialization(SemanticallyDrivenInitialization):
             semantics = self.semantics.get_outputs(population, return_type="tensor")
             np_semantics = semantics.cpu().numpy()
             del semantics
-            convex_hull = ConvexHull(np_semantics)
+            convex_hull = ConvexHull(np_semantics) 
             vertex_ids = convex_hull.vertices
             ci_population = [population[vid] for vid in vertex_ids]
             target_inside_hull = self.is_point_inside_hull(self.target, convex_hull)

@@ -55,7 +55,7 @@ class SemanticallyDrivenInitialization(Initialization):
             if term is None:
                 continue
             term_outputs = self.evaluator.eval(term)
-            const_value = self.semantics.is_const(term_outputs)
+            const_value = self.semantics.is_const(term_outputs[1])
             if const_value is not None:
                 continue
             population = self.semantics.get_repr_terms()

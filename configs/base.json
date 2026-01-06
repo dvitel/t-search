@@ -8,7 +8,7 @@
             "type": "Fitness", 
             "params": {
                 "fitness_name": "nmse",
-                "fitness_atol": 1e-05
+                "fitness_atol": 1e-04
             }
         },
         "semantics": {
@@ -46,7 +46,7 @@
             "params": {
                 "semantics": {"!ref": "semantics"},
                 "fitness": {"!ref": "fitness"},                
-                "with_inner_evals": true,
+                "with_inner_evals": false,
                 "max_root_evals": 100000,
                 "max_evals": 1000000,
                 "listeners": [

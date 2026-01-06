@@ -117,9 +117,16 @@ class ConstOptimizer(Optimizer):
 
             def bind_optim_points(term, **_):
                 if isinstance(term, OptimPoint):
-                    return self.syntax.get_const(value=best_binding[term])
+                    const_val = self.syntax.get_const(value=best_binding[term])
+                    # if const_val is None:
+                    #     print(f"Cannot create const term for value {best_binding[term]}")
+                    #     raise ValueError(f"Cannot create const term for value {best_binding[term]}")
+                    return const_val
 
-            best_term = self.syntax.replace_fn(optim_state.optim_term, bind_optim_points)
+            try:
+                best_term = self.syntax.replace_fn(optim_state.optim_term, bind_optim_points)
+            except ValueError as e:                
+                return term
             self.best_terms_cache[optim_term] = (best_term, best_loss.item())
             del best_loss, best_binding
             return best_term            

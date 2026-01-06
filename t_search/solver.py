@@ -353,16 +353,28 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
     def _check_trivial(self, raise_on_solution: bool = False) -> bool:
         ''' If target is constant or var, evaluator will rise 'Solution Found' error '''
+        const_output = None
         try:
             const_val = self.semantics.is_const(self.target)
             if const_val is not None:
                 const_term = self.syntax.get_const(value=const_val)
-                self.evaluator.eval(const_term)
-            self.evaluator.eval(self.syntax.get_vars())
+                # if const_term is None:
+                #     raise ValueError(f"Cannot create const term for value {const_val}")
+                # self.evaluator.eval(const_term)
+                const_output = torch.tensor([const_val], device=self.device, dtype=self.dtype)
+                self.fitness.set_fitness([const_term], const_output.unsqueeze(0))
+                pass
+            # self.evaluator.eval(self.syntax.get_vars())
+            for var in self.syntax.get_vars():
+                var_binding = self.var_bindings[var.var_id]
+                self.fitness.set_fitness([var], var_binding.unsqueeze(0))
+                pass
         except EvSearchTermination as e:
+            del const_output            
             if e.status == "SOLVED" and not raise_on_solution:
                 return True
             raise e
+        del const_output
         return False
     
     def on_end(self):
@@ -503,14 +515,12 @@ def config_pipeline(*, dataset:str, config: str, output="koza-{}.json", device='
 
     solver.fit(free_vars, target)
 
-    output = output.format(dataset)
-
     free_vars_test, target_test = ds.sample_set("test", device=device, dtype=dtype, generator=torch_gen, sorted=True)
     y_pred = solver.predict(free_vars_test)
 
     nmse_fn = nmse_loss_builder(target_test)
     nmse = nmse_fn(y_pred).item()
-    metrics = {'test_nmse':nmse, "seed":seed, **solver.get_metrics(), "config":config}
+    metrics = {'test_nmse':nmse, "seed":seed, **solver.get_metrics(), "config":config, "dataset":dataset}
     save_metrics_to_json(metrics, output)
     pass
 

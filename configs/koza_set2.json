@@ -1,4 +1,4 @@
 {
-    "!base": "./koza-base.json",
+    "!base": "./koza_base.json",
     "ops": ["add", "mul", "neg", "inv", "exp", "log", "sin", "cos"]
 }

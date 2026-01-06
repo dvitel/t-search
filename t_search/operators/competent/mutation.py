@@ -34,6 +34,7 @@ class CompetentMutation(PositionMutation):
 
         if best_const is not None:
             best_term = self.syntax.get_const(value=best_const)
+            # if best_term is not None:
             mutated_term = self.syntax.replace_position(term, position, best_term)
             return mutated_term
 
@@ -61,10 +62,16 @@ class CompetentMutation(PositionMutation):
         n = selected_values.shape[0]
         k = (n * Sxy - Sx * Sy) / (n * Sxx - Sx * Sx)
         b = (Sy - k * Sx) / n
+        
         if torch.isfinite(k) == True and torch.isfinite(b) == True:
             best_term = self.syntax.get_op("add", 
                             self.syntax.get_op("mul", self.syntax.get_const(value=k), term),
-                            self.syntax.get_const(value=b))                
+                            self.syntax.get_const(value=b)) 
+        else:
+            best_term = None
+
+        if best_term is None:
+            return None
         
         mutated_term = self.syntax.replace_position(term, position, best_term)
 

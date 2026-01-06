@@ -25,9 +25,11 @@ class SemanticallyDrivenCrossover(RPX):
         
         # check semantic difference
         term1_sem, term2_sem, mutated_term_sem, *_ = self.evaluator.eval([term, other_term, mutated_term])
-        dist1 = l2(term1_sem, mutated_term_sem)
-        dist2 = l2(term2_sem, mutated_term_sem)
+        dist1 = l2(term1_sem[1], mutated_term_sem[1])
+        dist2 = l2(term2_sem[1], mutated_term_sem[1])
         if dist1 < self.min_d or dist1 > self.max_d or dist2 < self.min_d or dist2 > self.max_d:
             return None       
+        else:
+            mutated_term = mutated_term_sem[0]
 
         return mutated_term 
