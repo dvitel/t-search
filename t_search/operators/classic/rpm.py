@@ -16,12 +16,10 @@ class RPM(PositionMutation):
     def mutate_position(
         self, term: Term, position: TermPos
     ) -> Term | None:
-        start_context, arg_counts = self.syntax.get_gen_constraints(term, position)
 
         new_term = self.syntax.grow(
             min(self.max_grow_depth, self.syntax.max_term_depth - position.at_depth),
-            start_context=start_context,
-            arg_counts=arg_counts,
+            start_pos=(term, position),
             freq_skew=self.freq_skew,
         )
 

@@ -25,6 +25,8 @@ class Syntax(ServiceBase):
                  # from solver context
                  var_names: list[str],
                  ops_signatures: dict[str, inspect.Signature],
+                 ops_schedule: dict[str, int], # on what iteration the operation should be activated (used in random syntax generation)
+                 get_cur_gen: Callable[[], int],
                  add_metrics: Callable,
                  device: str = 'cpu',
                  dtype: torch.dtype = torch.bfloat16,
@@ -59,6 +61,9 @@ class Syntax(ServiceBase):
         self.rnd = rnd
         self.torch_gen = torch_gen
         self.capacity = capacity
+        self.waiting_ops: set[str] = set(ops_schedule.keys())
+        self.ops_schedule = sorted([(v, k) for k, v in ops_schedule.items()])
+        self.get_cur_gen = get_cur_gen
 
         self.const_range = const_range
 
@@ -153,7 +158,9 @@ class Syntax(ServiceBase):
                 self.op_builders[inner_op_id]: cnt for inner_op_id, cnt in op_limits.items()
             }
 
-        self.builders.limit_context(context_limits)                
+        self.builders.limit_context(context_limits)
+
+        self.builders.disable_builders(list(self.waiting_ops)) 
 
     def _alloc_const(self, *, value: Optional[float | torch.Tensor] = None) -> Value:
         if self.const_id >= self.const_tape.shape[0]:
@@ -362,10 +369,28 @@ class Syntax(ServiceBase):
         return self.vars
     
     def grow(self, max_term_depth: int | None = None,
-             start_context: TermGenContext | None = None,
-             arg_counts: np.ndarray | None = None,
+             start_pos: tuple[Term, TermPos] | None = None,
              grow_leaf_prob: float | None = None,
              freq_skew: bool = False) -> Term:
+        cur_iter = self.get_cur_gen()
+        ops_update = []
+        while len(self.waiting_ops) > 0 and len(self.ops_schedule) > 0:
+            sched_iter, sched_op = self.ops_schedule[0]
+            if sched_iter <= cur_iter:
+                ops_update.append(sched_op)
+                self.waiting_ops.remove(sched_op)
+                self.ops_schedule.pop(0)
+            else:
+                break
+        if len(ops_update) > 0:
+            self.builders.enable_builders(ops_update)
+            self.pos_context_cache.clear()
+        if start_pos is not None:
+            term, position = start_pos
+            start_context, arg_counts = self.get_gen_constraints(term, position)
+        else:
+            start_context = None
+            arg_counts = None
         max_term_depth = min(max_term_depth, self.max_term_depth) if max_term_depth is not None else self.max_term_depth
         new_term = grow(builders = self.builders, 
                         grow_depth = max_term_depth,
@@ -391,3 +416,11 @@ class Syntax(ServiceBase):
             del self.const_tape
             self.const_id = 0
         return finalizer
+
+    def get_iter_metrics(self):
+        iter_num_syntax = len(self.syntax)
+        iter_num_consts = self.const_id
+        return {
+            'iter_num_syntax': [iter_num_syntax],
+            'iter_num_consts': [iter_num_consts]
+        }

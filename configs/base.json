@@ -7,10 +7,11 @@
         "fitness": { 
             "type": "Fitness", 
             "params": {
+                "syntax": {"!ref": "syntax"},
                 "fitness_name": "nmse",
                 "fitness_atol": 1e-04
             }
-        },
+        },        
         "semantics": {
             "type": "Semantics", 
             "params": { 

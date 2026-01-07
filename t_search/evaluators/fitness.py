@@ -77,15 +77,19 @@ def get_fitness_fns(name: str) -> Callable:
 class Fitness(ServiceBase): 
 
     def __init__(self, *,
+                 syntax: Syntax,
                  name: str = "nmse",
                  target: torch.Tensor,
                  fitness_atol: float = 1e-6):
         self.name = name
         self.target = target
+        self.syntax = syntax
         self.fitness: dict[Term, torch.Tensor] = {}
         self.fitness_fn = get_fitness_fns(name)(target)
         self.best_term: Optional[Term] = None
         self.best_term_fitness: Optional[torch.Tensor] = None
+        self.best_term_depth: Optional[int] = None
+        self.best_term_size: Optional[int] = None
         self.best_term_outputs: Optional[torch.Tensor] = None
         self.fitness_atol = fitness_atol
 
@@ -95,12 +99,16 @@ class Fitness(ServiceBase):
         best_new_fitness, best_new_id = torch.min(fitness, dim=0)
         new_outputs = outputs[best_new_id]
         new_term = terms[best_new_id.item()]
+        best_new_depth = self.syntax.get_depth(new_term)
+        best_new_size = self.syntax.get_size(new_term)
         if (self.best_term is None) or \
-            (best_new_fitness < self.best_term_fitness):
+            ((best_new_fitness, best_new_size, best_new_depth) < (self.best_term_fitness, self.best_term_size, self.best_term_depth)):
             # torch.isclose(best_new_fitness, self.best_term_fitness, atol=self.fitness_atol, rtol=0) or \
             self.best_term = new_term
             self.best_term_fitness = best_new_fitness
             self.best_term_outputs = new_outputs
+            self.best_term_depth = best_new_depth
+            self.best_term_size = best_new_size
         if self.best_term_fitness < self.fitness_atol:
             raise (EvSearchTermination("SOLVED"))        
 
@@ -146,3 +154,13 @@ class Fitness(ServiceBase):
     
     def get_loss(self, outputs: torch.Tensor) -> torch.Tensor:
         return torch.mean((outputs - self.target) ** 2, dim=-1)
+    
+    def get_iter_metrics(self):
+        iter_fitness = self.best_term_fitness.item()
+        iter_term_size = self.best_term_size
+        iter_term_depth = self.best_term_depth
+        return {
+            'iter_fitness': [iter_fitness],
+            'iter_term_size': [iter_term_size],
+            'iter_term_depth': [iter_term_depth]
+        }

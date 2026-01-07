@@ -93,3 +93,13 @@ class Semantics(ServiceBase):
     def get_repr_terms(self) -> list[Term]:
         repr_terms = self.storage.get_repr_terms()
         return repr_terms
+
+    def get_iter_metrics(self):
+        iter_num_semantics = self.storage.num_sem()
+        iter_num_sem_terms = self.storage.num_terms()
+        iter_num_invalid_terms = len(self.storage.invalid_terms)
+        return {
+            'iter_num_semantics': [iter_num_semantics],
+            'iter_num_sem_terms': [iter_num_sem_terms],
+            "iter_num_invalid_terms": [iter_num_invalid_terms]
+        }

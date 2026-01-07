@@ -112,6 +112,7 @@ class Builders:
                     disallow_initial_leaves: bool = True, max_depth = 17,
                     global_min_count: np.int8 = 0, global_max_count: np.int8 = 100):
         self.builders: list[Builder] = builders
+        self.disabled_builder_ids: np.ndarray = np.zeros((len(builders),), dtype=np.int8)
         self.get_term_builder: Callable[[Term], Builder] = get_term_builder
         self.leaf_ids = []
         self.nonleaf_ids = []
@@ -160,7 +161,22 @@ class Builders:
             new_count = self.max_leaf_count_per_depth[-1] * self.max_arity
             self.max_leaf_count_per_depth.append(new_count)
 
-        
+    def disable_builders(self, builder_names: list[str]) -> 'Builders':
+        for bn in builder_names:
+            for bi, b in enumerate(self.builders):
+                if b.name == bn:
+                    self.default_gen_context.min_counts[bi] = 0
+                    self.default_gen_context.max_counts[bi] = 0
+        return self
+    
+    def enable_builders(self, builder_names: list[str]) -> 'Builders':
+        for bn in builder_names:
+            for bi, b in enumerate(self.builders):
+                if b.name == bn:
+                    self.default_gen_context.min_counts[bi] = self.min_counts[bi]
+                    self.default_gen_context.max_counts[bi] = self.max_counts[bi]
+        return self
+
     def __len__(self):
         return len(self.builders)
     

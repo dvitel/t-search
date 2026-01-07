@@ -32,6 +32,28 @@
                 "DEBUG_SOLVER": "1"
             },
             "stopOnEntry": false
-        }
+        },
+        {
+            "name": "Koza set2",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "t_search",
+            "args": [
+                "--dataset", "koza_2",
+                "--config", "configs/koza_set2.json",
+                "--output", "data/koza_set2-koza_2-results.jsonlist",
+                "--device", "cuda",
+                "--dtype", "float32",
+                "--seed", "42",
+                "--debug"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "DEBUG_SOLVER": "1"
+            },
+            "stopOnEntry": false
+        }        
     ]
 }

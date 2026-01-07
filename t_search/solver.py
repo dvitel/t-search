@@ -81,6 +81,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         semantics_service_name: str,
 
         ops: dict[str, Callable] | list[str] = default_alg_ops,
+        ops_schedule: dict[str, int] | None = None,
 
         max_gen: int = 100,
 
@@ -122,6 +123,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 
         self.ops = ops
         self.ops_signatures = {op_id: inspect.signature(op_fn) for op_id, op_fn in ops.items()}
+        self.ops_schedule = ops_schedule or {}
 
         self.max_gen = max_gen
         self.device: torch.device = torch.device(device)
@@ -196,6 +198,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             "dtype": self.dtype,
             "ops": self.ops,
             "ops_signatures": self.ops_signatures,
+            "ops_schedule": self.ops_schedule, 
             "free_vars": self.free_vars,
             "target": self.target,
             "dims": self.target.shape[0],
@@ -213,7 +216,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         self.services.clear()
 
-        def service_builder(service_name: str, service_cls: Type, params: dict) -> Any:
+        def service_builder(service_name: str, service_cls: Type, params: dict) -> Any | None:
 
             service_params = get_method_params(service_cls, "__init__")
 
@@ -241,7 +244,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
                     else:
                         left_params.append(p)
             if len(left_params) > 0:
-                raise ValueError(f"Cannot build service '{service_name}': missing parameters {left_params}")
+                # raise ValueError(f"Cannot build service '{service_name}': missing parameters {left_params}")
+                return None # postpone building
                 
             if self.debug:
                 print(f"Building {service_name}:{service_cls.__name__}:")
@@ -348,7 +352,12 @@ class GPSolver(BaseEstimator, RegressorMixin):
             for listener in self.gen_listeners:
                 listener.on_gen_end(self.gen, self.cur_population)
             iter_end_time = perf_counter()
-            self.add_metrics(iter_time=[round((iter_end_time - iter_start_time) * 1000)])
+            self.add_metrics(iter_time=[round((iter_end_time - iter_start_time) * 1000)], 
+                             **self.fitness.get_iter_metrics(),
+                             **self.syntax.get_iter_metrics(),
+                             **self.semantics.get_iter_metrics(),
+                             **self.evaluator.get_iter_metrics()
+                             )
             self.gen += 1
 
     def _check_trivial(self, raise_on_solution: bool = False) -> bool:

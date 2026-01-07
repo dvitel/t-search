@@ -54,8 +54,7 @@ def register_services(service_cfgs: dict, injection_context: dict[str, Any],
             else:
                 visited_ids.add(service_name)
                 service_q.append((service_name, cfg))
-                continue
-        visited_ids.add(service_name)
+                continue        
         if type(fixed_cfg) is not dict: # injected service already 
             services[service_name] = fixed_cfg
             injection_context[service_name] = fixed_cfg
@@ -71,6 +70,14 @@ def register_services(service_cfgs: dict, injection_context: dict[str, Any],
             if service_module is None:
                 raise ValueError(f"Unknown service type '{service_type}'")
         service = service_builder(service_name, getattr(service_module, fixed_cfg['type']), fixed_cfg.get('params', {}))
+        if service is None: # should delay
+            if service_name in visited_ids:
+                raise ValueError(f"Cyclic service reference detected for {service_name}")
+            else:
+                visited_ids.add(service_name)
+                service_q.append((service_name, cfg))
+                continue
+        visited_ids.add(service_name)
         services[service_name] = service
         injection_context[service_name] = service
     return services

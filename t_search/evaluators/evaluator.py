@@ -57,8 +57,9 @@ class Evaluator(Operator):
 
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
         ''' Evaluate given population of terms and return them'''
-        self.eval(population)
-        return population
+        res = self.eval(population)
+        children = [t for t, _ in res]
+        return children
 
 
 class DefaultEvaluator(Evaluator, ServiceBase):
@@ -95,9 +96,12 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         self.root_evals: int = 0
         self.max_evals = max_evals
         self.evals: int = 0
+        self.eval_calls: int = 0
         # self.eval_fn = eval_fn
         self.add_metrics = add_metrics
         self.is_cuda = device.type == 'cuda'
+        self.eval_cache_hits: int = 0
+        self.eval_cache_miss: int = 0
 
         # fitness_fn_builder = get_fitness_fns(fitness_name)
         # self.fitness_fn_builder = fitness_fn_builder
@@ -126,7 +130,10 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         self.add_metrics(
             evals = self.evals,
-            root_evals = self.root_evals
+            root_evals = self.root_evals,
+            eval_calls = self.eval_calls,
+            eval_cache_hits = self.eval_cache_hits,
+            eval_cache_miss = self.eval_cache_miss
         )
 
         def finalizer():
@@ -160,13 +167,13 @@ class DefaultEvaluator(Evaluator, ServiceBase):
     def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:
         term_semantics = self.semantics.get_binding(term)
         if term_semantics is not None:
-            self.add_metrics(eval_cache_hit=1)
+            self.eval_cache_hits += 1
             return term_semantics
         if term in self.new_term_outputs:
-            self.add_metrics(eval_cache_hit=1)
+            self.eval_cache_hits += 1
             return self.new_term_outputs[term]
 
-        self.add_metrics(eval_cache_miss=1)
+        self.eval_cache_miss += 1
 
         return None
     
@@ -224,6 +231,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             #         output = self._eval_one(term, mode="train")
             #         term_outputs[term] = output
             # else:
+            self.eval_calls += 1
             output = self._eval_one(term, mode="train")
             term_outputs[term] = output
         # if self.is_cuda:
@@ -237,7 +245,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         if self.with_inner_evals:
             new_term_outputs = self.new_term_outputs
         else:
-            new_term_outputs = {t:v[1] for t, v in term_outputs.items() if t in self.new_term_outputs}
+            new_term_outputs = {v[0]:v[1] for t, v in term_outputs.items() if t in self.new_term_outputs}
 
         if len(new_term_outputs) > 0:
             new_terms = list(new_term_outputs.keys())
@@ -359,10 +367,18 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             pass
 
         _, output = self._eval_one(self.fitness.best_term, get_binding, set_binding, mode="test")
-        return output    
-    
+        return output      
 
-class OptimEvaluator(Evaluator):
+    def get_iter_metrics(self):
+        return {
+            'iter_evals': [self.evals],
+            'iter_root_evals': [self.root_evals],
+            'iter_eval_calls': [self.eval_calls],
+            'iter_eval_cache_hits': [self.eval_cache_hits],
+            'iter_eval_cache_miss': [self.eval_cache_miss],
+        }              
+
+class OptimEvaluator(DefaultEvaluator):
     ''' Perform optimization before evaluation '''
 
     def __init__(self, *,
