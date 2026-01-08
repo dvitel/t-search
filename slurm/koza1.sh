@@ -10,6 +10,8 @@
 
 ## SBATCH --open-mode=append
 
+module purge
+
 conda activate $HOME/t-search/t-search-env 
 
 seed=$SLURM_ARRAY_TASK_ID
@@ -26,4 +28,4 @@ python -m t_search \
     --dtype float32 \
     --seed $seed
 
-
+#srun --partition=snsm_itn19 --mem=4gb --time=01:00:00 --gpus=1 --pty bash -i

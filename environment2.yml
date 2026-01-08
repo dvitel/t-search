@@ -1,4 +1,4 @@
-# conda env create -f environment.yml --prefix ./t-search-env
+# conda env create -f environment2.yml --prefix ./t-search-env
 
 name: t-search-env
 channels:
@@ -8,8 +8,12 @@ channels:
   - defaults
 dependencies:
   - python==3.10.13
-  - pytorch=2.5.1
-  - pytorch-cuda=12.4
+
+  # - pytorch=2.5.1
+  # - pytorch-cuda=12.4
+  - pytorch=1.13.1
+  - cudatoolkit=11.3
+
   - numpy=2.2.6
   - pandas==2.3.1
   - scikit-learn==1.7.1
