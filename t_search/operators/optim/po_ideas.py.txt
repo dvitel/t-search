@@ -53,7 +53,7 @@ def const_value_builder(
         semantic_ids = [leaf_semantic_ids[term]]
     else:  # branch - scale branch result
         semantic_ids = [branch_semantic_ids[term]]
-    W = sample_strategy(num_points, const_ranges[torch.newaxis, :])  # ranges for constant
+    W = sample_strategy(num_points, const_ranges[None, :])  # ranges for constant
     W.requires_grad = True  # we optimize this tensor
     X = semantics[semantic_ids]
 

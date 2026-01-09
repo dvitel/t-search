@@ -41,9 +41,16 @@ def find_pred(store: torch.Tensor, query: torch.Tensor,
                                 torch.split(query_chunk, dim_batch_size, dim=-1)):
                 # dim_start = dim_chunk_id * dim_batch_size
                 mask_per_el = pred(store_dim_chunk.unsqueeze(1), query_dim_chunk.unsqueeze(0)) # (n, m, *k, dims)
+
+                mask_per_el_red = mask_per_el
+                for _ in range(mask_per_el_red.ndim - 2):
+                    mask_per_el_red_new = mask_per_el_red.all(dim=2)            
+                    del mask_per_el_red
+                    mask_per_el_red = mask_per_el_red_new
+
                 mask[store_start:store_end, 
-                     query_start:query_end] &= mask_per_el.all(dim = tuple(range(2, mask_per_el.ndim))) # (n, m)
-                del mask_per_el
+                     query_start:query_end] &= mask_per_el_red #mask_per_el.all(dim = tuple(range(2, mask_per_el.ndim))) # (n, m)
+                del mask_per_el, mask_per_el_red
                 if not torch.any(mask[store_start:store_end, query_start:query_end]):
                     break
     if return_shape == "mask":

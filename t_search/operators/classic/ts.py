@@ -27,7 +27,7 @@ class TS(Selection):
         fitness = self.fitness.get_fitness(population, return_type="tensor")
         selected_ids = torch.randint(fitness.shape[0], 
                                      (self.selection_size, self.tournament_size), 
-                                     dtype=torch.int, device=fitness.device,
+                                     dtype=torch.long, device=fitness.device,
                                      generator=self.torch_gen)
         selected_fitnesses = fitness[selected_ids]
         best_id_id = torch.argmin(selected_fitnesses, dim=-1)

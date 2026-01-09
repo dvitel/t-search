@@ -53,7 +53,7 @@ def get_rand_points(num_samples: int, ranges: torch.Tensor, *, generator: torch.
     mins = ranges[:, 0]
     maxs = ranges[:, 1]
     dist = maxs - mins
-    values = mins[:, torch.newaxis] + dist[:, torch.newaxis] * torch.rand(
+    values = mins[:, None] + dist[:, None] * torch.rand(
         len(ranges), num_samples, device=ranges.device, generator=generator
     )
     return values
@@ -151,11 +151,11 @@ def get_chebyshev_points(
         1, num_samples + 1, dtype=float, device=ranges.device
     )  # torch.tile(torch.arange(0, num_samples), (ranges.shape[0], 1))
     if rand_deltas:
-        indexes = torch.rand(ranges.shape[0], device=ranges.device, generator=generator)[:, torch.newaxis] + indexes
+        indexes = torch.rand(ranges.shape[0], device=ranges.device, generator=generator)[:, None] + indexes
     else:
-        indexes = torch.zeros(ranges.shape[0], device=ranges.device)[:, torch.newaxis] + indexes
+        indexes = torch.zeros(ranges.shape[0], device=ranges.device)[:, None] + indexes
     index_vs = torch.cos((2.0 * indexes - 1) / (2.0 * num_samples) * torch.pi)
-    values = (maxs[:, torch.newaxis] + mins[:, torch.newaxis]) / 2 + dist[:, torch.newaxis] / 2 * index_vs
+    values = (maxs[:, None] + mins[:, None]) / 2 + dist[:, None] / 2 * index_vs
     return values
 
 
