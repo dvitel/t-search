@@ -2,10 +2,10 @@
 
 name: t-search-env
 channels:
-  # - conda-forge
   - pytorch 
   - nvidia
   - defaults
+  - conda-forge
 dependencies:
   - python==3.10.13
 
