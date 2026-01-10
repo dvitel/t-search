@@ -19,11 +19,6 @@
             }
         },        
         "vector_storage": {"type": "SpatialIndex", "params": {}},
-        "logger": {
-            "type": "Logging", 
-            "module": "t_search.operators.misc",
-            "params": {"file_path": "data/logs/run_{}.log", "autoflush": true}
-        },
         "syntax": { 
             "type": "Syntax", 
             "params": { 
@@ -51,7 +46,6 @@
                 "max_root_evals": 100000,
                 "max_evals": 1000000,
                 "listeners": [
-                    {"!ref": "logger"}
                 ]                
             }
         }
