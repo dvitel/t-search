@@ -6,8 +6,6 @@ import inspect
 import os
 from typing import Any, Callable, Type
 
-from pyparsing import Optional
-
 import t_search.operators as operators_module
 import t_search.syntax.syntax as syntax_module
 import t_search.spatial as spatial_module

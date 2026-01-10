@@ -1,8 +1,7 @@
 #!/bin/bash 
 #SBATCH --job-name=koza1
 #SBATCH --time=72:00:00
-#SBATCH -D $WORK/t-search
-#SBATCH --output=$WORK/t-search/koza1.out
+#SBATCH --output=koza1-%a.out
 #SBATCH --mem=32G
 #SBATCH -p snsm_itn19
 #SBATCH --gpus=1 # 1 GPU
@@ -12,18 +11,16 @@
 
 module purge
 
-conda activate $HOME/t-search/t-search-env 
-
 seed=$SLURM_ARRAY_TASK_ID
 dataset='koza_1'
 config='koza_set1'
 
 echo "Running t-search with dataset=$dataset, config=$config, seed=$seed"
 
-python -m t_search \
+$HOME/t-search/t-search-env/bin/python -m t_search \
     --dataset $dataset \
     --config $HOME/t-search/configs/$config.json \
-    --output $WORK/t-search/$config-$dataset-results.jsonlist \
+    --output $WORK_BGFS/t-search/$config-$dataset-results.jsonlist \
     --device cuda \
     --dtype float32 \
     --seed $seed

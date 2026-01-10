@@ -1,6 +1,7 @@
 """ GP solver, configurable with different operators
 """
 
+import fcntl
 from functools import partial
 import inspect
 from time import perf_counter
@@ -483,10 +484,15 @@ def save_metrics_to_json(metrics: dict, filepath: str):
         raise TypeError(f"Type {type(obj)} not serializable")
 
     with open(filepath, "a") as f:
-        json.dump(metrics, f, indent=4, default=metrics_serializer)
-        # adding newline 
-        f.write("\n")
-
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:        
+            json.dump(metrics, f, indent=4, default=metrics_serializer)
+            # adding newline 
+            f.write("\n")
+            f.flush()  # Ensure data is written to disk
+        finally:
+            # Release lock (happens automatically on close, but explicit is clearer)
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 def config_pipeline(*, dataset:str, config: str, output="koza-{}.json", device='cuda', 
                     dtype='float16', seed=42, debug: bool = False):
     
