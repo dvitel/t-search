@@ -13,7 +13,7 @@ from t_search.evaluators.semantics import Semantics
 from t_search.operators.listeners import EvalListener
 from t_search.operators.operator import Operator
 from t_search.syntax.evaluation import evaluate
-from t_search.syntax.term import Term
+from t_search.syntax.term import Term, Value, Variable
 from t_search.utils import EvSearchTermination, stack_rows
 
 
@@ -100,6 +100,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         # self.eval_fn = eval_fn
         self.add_metrics = add_metrics
         self.is_cuda = device.type == 'cuda'
+        self.evals_simple: int = 0 # count of 1 node evals (consts, free vars)
         self.eval_cache_hits: int = 0
         self.eval_cache_miss: int = 0
 
@@ -167,6 +168,8 @@ class DefaultEvaluator(Evaluator, ServiceBase):
     def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:
         term_semantics = self.semantics.get_binding(term)
         if term_semantics is not None:
+            if isinstance(term, (Variable, Value)):
+                self.evals_simple += 1
             self.eval_cache_hits += 1
             return term_semantics
         if term in self.new_term_outputs:
@@ -373,6 +376,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         return {
             'iter_evals': [self.evals],
             'iter_root_evals': [self.root_evals],
+            'iter_evals_simple': [self.evals_simple],
             'iter_eval_calls': [self.eval_calls],
             'iter_eval_cache_hits': [self.eval_cache_hits],
             'iter_eval_cache_miss': [self.eval_cache_miss],

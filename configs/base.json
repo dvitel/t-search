@@ -48,6 +48,15 @@
                 "listeners": [
                 ]                
             }
+        },
+        "reducer": {
+            "type": "Reduce",
+            "module": "t_search.operators.syntax",
+            "params": {
+                "syntax": {"!ref": "syntax"},
+                "evaluator": {"!ref": "evaluator"},
+                "rate": 1.0
+            }
         }
     },
     "evaluator_service_name": "evaluator",

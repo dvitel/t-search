@@ -4,6 +4,7 @@
 import fcntl
 from functools import partial
 import inspect
+import os
 from time import perf_counter
 from typing import Any, Callable, Literal, Sequence, Type
 
@@ -15,6 +16,7 @@ from t_search.evaluators.fitness import Fitness, nmse_loss_builder
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.initialization import Initialization
 from t_search.operators.listeners import GenListener
+from t_search.operators.syntax.reduce import Reduce
 from t_search.solver_utils import get_method_params, read_config, register_services
 from t_search.syntax.syntax import Syntax
 from t_search.syntax.term import Value, Variable
@@ -388,6 +390,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         return False
     
     def on_end(self):
+
         
         self.add_metrics(
             gen = self.gen,
@@ -399,6 +402,18 @@ class GPSolver(BaseEstimator, RegressorMixin):
             best_term_depth=self.syntax.get_depth(self.fitness.best_term) if self.fitness.best_term is not None else None,
             best_term_size=self.syntax.get_size(self.fitness.best_term) if self.fitness.best_term is not None else None
         )
+
+        # if "reducer" in self.services and isinstance(self.services["reducer"], Reduce): # also output reduced final best term for comparison
+        #     reducer: Reduce = self.services["reducer"]
+        #     reduced_best_term = reducer.mutate_term(self.fitness.best_term)
+        #     if reduced_best_term is not None:
+        #         reduced_best_term_depth = self.syntax.get_depth(reduced_best_term)
+        #         reduced_best_term_size = self.syntax.get_size(reduced_best_term)
+        #         self.add_metrics(
+        #             reduced_best_term=reduced_best_term,
+        #             reduced_best_term_depth=reduced_best_term_depth,
+        #             reduced_best_term_size=reduced_best_term_size
+        #         )
 
         finalizers = []
         for service in self.services.values():
@@ -486,7 +501,7 @@ def save_metrics_to_json(metrics: dict, filepath: str):
     with open(filepath, "a") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         try:        
-            json.dump(metrics, f, indent=4, default=metrics_serializer)
+            json.dump(metrics, f, default=metrics_serializer)
             # adding newline 
             f.write("\n")
             f.flush()  # Ensure data is written to disk
@@ -535,7 +550,8 @@ def config_pipeline(*, dataset:str, config: str, output="koza-{}.json", device='
 
     nmse_fn = nmse_loss_builder(target_test)
     nmse = nmse_fn(y_pred).item()
-    metrics = {'test_nmse':nmse, "seed":seed, **solver.get_metrics(), "config":config, "dataset":dataset}
+    file_name = os.path.basename(config).split(".")[0]
+    metrics = {"config_name":file_name, "dataset":dataset, 'test_nmse':nmse, "seed":seed, **solver.get_metrics(), "config":config}
     save_metrics_to_json(metrics, output)
     pass
 
