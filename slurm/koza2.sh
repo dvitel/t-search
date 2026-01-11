@@ -1,8 +1,8 @@
 #!/bin/bash 
-#SBATCH --job-name=K1
+#SBATCH --job-name=K2
 #SBATCH --time=72:00:00
-#SBATCH --output=K1-%a.out
-#SBATCH --error=K1-%a.out
+#SBATCH --output=K2-%a.out
+#SBATCH --error=K2-%a.out
 #SBATCH --mem=32G
 #SBATCH -p snsm_itn19
 #SBATCH --gpus=1 # 1 GPU
