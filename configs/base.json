@@ -9,7 +9,7 @@
             "params": {
                 "syntax": {"!ref": "syntax"},
                 "fitness_name": "nmse",
-                "fitness_atol": 1e-04
+                "fitness_atol": 1e-07
             }
         },        
         "semantics": {

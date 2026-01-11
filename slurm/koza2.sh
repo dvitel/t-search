@@ -1,29 +1,30 @@
 #!/bin/bash 
-#SBATCH --job-name=koza1
+#SBATCH --job-name=K1
 #SBATCH --time=72:00:00
-#SBATCH -D $WORK/t-search
-#SBATCH --output=$WORK/t-search/koza1.out
+#SBATCH --output=K1-%a.out
+#SBATCH --error=K1-%a.out
 #SBATCH --mem=32G
 #SBATCH -p snsm_itn19
 #SBATCH --gpus=1 # 1 GPU
-#SBATCH --array=0-29%5
+#SBATCH --array=0-29
 
 ## SBATCH --open-mode=append
 
-conda activate $HOME/t-search/t-search-env 
+module purge
+
+config='koza_set2'
 
 seed=$SLURM_ARRAY_TASK_ID
-dataset='koza_1'
-config='koza_set1'
+datasets=('koza_1' 'koza_2' 'koza_3' 'nguyen_1' 'nguyen_2' 'nguyen_3' 'nguyen_4' 'nguyen_5' 'nguyen_6' 'nguyen_7' 'nguyen_8' 'nguyen_9' 'nguyen_10' 'pagie_1' 'pagie_2' 'korns_1' 'korns_2' 'korns_3' 'korns_4' 'korns_5' 'korns_6' 'korns_7' 'korns_8' 'korns_9' 'korns_10' 'korns_11' 'korns_12' 'korns_13' 'korns_14' 'korns_15' 'keijzer_1' 'keijzer_2' 'keijzer_3' 'keijzer_4' 'keijzer_5' 'keijzer_6' 'keijzer_7' 'keijzer_8' 'keijzer_9' 'keijzer_10' 'keijzer_11' 'keijzer_12' 'keijzer_13' 'keijzer_14' 'keijzer_15' 'vladislavleva_1' 'vladislavleva_2' 'vladislavleva_3' 'vladislavleva_4' 'vladislavleva_5' 'vladislavleva_6' 'vladislavleva_7' 'vladislavleva_8')
 
-echo "Running t-search with dataset=$dataset, config=$config, seed=$seed"
+for dataset in "${datasets[@]}"; do
+    echo "Running t-search with dataset=$dataset, config=$config, seed=$seed"
 
-python -m t_search \
-    --dataset $dataset \
-    --config $HOME/t-search/configs/$config.json \
-    --output $WORK/t-search/$config-$dataset-results.jsonlist \
-    --device cuda \
-    --dtype float32 \
-    --seed $seed
-
-#srun --partition=snsm_itn19 --mem=4gb --time=01:00:00 --gpus=1 --pty bash -i
+    $HOME/t-search/t-search-env/bin/python -m t_search \
+        --dataset $dataset \
+        --config $HOME/t-search/configs/$config.json \
+        --output $WORK_BGFS/t-search/results.jsonlist \
+        --device cuda \
+        --dtype float32 \
+        --seed $seed
+done 
