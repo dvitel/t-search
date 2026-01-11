@@ -2,7 +2,6 @@
 
 import torch
 
-from t_search.datasets.sampling import get_interval_grid
 from t_search.evaluators.evaluator import Evaluator
 from t_search.syntax.syntax import Syntax
 from .optimizer import Optimizer

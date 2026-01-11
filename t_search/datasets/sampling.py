@@ -112,7 +112,9 @@ def get_interval_grid(
 ) -> torch.Tensor:
     grid_values = get_interval_points(steps, ranges, deltas, rand_deltas, generator)
     grid = get_full_grid(grid_values)
-    return grid
+    grid_t = grid.t()
+    del grid
+    return grid_t
 
 
 # t6 = get_interval_grid(0.5, torch.tensor([[1, 2], [3, 4], [5, 6]]))
