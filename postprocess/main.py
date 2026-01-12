@@ -27,15 +27,17 @@ def load(source: str, metric: str) -> pd.DataFrame:
     df = pd.DataFrame.from_records(data)
     return df
 
-def draw_table(input: str, metric: str = "test_nmse", transpose:bool=False) -> None:
+def draw_table(input: str, 
+               metric: str = "test_nmse", 
+               transpose:bool=False) -> None:
     ''' Builds table of setting vs dataset with mean +- std in the cell for a given metric '''
-    df = load(source=input, fields=[metric])
+    df = load(source=input, metric=metric)
     summary = df.groupby(["cfg", "dataset"])["metric"].agg(["mean","std"]).reset_index()
     # Format as "mean ± std"
     summary["metric_summary"] = summary.apply(lambda row: f"{row['mean']:.3f} $\pm$ {row['std']:.2f}", axis=1)
 
     # Select only the columns for the table
-    table_data = summary[["cfg","dataset","metric_summary"]]
+    # table_data = summary[["cfg","dataset","metric_summary"]]
 
     # Generate LaTeX table using tabulate
     # latex_table = tabulate(table_data, headers="keys", tablefmt="latex_booktabs", showindex=False)
@@ -74,5 +76,8 @@ def draw_chart(input: str, metric: str = "iter_fitness",
 #     pass 
 
 if __name__ == "__main__":
-    draw_chart(input="data/raw/tst.jsonlist",
-               output="data/charts/koza_2.pdf")
+    draw_table(input="data/raw/tst2.jsonlist",
+               metric="test_nmse",
+               transpose=True)
+    # draw_chart(input="data/raw/tst2.jsonlist",
+    #            output="data/charts/koza_2.pdf")

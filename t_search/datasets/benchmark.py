@@ -64,16 +64,22 @@ class Benchmark:
         signature = inspect.signature(sample_fn)
         if "generator" in signature.parameters:
             prepared_args["generator"] = generator
-        free_vars_full = sample_fn(**prepared_args)
-        free_var_dims = free_vars_full.shape[1]
+        free_vars_full = sample_fn(**prepared_args)    
+        gold_outputs_full = self.fn(*free_vars_full)    
+        valid_mask = torch.isfinite(gold_outputs_full)
+        free_vars_valid = free_vars_full[:, valid_mask]
+        gold_outputs_valid = gold_outputs_full[valid_mask]
+        del free_vars_full, gold_outputs_full, valid_mask
+        free_var_dims = free_vars_valid.shape[1]
         if max_dim_size is not None and free_var_dims > max_dim_size:
             rand_dim_ids_order = torch.randperm(free_var_dims, generator=generator, dtype=torch.long, device=device)
             rand_dim_ids = rand_dim_ids_order[:max_dim_size]
-            free_vars = free_vars_full[:, rand_dim_ids]
-            del free_vars_full, rand_dim_ids_order, rand_dim_ids
+            free_vars = free_vars_valid[:, rand_dim_ids]
+            gold_outputs = gold_outputs_valid[rand_dim_ids]
+            del free_vars_valid, rand_dim_ids_order, rand_dim_ids, gold_outputs_valid
         else:
-            free_vars = free_vars_full
-        gold_outputs = self.fn(*free_vars)
+            free_vars = free_vars_valid
+            gold_outputs = gold_outputs_valid
         if sorted:
             indices = lexsort(free_vars)
             new_free_vars = free_vars[:, indices]

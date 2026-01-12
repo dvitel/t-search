@@ -553,10 +553,20 @@ def config_pipeline(*, dataset:str, config: str, output="koza-{}.json", device='
     free_vars_test, target_test = ds.sample_set("test", device=device, dtype=dtype, generator=torch_gen, sorted=True)
     y_pred = solver.predict(free_vars_test)
 
-    nmse_fn = nmse_loss_builder(target_test)
-    nmse = nmse_fn(y_pred).item()
+    y_pred_valid_mask = torch.isfinite(y_pred)
+    num_invalid = (~y_pred_valid_mask).sum().item()
+    y_pred_valid = y_pred[y_pred_valid_mask]
+    target_test_valid = target_test[y_pred_valid_mask]
+    nmse_fn = nmse_loss_builder(target_test_valid)
+    nmse = nmse_fn(y_pred_valid).item()
     file_name = os.path.basename(config).split(".")[0]
-    metrics = {"config_name":file_name, "dataset":dataset, 'test_nmse':nmse, "seed":seed, **solver.get_metrics(), "config":config}
+    metrics = {
+        "config_name":file_name, 
+        "dataset":dataset, 
+        'test_nmse':nmse, 
+        'test_pred_num_invalid': num_invalid,
+        "seed":seed, **solver.get_metrics(), 
+        "config":config}
     save_metrics_to_json(metrics, output)
     pass
 
