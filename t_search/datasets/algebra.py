@@ -1,7 +1,7 @@
 import torch
-from .sampling import get_interval_grid, get_rand_points
-from .benchmark import Benchmark
 
+from t_search.datasets.benchmark import Benchmark
+from t_search.datasets.sampling import get_interval_grid, get_rand_points
 
 test_0 = Benchmark("test_0", lambda x: x + 1.367, get_rand_points, {"num_samples": 20, "ranges": [(-1.0, 1.0)]})
 
@@ -203,9 +203,21 @@ keijzer_5 = Benchmark(
     {"num_samples": 10000, "ranges": [[-1.0, 1.0], [1.0, 2.0], [-1.0, 1.0]]},
 )
 
+def keijzer_6_fn(x: torch.Tensor):
+    x_fl = torch.floor(x)
+    x_fl_l = x_fl.to(torch.int64)
+    ys = []
+    for n in x_fl_l.tolist():
+        y = torch.sum(1.0 / torch.arange(1, n + 1, device=x.device, dtype=x.dtype))
+        ys.append(y)
+    res = torch.stack(ys)
+    del x_fl, x_fl_l
+    return res
+
 keijzer_6 = Benchmark(
     "keijzer_6",
-    lambda *xs: torch.stack([torch.sum(1.0 / torch.arange(1, torch.floor(x) + 1)) for x in xs]),
+    # lambda *xs: torch.stack([torch.sum(1.0 / torch.arange(1, torch.floor(x) + 1)) for x in xs]),
+    keijzer_6_fn,
     get_interval_grid,
     {"steps": 1.0, "ranges": [[1.0, 50.0]]},
     get_interval_grid,
@@ -328,9 +340,17 @@ vladislavleva_3 = Benchmark(
     {"steps": [0.05, 0.5], "ranges": [[-0.5, 10.5], [-0.5, 10.5]]},
 )
 
+def vladislavleva_4_fn(*xs: torch.Tensor):
+    sm = 0 
+    for x in xs:
+        sm = sm + (x - 3.0) ** 2
+    y = 10.0 / (5.0 + sm)
+    return y
+
 vladislavleva_4 = Benchmark(
     "vladislavleva_4",
-    lambda *xs: 10.0 / (5.0 + torch.sum((xs - 3.0) ** 2, axis=0)),
+    # lambda *xs: 10.0 / (5.0 + torch.sum((xs - 3.0) ** 2, axis=0)),
+    vladislavleva_4_fn,
     get_rand_points,
     {"num_samples": 1024, "ranges": [[0.05, 6.05]] * 5},
     get_rand_points,
@@ -376,7 +396,6 @@ vladislavleva_8 = Benchmark(
     get_interval_grid,
     {"steps": [0.2, 0.2], "ranges": [[-0.25, 6.35], [-0.25, 6.35]]},
 )
-
 
 # all_benchmarks = [
 #     koza_1,

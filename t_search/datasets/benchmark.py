@@ -26,7 +26,7 @@ class Benchmark:
         self.train_args: dict[str, Any] = {} if train_args is None else train_args
         self.test_sampling: Optional[Callable] = test_sampling
         self.test_args: Optional[dict[str, Any]] = test_args
-        self.sampled = {}
+        # self.sampled = {}
 
     def with_train_sampling(self, train_sampling=None, **kwargs):
         return Benchmark(
@@ -50,11 +50,12 @@ class Benchmark:
         dtype=torch.float32,
         generator: torch.Generator | None = None,
         sorted=False,
+        max_dim_size: Optional[int] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if set_name in self.sampled:
-            return self.sampled[set_name]
+        # if set_name in self.sampled:
+        #     return self.sampled[set_name]
         if set_name == "test" and self.test_sampling is None:
-            return self.sample_set("train", device)
+            return self.sample_set("train", device, dtype, generator, sorted, max_dim_size)
         sample_args = self.train_args if set_name == "train" else self.test_args
         prepared_args = {
             k: (torch.tensor(v, device=device, dtype=dtype) if type(v) is list else v) for k, v in sample_args.items()
@@ -63,7 +64,15 @@ class Benchmark:
         signature = inspect.signature(sample_fn)
         if "generator" in signature.parameters:
             prepared_args["generator"] = generator
-        free_vars = sample_fn(**prepared_args)
+        free_vars_full = sample_fn(**prepared_args)
+        free_var_dims = free_vars_full.shape[1]
+        if max_dim_size is not None and free_var_dims > max_dim_size:
+            rand_dim_ids_order = torch.randperm(free_var_dims, generator=generator)
+            rand_dim_ids = rand_dim_ids_order[:max_dim_size]
+            free_vars = free_vars_full[:, rand_dim_ids]
+            del free_vars_full, rand_dim_ids_order, rand_dim_ids
+        else:
+            free_vars = free_vars_full
         gold_outputs = self.fn(*free_vars)
         if sorted:
             indices = lexsort(free_vars)
@@ -72,5 +81,5 @@ class Benchmark:
             del free_vars, gold_outputs
             free_vars = new_free_vars
             gold_outputs = new_gold_outputs
-        self.sampled[set_name] = (free_vars, gold_outputs)
+        # self.sampled[set_name] = (free_vars, gold_outputs)
         return free_vars, gold_outputs

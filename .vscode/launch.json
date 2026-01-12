@@ -12,6 +12,22 @@
             "console": "integratedTerminal"
         },
         {
+            "name": "All DS",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "t_search.datasets",
+            "args": [
+                "--list-ds",
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "DEBUG_SOLVER": "1"
+            },
+            "stopOnEntry": false
+        },        
+        {
             "name": "Koza set1",
             "type": "debugpy",
             "request": "launch",
@@ -39,7 +55,7 @@
             "request": "launch",
             "module": "t_search",
             "args": [
-                "--dataset", "koza_2",
+                "--dataset", "pagie_1",
                 "--config", "configs/koza_set2.json",
                 "--output", "data/results.jsonlist",
                 "--device", "cuda",

@@ -4,10 +4,8 @@ from typing import Callable, Literal, Optional
 
 import torch
 
-from t_search.datasets.sampling import get_interval_grid, get_rand_interval_points
-from t_search.syntax import Term, TermPos, Value, evaluate
-from t_search.syntax.generation import Builders
-from t_search.syntax.replacement import replace_fn, replace_pos
+from t_search.datasets.sampling import get_rand_interval_points
+from t_search.syntax import Term, Value
 from t_search.syntax.term import Variable
 
 

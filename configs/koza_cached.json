@@ -1,4 +1,5 @@
 {
+    "!base": "./base.json",
     "service_definitions": {
         "identity": {
             "type": "IdentityNormalizer",
@@ -42,7 +43,7 @@
             "params": {
                 "semantics": {"!ref": "semantics"},
                 "fitness": {"!ref": "fitness"},                
-                "with_inner_evals": false,
+                "with_inner_evals": true,
                 "max_root_evals": 100000,
                 "max_evals": 1000000,
                 "listeners": [
@@ -57,12 +58,57 @@
                 "evaluator": {"!ref": "evaluator"},
                 "rate": 1.0
             }
+        },        
+        "init": {
+            "type": "RHH", 
+            "module": "t_search.operators.classic",
+            "params": { "size": 1000 } 
+        },
+        "selection": { 
+            "type": "TS", 
+            "module": "t_search.operators.classic",
+            "params": { "selection_size": 1000, "tournament_size": 7 } 
+        },
+        "mutation": { 
+            "type": "RPM", 
+            "module": "t_search.operators.classic",
+            "params": { "rate": 0.1 } 
+        },
+        "crossover": { 
+            "type": "RPX", 
+            "module": "t_search.operators.classic",
+            "params": { "rate": 0.9 } 
+        },
+        "survivor_selection": { 
+            "type": "MuLambdaSurvivorSelection", 
+            "module": "t_search.operators.classic",
+            "params": { 
+                "evaluator": {"!ref": "evaluator"},
+                "mu": 1000, 
+                "strict": false, 
+                "combine": false,
+                "elitism": 10
+            } 
+        },
+        "reduce_consts": {
+            "type": "ReduceConsts",
+            "module": "t_search.operators.syntax",
+            "params": {
+                "evaluator": {"!ref": "evaluator"},
+                "semantics": {"!ref": "semantics"},
+                "syntax": {"!ref": "syntax"},
+                "rate": 1.0
+            }
         }
     },
-    "evaluator_service_name": "evaluator",
-    "syntax_service_name": "syntax",
-    "fitness_service_name": "fitness",
-    "semantics_service_name": "semantics",    
-    "max_gen": 100,
+    "init_service_name": "init",
+    "operator_service_names": [        
+        "selection",
+        "mutation",
+        "crossover",
+        "evaluator",
+        "survivor_selection"
+    ],
+    "ops": ["add", "mul", "neg", "inv", "exp", "log", "sin", "cos"],
     "max_dim_size": 1000
 }

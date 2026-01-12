@@ -508,6 +508,7 @@ def save_metrics_to_json(metrics: dict, filepath: str):
         finally:
             # Release lock (happens automatically on close, but explicit is clearer)
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
 def config_pipeline(*, dataset:str, config: str, output="koza-{}.json", device='cuda', 
                     dtype='float16', seed=42, debug: bool = False):
     
@@ -530,9 +531,13 @@ def config_pipeline(*, dataset:str, config: str, output="koza-{}.json", device='
     rnd = np.random.default_rng(seed)
     torch_gen = torch.Generator(device=device)
     torch_gen.manual_seed(seed)
+    max_dim_size = kwargs.pop("max_dim_size", None)
 
     ds: datasets.Benchmark = getattr(datasets, dataset)
-    free_vars, target = ds.sample_set("train", device=device, dtype=dtype, generator=torch_gen, sorted=True)
+    free_vars, target = ds.sample_set("train", device=device, dtype=dtype, generator=torch_gen, sorted=True,
+                                        max_dim_size=max_dim_size)
+    
+    print(f"Solving {dataset} with {config}. Free vars shape: {free_vars.shape}")
 
     solver = GPSolver(
         device=device,
@@ -566,7 +571,7 @@ def args_pipeline():
     parser.add_argument('--dtype', type=str, default='float16')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
-    # parser.add_argument() 
+    # parser.add_argument()     
 
     args = parser.parse_args()
     
