@@ -67,7 +67,7 @@ class Benchmark:
         free_vars_full = sample_fn(**prepared_args)
         free_var_dims = free_vars_full.shape[1]
         if max_dim_size is not None and free_var_dims > max_dim_size:
-            rand_dim_ids_order = torch.randperm(free_var_dims, generator=generator)
+            rand_dim_ids_order = torch.randperm(free_var_dims, generator=generator, dtype=torch.long, device=device)
             rand_dim_ids = rand_dim_ids_order[:max_dim_size]
             free_vars = free_vars_full[:, rand_dim_ids]
             del free_vars_full, rand_dim_ids_order, rand_dim_ids

@@ -55,7 +55,7 @@
             "request": "launch",
             "module": "t_search",
             "args": [
-                "--dataset", "pagie_1",
+                "--dataset", "pagie_2",
                 "--config", "configs/koza_set2.json",
                 "--output", "data/results.jsonlist",
                 "--device", "cuda",
