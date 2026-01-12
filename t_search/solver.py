@@ -250,18 +250,18 @@ class GPSolver(BaseEstimator, RegressorMixin):
                 # raise ValueError(f"Cannot build service '{service_name}': missing parameters {left_params}")
                 return None # postpone building
                 
-            if self.debug:
-                print(f"Building {service_name}:{service_cls.__name__}:")
-                for k, v in service_context.items():
-                    if k == "add_metrics":
-                        print(f"\t{k}: <function>")
-                    else:
-                        print(f"\t{k}: {v}")
-                if len(default_params) > 0:
-                    print(f"---- Default params:")
-                    for k, v in default_params.items():
-                        print(f"\t{k}: {v}")
-                print(f"--------------------------------")
+            # if self.debug:
+            print(f"Building {service_name}:{service_cls.__name__}:")
+            for k, v in service_context.items():
+                if k == "add_metrics":
+                    print(f"\t{k}: <function>")
+                else:
+                    print(f"\t{k}: {v}")
+            if len(default_params) > 0:
+                print(f"---- Default params:")
+                for k, v in default_params.items():
+                    print(f"\t{k}: {v}")
+            print(f"--------------------------------")
             service = service_cls(**service_context)
             return service
 
