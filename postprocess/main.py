@@ -76,8 +76,12 @@ def draw_chart(input: str, metric: str = "iter_fitness",
 #     pass 
 
 if __name__ == "__main__":
-    draw_table(input="data/raw/tst2.jsonlist",
-               metric="test_nmse",
-               transpose=True)
+    data = load(source="data/results.jsonlist", metric="final_time")
+    data["metric"] = data["metric"] / 60.0 / 1000.0  # convert to minutes
+    print(data)
+    pass
+    # draw_table(input="data/raw/tst2.jsonlist",
+    #            metric="test_nmse",
+    #            transpose=True)
     # draw_chart(input="data/raw/tst2.jsonlist",
     #            output="data/charts/koza_2.pdf")

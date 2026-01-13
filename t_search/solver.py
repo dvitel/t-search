@@ -565,6 +565,8 @@ def config_pipeline(*, dataset:str, config: str, output="koza-{}.json", device='
         "dataset":dataset, 
         'test_nmse':nmse, 
         'test_pred_num_invalid': num_invalid,
+        'test_num_samples': target_test.shape[0],
+        'train_num_samples': target.shape[0],
         "seed":seed, **solver.get_metrics(), 
         "config":config}
     save_metrics_to_json(metrics, output)

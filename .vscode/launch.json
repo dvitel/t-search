@@ -33,9 +33,9 @@
             "request": "launch",
             "module": "t_search",
             "args": [
-                "--dataset", "koza_1",
+                "--dataset", "korns_9",
                 "--config", "configs/koza_set1.json",
-                "--output", "data/results.jsonlist",
+                "--output", "data/dbg.jsonlist",
                 "--device", "cuda",
                 "--dtype", "float32",
                 "--seed", "42",
@@ -57,7 +57,7 @@
             "args": [
                 "--dataset", "pagie_2",
                 "--config", "configs/koza_set2.json",
-                "--output", "data/results.jsonlist",
+                "--output", "data/dbg.jsonlist",
                 "--device", "cuda",
                 "--dtype", "float32",
                 "--seed", "42",

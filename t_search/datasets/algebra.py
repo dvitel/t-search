@@ -27,6 +27,20 @@ koza_3 = Benchmark(
     {"num_samples": 20, "ranges": [(-1.0, 1.0)]},
 )
 
+r_1 = Benchmark(
+    "r_1",
+    lambda x: (x + 1.0) * (x + 1.0) * (x + 1.0) / (x * x - x + 1.0),
+    get_rand_points,
+    {"num_samples": 20, "ranges": [(-1.0, 1.0)]},
+)
+
+r_2 = Benchmark(
+    "r_2",
+    lambda x: (x * x * x * x * x - 3.0 * x * x * x + 1.0) / (x * x + 1.0),
+    get_rand_points,
+    {"num_samples": 20, "ranges": [(-1.0, 1.0)]},
+)
+
 nguyen_1 = Benchmark(
     "nguyen_1", lambda x: x * x * x + x * x + x, get_rand_points, {"num_samples": 20, "ranges": [(-1.0, 1.0)]}
 )
@@ -90,6 +104,20 @@ nguyen_10 = Benchmark(
     {"num_samples": 100, "ranges": [(0.0, 1.0), (0.0, 1.0)]},
 )
 
+nguyen_11 = Benchmark(
+    "nguyen_11",
+    lambda x, y: torch.float_power(x, y),
+    get_rand_points,
+    {"num_samples": 100, "ranges": [(0.0, 1.0), (0.0, 1.0)]}    
+)
+
+nguyen_12 = Benchmark(
+    "nguyen_12",
+    lambda x, y: x*x*x*x - x*x*x + (y*y)/2.0 - y,
+    get_rand_points,
+    {"num_samples": 100, "ranges": [(0.0, 1.0), (0.0, 1.0)]}    
+)
+
 pagie_1 = Benchmark(
     "pagie_1",
     lambda x, y: 1.0 / (1.0 + 1.0 / (x * x * x * x)) + 1.0 / (1.0 + 1.0 / (y * y * y * y)),
@@ -124,7 +152,10 @@ korns_7 = Benchmark(
 )
 korns_8 = Benchmark("korns_8", lambda *xs: 6.87 + (11.0 * torch.sqrt(7.23 * xs[0] * xs[3] * xs[4])), *korns_sampling)
 korns_9 = Benchmark(
-    "korns_9", lambda *xs: torch.sqrt(xs[0]) / torch.log(xs[1]) * torch.exp(xs[2]) / (xs[3] * xs[3]), *korns_sampling
+    "korns_9", 
+    lambda *xs: torch.sqrt(xs[0]) / torch.log(xs[1]) * torch.exp(xs[2]) / (xs[3] * xs[3]), 
+    *korns_sampling,
+    # limit_var=(1e-4, 1e4)
 )
 korns_10 = Benchmark(
     "korns_10",
@@ -156,6 +187,7 @@ korns_15 = Benchmark(
     "korns_15",
     lambda *xs: 12.0 - (6.0 * ((torch.tan(xs[0]) / torch.exp(xs[1])) * (torch.log(xs[2]) - torch.tan(xs[3])))),
     *korns_sampling,
+    # limit_var=(1e-4, 1e4)
 )
 
 keijzer_1 = Benchmark(
@@ -187,7 +219,7 @@ keijzer_3 = Benchmark(
 
 keijzer_4 = Benchmark(
     "keijzer_4",
-    lambda x: x * torch.exp(-x) * torch.cos(x) * torch.sin(x) * (torch.sin(x) * torch.sin(x) * torch.cos(x) - 1),
+    lambda x: x * torch.exp(-x) * torch.cos(x) * torch.sin(x) * (torch.sin(x) * torch.sin(x) * torch.cos(x) - 1.0),
     get_interval_grid,
     {"steps": 0.05, "ranges": [[0.0, 10.0]]},
     get_interval_grid,
@@ -411,6 +443,8 @@ vladislavleva_8 = Benchmark(
 #     nguyen_8,
 #     nguyen_9,
 #     nguyen_10,
+#     nguyen_11,
+#     nguyen_12,
 #     pagie_1,
 #     pagie_2,
 #     korns_1,

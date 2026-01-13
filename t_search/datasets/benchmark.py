@@ -17,6 +17,8 @@ class Benchmark:
         train_args: dict[str, Any] = None,
         test_sampling: Optional[Callable] = None,
         test_args: Optional[dict[str, Any]] = None,
+        # limit_var: Optional[tuple[float, float]] = None,
+        limit_y: float = 1e6,
     ):
         self.name = name
         if name is None:
@@ -26,6 +28,8 @@ class Benchmark:
         self.train_args: dict[str, Any] = {} if train_args is None else train_args
         self.test_sampling: Optional[Callable] = test_sampling
         self.test_args: Optional[dict[str, Any]] = test_args
+        # self.limit_var = limit_var
+        self.limit_y = limit_y
         # self.sampled = {}
 
     def with_train_sampling(self, train_sampling=None, **kwargs):
@@ -67,6 +71,10 @@ class Benchmark:
         free_vars_full = sample_fn(**prepared_args)    
         gold_outputs_full = self.fn(*free_vars_full)    
         valid_mask = torch.isfinite(gold_outputs_full)
+        if self.limit_y is not None:
+            gold_outputs_full_abs = gold_outputs_full.abs()
+            valid_mask &= (gold_outputs_full_abs <= self.limit_y)
+            del gold_outputs_full_abs
         free_vars_valid = free_vars_full[:, valid_mask]
         gold_outputs_valid = gold_outputs_full[valid_mask]
         del free_vars_full, gold_outputs_full, valid_mask
