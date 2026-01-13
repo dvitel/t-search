@@ -24,7 +24,7 @@ for dataset in "${datasets[@]}"; do
         --dataset $dataset \
         --config $HOME/t-search/configs/$config.json \
         --output $WORK_BGFS/t-search/results.jsonlist \
-        --device cuda \
+        --device cpu \
         --dtype float32 \
         --seed $seed
 done 
