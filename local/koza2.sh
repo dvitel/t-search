@@ -6,7 +6,8 @@ seed=0
 # datasets=('korns_3' 'korns_4' 'korns_5' 'korns_6' 'korns_7' 'korns_8' 'korns_9' 'korns_10' 'korns_11' 'korns_12' 'korns_13' 'korns_14' 'korns_15' 'keijzer_1' 'keijzer_2' 'keijzer_3' 'keijzer_4' 'keijzer_5' 'keijzer_6' 'keijzer_7' 'keijzer_8' 'keijzer_9' 'keijzer_10' 'keijzer_11' 'keijzer_12' 'keijzer_13' 'keijzer_14' 'keijzer_15' 'vladislavleva_1' 'vladislavleva_2' 'vladislavleva_3' 'vladislavleva_4' 'vladislavleva_5' 'vladislavleva_6' 'vladislavleva_7' 'vladislavleva_8')
 # datasets=('nguyen_11' 'nguyen_12')
 # datasets=('korns_9' 'korns_15')
-datasets=('r_1' 'r_2' 'keijzer_3' 'keijzer_4' 'keijzer_11' 'nguyen_12' 'pagie_1' 'vladislavleva_1' 'koza_3' 'keijzer_6' 'vladislavleva_8' 'korns_13' 'korns_14' 'korns_15')
+# datasets=('r_1' 'r_2' 'keijzer_3' 'keijzer_4' 'keijzer_11' 'nguyen_12' 'pagie_1' 'vladislavleva_1' 'koza_3' 'keijzer_6' 'vladislavleva_8' 'korns_13' 'korns_14' 'korns_15')
+datasets=('korns_13')
 
 for dataset in "${datasets[@]}"; do
     echo "====================================================================="
