@@ -4,8 +4,7 @@
 #SBATCH --output=K2-%a.out
 #SBATCH --error=K2-%a.out
 #SBATCH --mem=32G
-#SBATCH -p snsm_itn19
-#SBATCH --gpus=1 # 1 GPU
+#SBATCH -p general
 #SBATCH --array=0-29
 
 ## SBATCH --open-mode=append
