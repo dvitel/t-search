@@ -28,13 +28,13 @@
             "stopOnEntry": false
         },        
         {
-            "name": "Koza set1",
+            "name": "Point optim",
             "type": "debugpy",
             "request": "launch",
             "module": "t_search",
             "args": [
-                "--dataset", "korns_9",
-                "--config", "configs/koza_set1.json",
+                "--dataset", "test_0",
+                "--config", "configs/point_optim.json",
                 "--output", "data/dbg.jsonlist",
                 "--device", "cuda",
                 "--dtype", "float32",

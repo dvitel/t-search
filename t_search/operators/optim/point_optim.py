@@ -1,9 +1,13 @@
 
 
-from typing import Generator, Literal, Optional, Sequence
+from collections import deque
+from dataclasses import dataclass
+from typing import Callable, Generator, Literal, Optional, Sequence
 
+import numpy as np
 import torch
 
+from t_search.base import ServiceBase
 from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.fitness import Fitness
 from t_search.evaluators.optimization import OptimPoint, get_all_grads, optimize
@@ -15,11 +19,13 @@ from t_search.syntax import Term, TermPos
 from t_search.syntax.flow import shuffled_position_flow
 from t_search.syntax.syntax import Syntax
 
-# TODO: simplification: optimization of term only once - same in const optimization 
-# TODO: loss_threshold - may we move it outside core optimization loop? 
-# TODO: tabu list     
+@dataclass(frozen=True)
+class Hole:    
+    term: Term # parent 
+    position: TermPos # where is the hole
+    bindings: list[torch.Tensor] # possible bindings for the hole
             
-class PointOptim(Operator):
+class PointOptim(Operator, ServiceBase):
     ''' Position Optimization, adjust selected position with optimizer ''' 
     
     def __init__(self, *, 
@@ -30,7 +36,9 @@ class PointOptim(Operator):
                  fitness: Fitness,
                  semantics: Semantics,
                  evaluator: Evaluator,
+                 rnd: np.random.Generator,
                  torch_gen: torch.Generator,
+                 add_metrics: Callable,
                  position_strategy: Literal["rand_position_order", "shallow_to_deep_position_order", "best_grad_position_order"] = "rand_position_order",
                  term_strategy: Literal["rand_term_order", "best_term_order", "age_term_order"] = "rand_term_order",
                  improve_strategy: Literal["local_improve", "global_improve"] = "local_improve",
@@ -44,6 +52,8 @@ class PointOptim(Operator):
                  with_tabu: bool = True,
                  closer_to_points: bool = False,
                  closer_to_points_lambda: float = 1e-2,
+                 max_holes_to_create: int = 1, # one term can create multiple holes 
+                 max_hole_bindings: int = 1, # one hole can have multiple good bindings
                  **kwargs):
         super().__init__(**kwargs)
         self.term_hole_pairs = term_hole_pairs
@@ -56,14 +66,16 @@ class PointOptim(Operator):
         self.with_tabu = with_tabu
         self.position_strategy = getattr(self, position_strategy)  
         self.term_strategy = getattr(self, term_strategy)
-        self.term_position_orders: dict[Term, Generator[TermPos, None, None]] = {}
+        self.term_position_orders: dict[Term, deque] = {}
         self.term_age: dict[Term, int] = {} # num of attempted optimizations    
         self.tabu_positions: dict[Term, set[TermPos]] = {} # any position below the tabu position should be ignored
         self.improve_strategy = getattr(self, improve_strategy)
+        self.rnd = rnd
         self.torch_gen = torch_gen
         self.num_starts = num_starts
         self.range_delta = range_delta
         self.optim_term_cache: dict[tuple[Term, tuple[Term, int]], Term] = {}
+        self.tried_optim_terms: set[Term] = set()
         self.lr = lr
         self.max_evals = max_evals
         self.tolerance_change = tolerance_change
@@ -72,19 +84,36 @@ class PointOptim(Operator):
         self.default_loss_fn = evaluator.get_loss_fn()
         self.closer_to_points = closer_to_points
         self.closer_to_points_lambda = closer_to_points_lambda
+        self.add_metrics = add_metrics
+        self.max_holes_to_create = max_holes_to_create
+        self.max_hole_bindings = max_hole_bindings
 
-    def rand_position_order(self, term: Term) -> Optional[TermPos]:
+        #TODO
+        # 1. Metrics 
+        # 2. num_holes for one term - not just 1 - DONE
+        # 2.2 num_bindings - DONE
+        # 3. Const check for optimized hole.
+        # 4. testing on simple term
+
+        #metrics 
+        self.num_better_fills = 0 
+        self.num_total_fills = 0
+        self.num_holes_created = 0
+        self.num_terms_optimized = 0
+
+    def rand_position_order(self, term: Term) -> deque:
         positions = self.syntax.get_positions(term)
-        flow = shuffled_position_flow(positions, self.solver.torch_gen)
-        return flow
+        flow = shuffled_position_flow(positions, rnd=self.rnd)
+        q = deque(list(flow))
+        return q
 
-    def shallow_to_deep_position_order(self, term: Term) -> Generator[TermPos, None, None]:
+    def shallow_to_deep_position_order(self, term: Term) -> deque:
         term_positions = self.syntax.get_positions(term)
         ordered_positions = sorted(term_positions, key=lambda pos: pos.at_depth)
-        for position in ordered_positions:
-            yield position
+        q = deque(ordered_positions)
+        return q
 
-    def best_grad_position_order(self, term: Term) -> Generator[TermPos, None, None]:
+    def best_grad_position_order(self, term: Term) -> deque:
         term_positions = self.syntax.get_positions(term)
         # requires forward pass
         grads = get_all_grads(term, var_bindings=self.var_bindings, 
@@ -92,8 +121,8 @@ class PointOptim(Operator):
                       dtype=self.target.dtype, device=self.target.device)
         pos_grads = {pos:grads[(pos.term, pos.occur)].item() for pos in term_positions}
         ordered_positions = sorted(term_positions, key=lambda pos: pos_grads[pos], reverse=True) # highest grad first
-        for position in ordered_positions:
-            yield position
+        q = deque(ordered_positions)
+        return q
 
     def rand_term_order(self, population: list[Term]) -> Generator[Term, None, None]:
         size = len(population)
@@ -119,30 +148,26 @@ class PointOptim(Operator):
     def select_terms(self, population):
         return self.term_strategy(population)
 
-    def select_positions(self, term: Term) -> Generator[TermPos, None, None]:
+    def get_next_position(self, term: Term) -> Optional[TermPos]:
         if term not in self.term_position_orders:
             self.term_position_orders[term] = self.position_strategy(term)
         order = self.term_position_orders[term]        
-        if self.with_tabu:
+        while len(order) > 0:
+            pos = order.popleft()
             if term not in self.tabu_positions:
-                return order
+                return pos 
+            
             term_tabu = self.tabu_positions[term]
-            for pos in order:
-                is_in_tabu = False
-                cur_pos = pos 
-                while cur_pos is not None:
-                    if cur_pos in term_tabu:
-                        is_in_tabu = True
-                        break
-                    cur_pos = cur_pos.parent
-                if not is_in_tabu:
-                    yield pos
-        else:
-            return order
-        
-    def get_next_position(self, term: Term) -> Optional[TermPos]:
-        positions = self.select_positions(term)
-        return next(positions, default=None)
+            is_in_tabu = False
+            cur_pos = pos 
+            while cur_pos is not None:
+                if cur_pos in term_tabu:
+                    is_in_tabu = True
+                    break
+                cur_pos = cur_pos.parent
+            if not is_in_tabu:
+                return pos
+        return None # all positions tried   
 
     def _get_optim_state(self, term: Term, position: TermPos) -> tuple[Term, dict[OptimPoint, torch.Tensor], torch.Tensor] | None:
         ''' None is returned if term,position is already optimized '''
@@ -157,6 +182,9 @@ class PointOptim(Operator):
             return None
         optim_term = self.syntax.replace_fn(term, pos_to_optim_point)
         self.optim_term_cache[(term, (position.term, position.occur))] = optim_term
+        if optim_term in self.tried_optim_terms:
+            return None
+        self.tried_optim_terms.add(optim_term)        
 
         pos_outputs = self.semantics.get_outputs(position.term)
 
@@ -171,14 +199,17 @@ class PointOptim(Operator):
     
     def local_improve(self, orig_term: Term, best_loss: torch.Tensor) -> bool:        
         cur_loss = self.default_loss_fn(orig_term)
-        return (cur_loss - best_loss) > (self.min_loss_rtol * cur_loss)
+        where_improved = torch.where((cur_loss - best_loss) > (self.min_loss_rtol * cur_loss))[0]
+        return where_improved
     
     def global_improve(self, orig_term: Term, best_loss: torch.Tensor) -> bool:
         best_term = self.fitness.best_term
         if best_term is None:
             return True
         best_term_loss = self.default_loss_fn(best_term)
-        return (best_term_loss - best_loss) > (self.min_loss_rtol * best_term_loss)
+        where_imroved = torch.where((best_term_loss - best_loss) > (self.min_loss_rtol * best_term_loss))[0]
+        return where_imroved
+
     
     def get_optim_loss_fn(self, **kwargs) -> callable:
         if self.closer_to_points: # add term that attracts the search to existing points
@@ -193,39 +224,67 @@ class PointOptim(Operator):
             return optim_loss_fn
         return self.evaluator.get_loss_fn(**kwargs)
 
-    def create_hole(self, term: Term) -> tuple[Term, TermPos, torch.Tensor] | None:
-        ''' we optimize the term at position only once '''
+    def create_hole(self, term: Term) -> Hole | None:
+        ''' Takes one hole at a time, None if no holes left '''
 
-        position = self.get_next_position(term)
-        
-        optim_state = self._get_optim_state(term, position)
-        if optim_state is None: # already optimized 
-            return None, None, None
-        
-        optim_term, start_binding, start_range = optim_state
+        while True: # loop by whole optimization attempt
 
-        best_loss, best_binding = optimize(optim_term, start_range, start_binding,
-                 loss_fn_builder=self.evaluator.get_loss_fn,
-                 num_starts=self.num_starts,
-                 lr=self.lr,
-                 max_evals=self.max_evals,
-                 tolerance_change=self.tolerance_change,
-                 tolerance_grad=self.tolerance_grad,
-                 torch_gen=self.torch_gen
-                 )
-
-        if best_loss is None or not self.improve_strategy(term, best_loss): # cannot optimize
-            if self.with_tabu:
-                if term not in self.tabu_positions:
-                    self.tabu_positions[term] = set()
-                self.tabu_positions[term].add(position)
-            return None, None, None 
+            while True: # picking not yet optimized position
+                position = self.get_next_position(term)
+                if position is None:
+                    return None
+            
+                optim_state = self._get_optim_state(term, position)
+                if optim_state is not None: # already optimized 
+                    break            
         
-        point_best_binding = next(best_binding.values())
-        
-        # self.term_hole_pairs.register_holes([(term, position)], point_best_binding.unsqueeze(0))
+            optim_term, start_binding, start_range = optim_state
 
-        return (term, position, point_best_binding)
+            best_loss, best_binding = optimize(optim_term, start_range, start_binding,
+                    loss_fn_builder=self.evaluator.get_loss_fn,
+                    num_starts=self.num_starts,
+                    lr=self.lr,
+                    max_evals=self.max_evals,
+                    tolerance_change=self.tolerance_change,
+                    tolerance_grad=self.tolerance_grad,
+                    torch_gen=self.torch_gen,
+                    num_best_binings=self.max_hole_bindings
+                    )
+            
+            if best_loss is None: 
+                if self.with_tabu:
+                    if term not in self.tabu_positions:
+                        self.tabu_positions[term] = set()
+                    self.tabu_positions[term].add(position)
+                continue # try next position                
+            
+            assert best_loss is not None 
+            assert best_binding is not None
+
+            # unify shapes to (num_best,) and (num_best, binding_shape)
+            if len(best_loss.shape) == 0: # bring to shape (1,)
+                best_loss = best_loss.unsqueeze(0)
+                best_binding = {k: v.unsqueeze(0) for k, v in best_binding.items()}
+            
+            self.num_terms_optimized += 1
+
+            filtered_ids = self.improve_strategy(term, best_loss)
+
+            if filtered_ids.numel() == 0: # cannot optimize
+                if self.with_tabu:
+                    if term not in self.tabu_positions:
+                        self.tabu_positions[term] = set()
+                    self.tabu_positions[term].add(position)
+                continue # try next position
+            
+            point_best_binding = list(best_binding.values())[0]
+
+            selected_best_binding = [point_best_binding[filter_id].clone() for filter_id in filtered_ids.tolist()]
+            del point_best_binding, filtered_ids
+            
+            # self.term_hole_pairs.register_holes([(term, position)], point_best_binding.unsqueeze(0))
+
+            return Hole(term, position, selected_best_binding)
     
 
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]: 
@@ -239,16 +298,45 @@ class PointOptim(Operator):
         holes = []
         hole_bindings = []
         for parent in population:
-            term, position, binding = self.create_hole(parent)
-            if term is not None:
-                holes.append((term, position))
-                hole_bindings.append(binding)
+            for _ in range(self.max_holes_to_create):
+                hole = self.create_hole(parent) # will take next position (not same on next call)
+                if hole is not None and len(hole.bindings) > 0:
+                    for hole_binding in hole.bindings:
+                        holes.append((hole.term, hole.position))
+                        hole_bindings.append(hole_binding)
+                else:
+                    break # no other hole could be create
 
         if len(holes) > 0:
+
+            self.num_holes_created += len(holes)
         
             hole_position_tensor = torch.stack(hole_bindings)
             self.term_hole_pairs.register_holes(holes, hole_position_tensor)
 
-        children = self.term_hole_pairs.get_best_hole_fillings(max_fillings=len(population))
+        children_with_pair = self.term_hole_pairs.get_best_hole_fillings(max_fillings=len(population))
+
+        children = []
+
+        for child, pair in children_with_pair:
+            self.evaluator.eval(child)
+            new_fitness = self.fitness.get_fitness(child)
+            old_fitness = self.fitness.get_fitness(pair.hole[0])
+            # assert new_fitness < old_fitness, "Filling must improve fitness"  
+            self.num_total_fills += 1
+            if new_fitness < old_fitness:
+                self.num_better_fills += 1
+            children.append(child)          
 
         return children    
+    
+    def get_finalizer(self):
+        self.add_metrics({
+            "num_better_fills": self.num_better_fills,
+            "num_total_fills": self.num_total_fills,
+            "num_holes_created": self.num_holes_created,
+            "num_terms_optimized": self.num_terms_optimized,
+            "num_terms_created": self.num_terms_created,
+            "tabu_positions": sum(len(v) for v in self.tabu_positions.values()),
+        })
+        

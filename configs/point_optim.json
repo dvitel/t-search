@@ -1,0 +1,165 @@
+{
+    "service_definitions": {
+        "identity": {
+            "type": "IdentityNormalizer",
+            "params": {}
+        },
+        "zscore": {
+            "type": "ZScoreNormalizer",
+            "params": {}
+        },        
+        "fitness": { 
+            "type": "Fitness", 
+            "params": {
+                "syntax": {"!ref": "syntax"},
+                "fitness_name": "nmse",
+                "fitness_atol": 1e-07
+            }
+        },        
+        "semantics": {
+            "type": "Semantics", 
+            "params": { 
+                "storage": {"!ref": "term_vector_storage"}
+            }
+        },        
+        "vector_storage": {"type": "SpatialIndex", "params": {}},
+        "syntax": { 
+            "type": "Syntax", 
+            "params": { 
+                "max_term_depth": 17,
+                "min_consts": 0,
+                "max_consts": 100,
+                "min_vars": 1,
+                "max_vars": 100,
+                "prohibit_ops_on_consts_only": false
+            }
+        },
+        "term_vector_storage": { 
+            "type": "TermVectorStorage", 
+            "params": { 
+                "index": {"!ref": "vector_storage"},
+                "normalizer": {"!ref": "identity"}
+            } 
+        },          
+        "init": {
+            "type": "Up2D", 
+            "module": "t_search.operators.classic",
+            "params": { "depth": 2 } 
+        },
+        "selection": { 
+            "type": "TS", 
+            "module": "t_search.operators.classic",
+            "params": { "selection_size": 1000, "tournament_size": 7 } 
+        },
+        "mutation": { 
+            "type": "RPM", 
+            "module": "t_search.operators.classic",
+            "params": { "rate": 0.1 } 
+        },
+        "crossover": { 
+            "type": "RPX", 
+            "module": "t_search.operators.classic",
+            "params": { "rate": 0.9 } 
+        },
+        "survivor_selection": { 
+            "type": "MuLambdaSurvivorSelection", 
+            "module": "t_search.operators.classic",
+            "params": { 
+                "evaluator": {"!ref": "evaluator"},
+                "mu": 1000, 
+                "strict": false, 
+                "combine": false,
+                "elitism": 10
+            } 
+        },
+        "reduce_consts": {
+            "type": "ReduceConsts",
+            "module": "t_search.operators.syntax",
+            "params": {
+                "evaluator": {"!ref": "evaluator"},
+                "semantics": {"!ref": "semantics"},
+                "syntax": {"!ref": "syntax"},
+                "rate": 1.0
+            }
+        },
+        "term_index_storage": {"type": "RTreeIndex", "params": {}},
+        "term_index": {
+            "type": "TermVectorStorage",
+            "params": { 
+                "index": {"!ref": "term_index_storage"},
+                "normalizer": {"!ref": "zscore"}
+            } 
+        },
+        "hole_index_storage": {"type": "RTreeIndex", "params": {}},
+        "hole_index": {
+            "type": "TermVectorStorage",
+            "params": { 
+                "index": {"!ref": "hole_index_storage"},
+                "normalizer": {"!ref": "zscore"}
+            } 
+        },
+        "term_hole_pairs": {
+            "type": "TermHolePairs",
+            "module": "t_search.operators.optim.term_hole",
+            "params": {
+                "syntax": {"!ref": "syntax"},
+                "term_index": {"!ref": "term_index"},
+                "hole_index": {"!ref": "hole_index"},
+                "start_delta": 0.00001,
+                "multiplier": 10,
+                "num_steps": 10,
+                "num_closest": 3
+            }
+        },
+        "evaluator": {
+            "type": "DefaultEvaluator", 
+            "params": {
+                "semantics": {"!ref": "semantics"},
+                "fitness": {"!ref": "fitness"},                
+                "with_inner_evals": true,
+                "max_root_evals": 100000,
+                "max_evals": 1000000             
+            }
+        },        
+        "point_optim": {
+            "type": "PointOptim",
+            "module": "t_search.operators.optim.point_optim",
+            "params": {
+                "term_hole_pairs": {"!ref": "term_hole_pairs"},
+                "syntax": {"!ref": "syntax"},
+                "fitness": {"!ref": "fitness"},
+                "semantics": {"!ref": "semantics"},
+                "evaluator": {"!ref": "evaluator"},
+                "position_strategy": "rand_position_order",
+                "term_strategy": "rand_term_order",
+                "improve_strategy": "local_improve",
+                "num_starts": 10,
+                "range_delta": 0.1,
+                "max_evals": 20,
+                "lr": 0.1,
+                "tolerance_change": 0.0000001,
+                "tolerance_grad": 0.0000001,
+                "min_loss_rtol": 0.0001,
+                "with_tabu": true,
+                "closer_to_points": true,
+                "closer_to_points_lambda": 0.001
+            }
+        }
+    },
+    "init_service_name": "init",
+    "operator_service_names": [        
+        "point_optim",
+        "evaluator",
+        "survivor_selection"
+    ],
+    "ops": ["add", "mul", "neg", "inv", "exp", "log", "sin", "cos"],
+    "evaluator_service_name": "evaluator",
+    "syntax_service_name": "syntax",
+    "fitness_service_name": "fitness",
+    "semantics_service_name": "semantics",    
+    "eval_listeners": [
+        "term_hole_pairs"
+    ],  
+    "max_gen": 100,
+    "max_dim_size": 1000    
+}

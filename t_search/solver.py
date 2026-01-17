@@ -82,6 +82,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         syntax_service_name: str,
         fitness_service_name: str,
         semantics_service_name: str,
+        eval_listeners: list[str] = [],
 
         ops: dict[str, Callable] | list[str] = default_alg_ops,
         ops_schedule: dict[str, int] | None = None,
@@ -103,6 +104,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.fitness_service_name = fitness_service_name
         self.semantics_service_name = semantics_service_name
 
+        self.eval_listeners = eval_listeners
         self.services = {}
 
         self.debug = debug
@@ -318,6 +320,15 @@ class GPSolver(BaseEstimator, RegressorMixin):
             if isinstance(service, GenListener):
                 self.gen_listeners.append(service)
 
+        eval_listeners_instances = []
+        for listener_name in self.eval_listeners:
+            if listener_name not in self.services:
+                raise ValueError(f"Eval listener service '{listener_name}' not found among registered services")
+            listener = self.services[listener_name]
+            eval_listeners_instances.append(listener)
+
+        self.evaluator.add_listeners(eval_listeners_instances)
+
         pass
     
     def add_metrics(self, *, scope: str = "", **kwargs):
@@ -379,7 +390,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
             # self.evaluator.eval(self.syntax.get_vars())
             for var in self.syntax.get_vars():
                 var_binding = self.var_bindings[var.var_id]
-                self.fitness.set_fitness([var], var_binding.unsqueeze(0))
+                # self.fitness.set_fitness([var], var_binding.unsqueeze(0))
+                self.evaluator.add_initial_terms([var], var_binding.unsqueeze(0))
                 pass
         except EvSearchTermination as e:
             del const_output            

@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from heapq import heappop, heappush
 from typing import Optional
 
@@ -9,12 +10,20 @@ from t_search.operators.mutation import TermMutation
 from t_search.syntax import Term, TermPos
 from t_search.syntax.syntax import Syntax
 
+@dataclass(order=True)
+class PriorityPair:
+    priority: float
+    term: Term = field(compare=False)
+    hole: tuple[Term, TermPos] = field(compare=False)
+
 class TermHolePairs(EvalListener):
     ''' For new terms search for sketches, for new sketches search for terms.  '''
 
     def __init__(self, *, 
                     target: torch.Tensor,
                     syntax: Syntax,
+                    # evaluator: Evaluator,
+                    # fitness: Fitness,
                     term_index: TermVectorStorage,
                     hole_index: HoleVectorStorage,
                     syn_simplifier: TermMutation | None = None,
@@ -39,7 +48,7 @@ class TermHolePairs(EvalListener):
         self.num_closest = num_closest
         self.syntax = syntax
 
-        self.term_hole_pairs: list[tuple[float, Term, tuple[Term, TermPos]]] = [] # priority queue
+        self.term_hole_pairs: list[PriorityPair] = [] # priority queue
 
     def on_eval(self, terms: list[Term], semantics: torch.Tensor):
         ''' New terms appear, queue themfor later optimization '''
@@ -62,7 +71,7 @@ class TermHolePairs(EvalListener):
 
         for term, holes in zip(terms, found_holes):
             for (l2, hole) in holes:
-                heappush(self.term_hole_pairs, (l2, term, hole))
+                heappush(self.term_hole_pairs, PriorityPair(l2, term, hole))
         
         pass
 
@@ -83,13 +92,14 @@ class TermHolePairs(EvalListener):
 
         for hole, terms in zip(holes, found_terms):
             for (l2, term) in terms:
-                heappush(self.term_hole_pairs, (l2, term, hole))
+                heappush(self.term_hole_pairs, PriorityPair(l2, term, hole))
 
         pass 
 
     def fill_hole(self, term: Term, hole_root: Term, hole_pos: TermPos) -> Optional[Term]:
-        if hole_pos.term == term:
-            return None 
+        # NOTE: we commented the followign as rescaling would create different term
+        # if hole_pos.term == term:
+        #     return None 
 
         term_semantics = self.term_index.get_semantics_for_term(term)
         hole_semantics = self.hole_index.get_semantics_for_term((hole_root, hole_pos))
@@ -130,15 +140,22 @@ class TermHolePairs(EvalListener):
     def get_best_term_hole_pairs(self, max_pairs: int) -> list[tuple[Term, tuple[Term, TermPos]]]:
         res: list[tuple[Term, tuple[Term, TermPos]]] = []
         while len(res) < max_pairs and len(self.term_hole_pairs) > 0:
-            _, term, hole = heappop(self.term_hole_pairs)
-            res.append((term, hole))
+            pp = heappop(self.term_hole_pairs)
+            res.append((pp.term, pp.hole))
         return res        
     
-    def get_best_hole_fillings(self, max_fillings: int) -> list[Term]:
-        res: list[Term] = []
+    def get_best_hole_fillings(self, max_fillings: int) -> list[tuple[Term, PriorityPair]]:
+        res: list[tuple[Term, PriorityPair]] = []
         while len(res) < max_fillings and len(self.term_hole_pairs) > 0:
-            _, term, hole = heappop(self.term_hole_pairs)
-            filled = self.fill_hole(term, hole[0], hole[1])
+            pp = heappop(self.term_hole_pairs)
+            filled = self.fill_hole(pp.term, pp.hole[0], pp.hole[1])
             if filled is not None:
-                res.append(filled)
+
+                # asserts that filled holes produce better outcomes than original 
+                # self.evaluator.eval(filled)
+                # new_fitness = self.fitness.get_fitness(filled)
+                # old_fitness = self.fitness.get_fitness(pp.hole[0])
+                # assert new_fitness < old_fitness, "Filling must improve fitness"
+
+                res.append((filled, pp))
         return res

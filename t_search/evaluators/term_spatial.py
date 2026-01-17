@@ -44,7 +44,7 @@ class ZScoreNormalizer(Normalizer, ServiceBase, Generic[TTermPos]):
     def normalize(self, vectors: torch.Tensor, keys: list[TTermPos]) -> torch.Tensor:
         means = torch.mean(vectors, dim=1, keepdim=True)
         stds = torch.std(vectors, dim=1, keepdim=True)
-        normalized = (vectors - means) / (stds + self.eps)
+        normalized = (vectors - means) / stds
         
         # Store normalization params per key
         for key, mean, std in zip(keys, means.squeeze(-1), stds.squeeze(-1)):
@@ -189,7 +189,8 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
         for q in queries:
             delta = start_delta
             q_res = None
-            while num_steps > 0:
+            left_num_steps = num_steps
+            while left_num_steps > 0:
                 range = torch.stack([q - delta, q + delta], dim=0)
                 found_ids = self.index.query_range(range)
                 if len(found_ids) > 0:
@@ -201,8 +202,9 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
                     del l2, vectors, found_ids
                     break
                 delta *= multiplier    
-                num_steps -= 1                        
-            res.append(q_res)
+                left_num_steps -= 1      
+            if q_res is not None:                  
+                res.append(q_res)
         return res
     
     def closest_or_self(self, queries: torch.Tensor,

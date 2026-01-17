@@ -75,7 +75,8 @@ def register_services(service_cfgs: dict, injection_context: dict[str, Any],
                 visited_ids.add(service_name)
                 service_q.append((service_name, cfg))
                 continue
-        visited_ids.add(service_name)
+        # visited_ids.add(service_name)
+        visited_ids.clear()
         services[service_name] = service
         injection_context[service_name] = service
     return services

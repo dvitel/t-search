@@ -24,13 +24,13 @@ def optimize(
     start_binding: dict[OptimPoint, torch.Tensor],
     loss_fn_builder: Callable,
     *,
-    # num_best: int = 1,
     num_starts: int = 10,
     lr: float = 1.0,
     max_evals: int = 10,
     tolerance_change: float = 1e-6,
     tolerance_grad: float = 1e-3,
     torch_gen: torch.Generator | None = None,
+    num_best_binings: int = 1,
     # loss_threshold: float = 0.1,
 ) -> tuple[torch.Tensor | None, dict[Term, torch.Tensor] | None]:
     global optim_id
@@ -55,7 +55,8 @@ def optimize(
                 num_starts-1, start_range,
                 rand_deltas=True, generator=torch_gen
             )
-            value[1:] = rand_points
+            for rp_id, rp in enumerate(rand_points):
+                value[rp_id+1:] = rp
                 
         value.requires_grad_(True)
         binding[optim_point] = value
@@ -116,20 +117,44 @@ def optimize(
         if not torch.all(torch.isfinite(fixed_loss)):
             raise LRAdjust(None)
 
-        loss_min_pos = fixed_loss.argmin()
-        min_loss = fixed_loss[loss_min_pos]
+        if num_best_binings == 1:
+            loss_min_pos = fixed_loss.argmin()
+            min_loss = fixed_loss[loss_min_pos]
 
-        print(f"\tLoss {min_loss.item()}, evals {num_root_evals}")
+            print(f"\tLoss {min_loss.item()}, evals {num_root_evals}")
 
-        # if min_loss < loss_threshold:
-        #     iter_loss.append(loss.detach().clone())
-        #     for k, v in optim_state.binding.items():
-        #         iter_binding.setdefault(k, []).append(v.detach().clone())
+            # if min_loss < loss_threshold:
+            #     iter_loss.append(loss.detach().clone())
+            #     for k, v in optim_state.binding.items():
+            #         iter_binding.setdefault(k, []).append(v.detach().clone())
 
-        if best_loss is None or min_loss < best_loss:
-            best_loss = min_loss.detach().clone()
-            for k, v in binding.items():
-                best_binding[k] = v[loss_min_pos].detach().clone()
+            if best_loss is None or min_loss < best_loss:
+                best_loss = min_loss.detach().clone()
+                best_binding = {}
+                for k, v in binding.items():
+                    best_binding[k] = v[loss_min_pos].detach().clone()
+        else: # best_loss is 1d tensor of size num_best_binings and best_binding is 2d (best_binding, values)
+            if best_loss is None: # take num_best_binings best 
+                sort_ids = torch.argsort(fixed_loss)
+                best_sort_ids = sort_ids[:num_best_binings]
+                best_loss = fixed_loss[best_sort_ids].detach().clone()
+                best_binding = {}
+                for k, v in binding.items():
+                    best_binding[k] = v[best_sort_ids].detach().clone()
+                del sort_ids, best_sort_ids
+            else: # need to combine current and prev best_loss 
+                both_loss = torch.cat([best_loss, fixed_loss], dim=0)
+                sort_ids = torch.argsort(both_loss)
+                best_sort_ids = sort_ids[:num_best_binings]
+                if any(best_sort_ids >= best_loss.shape[0]):
+                    # some new losses are among best 
+                    best_loss = both_loss[best_sort_ids].detach().clone()
+                    best_binding = {}
+                    for k, v in binding.items():
+                        both_bindings = torch.cat([best_binding[k], v], dim=0)
+                        best_binding[k] = both_bindings[best_sort_ids].detach().clone()
+                        del both_bindings
+                    del both_loss
 
         # TODO: experiment more with early exit
         # if best_loss is not None:

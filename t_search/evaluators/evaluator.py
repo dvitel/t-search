@@ -60,6 +60,14 @@ class Evaluator(Operator):
         res = self.eval(population)
         children = [t for t, _ in res]
         return children
+    
+    def add_initial_terms(self, terms: list[Term], semantics: torch.Tensor):
+        ''' Add initial terms and their semantics to evaluator storage '''
+        pass
+
+    def add_listeners(self, listeners: list[EvalListener]):
+        ''' Add evaluation listeners '''
+        pass
 
 
 class DefaultEvaluator(Evaluator, ServiceBase):
@@ -82,7 +90,6 @@ class DefaultEvaluator(Evaluator, ServiceBase):
                     max_root_evals: int = 100_000,
                     max_evals: int = 1_000_000,
                     # eval_fn: Callable = evaluate,
-                    listeners: list[EvalListener] = [],
                     device: torch.device
                 ):
         
@@ -120,11 +127,21 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         # self.target: torch.Tensor = target
         self.ops: dict[str, Callable] = ops
-        self.listeners: list[EvalListener] = listeners
+        self.listeners: list[EvalListener] = []
 
         # self.bad_fitness = torch.tensor(torch.inf, device=target.device, dtype=target.dtype)
 
         # self.new_listener_terms: list[Term] = []
+
+    def add_listeners(self, listeners: list[EvalListener]):
+        self.listeners.extend(listeners)
+
+    def add_initial_terms(self, terms: list[Term], semantics: torch.Tensor):
+        ''' Add initial terms and their semantics to evaluator storage '''
+        self.semantics.set_binding(terms, semantics)
+        self.fitness.set_fitness(terms, semantics)
+        for l in self.listeners:
+            l.on_eval(terms, semantics)        
 
     def get_finalizer(self):
         ''' Called on the end of solver search'''
@@ -180,7 +197,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         return None
     
-    def _default_set_binding(self, root: Term, term: Term):
+    def _default_set_binding(self, root: Term, term: Term, value: torch.Tensor):
         self.evals += 1
         if root == term:
             self.root_evals += 1
@@ -190,7 +207,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             raise EvSearchTermination("MAX_ROOT_EVAL")
     
     def _set_binding(self, root: Term, term: Term, value: torch.Tensor):
-        self._default_set_binding(root, term)
+        self._default_set_binding(root, term, value)
         self.new_term_outputs[term] = value    
         
     # def _eval_loop(self, terms: list[Term]) -> list[Term]:
@@ -317,7 +334,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         else:
             def new_set_binding(root: Term, term: Term, value: torch.Tensor):
                 set_binding(root, term, value)
-                self._default_set_binding(root, term)
+                self._default_set_binding(root, term, value)
         def loss_fn(term: Term, *, binding = {}) -> torch.Tensor:
             outputs = evaluate(term, self.ops, new_get_binding, new_set_binding)
             return self.fitness.get_loss(outputs)

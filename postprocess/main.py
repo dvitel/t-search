@@ -23,18 +23,19 @@ def load(source: str, metric: str) -> pd.DataFrame:
             return r[metric]
         else:
             return None
-    data = [ {"cfg": r["config_name"], "dataset": r["dataset"], "seed": r["seed"], "metric": get_metric(r) } for r in records ]
+    data = [ {"cfg": r["config_name"], "dataset": r["dataset"], "seed": r["seed"], "metric": get_metric(r) } for r in records if r['test_pred_num_invalid'] < 10 ]
     df = pd.DataFrame.from_records(data)
     return df
 
 def draw_table(input: str, 
                metric: str = "test_nmse", 
-               transpose:bool=False) -> None:
+               transpose:bool=False,
+               fmt="latex_booktabs") -> None:
     ''' Builds table of setting vs dataset with mean +- std in the cell for a given metric '''
     df = load(source=input, metric=metric)
     summary = df.groupby(["cfg", "dataset"])["metric"].agg(["mean","std"]).reset_index()
     # Format as "mean ± std"
-    summary["metric_summary"] = summary.apply(lambda row: f"{row['mean']:.3f} $\pm$ {row['std']:.2f}", axis=1)
+    summary["metric_summary"] = summary.apply(lambda row: f"{row['mean']:.3f} ± {row['std']:.2f}", axis=1)
 
     # Select only the columns for the table
     # table_data = summary[["cfg","dataset","metric_summary"]]
@@ -51,7 +52,7 @@ def draw_table(input: str,
         table = table.T
     
     # Generate LaTeX
-    latex_table = tabulate(table.reset_index(), headers="keys", tablefmt="latex_booktabs", showindex=False)
+    latex_table = tabulate(table.reset_index(), headers="keys", tablefmt=fmt, showindex=False)
     print(latex_table)
     pass
 
@@ -76,9 +77,14 @@ def draw_chart(input: str, metric: str = "iter_fitness",
 #     pass 
 
 if __name__ == "__main__":
-    data = load(source="data/results.jsonlist", metric="final_time")
-    data["metric"] = data["metric"] / 60.0 / 1000.0  # convert to minutes
-    print(data)
+    # data = load(source="data/raw/r.jsonlist", metric="final_time")
+    # data = load(source="data/results.jsonlist", metric="final_time")
+    # data["metric"] = data["metric"] / 60.0 / 1000.0  # convert to minutes
+    # print(data)
+
+    draw_table(input="data/results.jsonlist",
+               metric="test_nmse",
+               transpose=True, fmt="github")               
     pass
     # draw_table(input="data/raw/tst2.jsonlist",
     #            metric="test_nmse",
