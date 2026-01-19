@@ -378,15 +378,16 @@ class GPSolver(BaseEstimator, RegressorMixin):
         ''' If target is constant or var, evaluator will rise 'Solution Found' error '''
         const_output = None
         try:
-            const_val = self.semantics.is_const(self.target)
-            if const_val is not None:
-                const_term = self.syntax.get_const(value=const_val)
-                # if const_term is None:
-                #     raise ValueError(f"Cannot create const term for value {const_val}")
-                # self.evaluator.eval(const_term)
-                const_output = torch.tensor([const_val], device=self.device, dtype=self.dtype)
-                self.fitness.set_fitness([const_term], const_output.unsqueeze(0))
-                pass
+            if self.syntax.max_consts > 0:
+                const_val = self.semantics.is_const(self.target)
+                if const_val is not None:
+                    const_term = self.syntax.get_const(value=const_val)
+                    # if const_term is None:
+                    #     raise ValueError(f"Cannot create const term for value {const_val}")
+                    # self.evaluator.eval(const_term)
+                    const_output = torch.tensor([const_val], device=self.device, dtype=self.dtype)
+                    self.fitness.set_fitness([const_term], const_output.unsqueeze(0))
+                    pass
             # self.evaluator.eval(self.syntax.get_vars())
             for var in self.syntax.get_vars():
                 var_binding = self.var_bindings[var.var_id]

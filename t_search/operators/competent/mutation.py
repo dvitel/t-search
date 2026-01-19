@@ -14,6 +14,7 @@ class CompetentMutation(PositionMutation):
                     listener: CompetentListener,
                     op_invs = alg_inv,
                     syn_simplifier: TermMutation | None = None,
+                    small_value: float = 1e-5,
                     **kwargs):
         super().__init__(**kwargs)
         self.l = listener        
@@ -21,6 +22,7 @@ class CompetentMutation(PositionMutation):
         self.desired_at_pos = {} # temp cache
         self.semantics = semantics
         self.syn_simplifier = syn_simplifier
+        self.small_value = small_value
 
     def mutate_position(self, term: Term, position: TermPos) -> Term | None:
         
@@ -60,15 +62,25 @@ class CompetentMutation(PositionMutation):
         Sxx = (selected_values * selected_values).sum()
         Sxy = (selected_values * closest_desired).sum()
         n = selected_values.shape[0]
-        k = (n * Sxy - Sx * Sy) / (n * Sxx - Sx * Sx)
-        b = (Sy - k * Sx) / n
-        
-        if torch.isfinite(k) == True and torch.isfinite(b) == True:
-            best_term = self.syntax.get_op("add", 
-                            self.syntax.get_op("mul", self.syntax.get_const(value=k), term),
-                            self.syntax.get_const(value=b)) 
+        n_Covar_xy = (n * Sxy - Sx * Sy)
+        n_Var_x = (n * Sxx - Sx * Sx)
+        if n_Var_x / n < self.small_value: # no variation of x - x == c - searching for best b:
+            b = Sy / n
+            best_term = self.syntax.get_const(value=b)
         else:
-            best_term = None
+            k = n_Covar_xy / n_Var_x
+            b = (Sy - k * Sx) / n
+
+            if torch.abs(k) < self.small_value:
+                # approximate with constant 
+                best_term = self.syntax.get_const(value=b)
+            elif torch.abs(b) < self.small_value:
+                # approximate with scaling only
+                best_term = self.syntax.get_op("mul", self.syntax.get_const(value=k), term)
+            else: # general case
+                best_term = self.syntax.get_op("add", 
+                                self.syntax.get_op("mul", self.syntax.get_const(value=k), term),
+                                self.syntax.get_const(value=b)) 
 
         if best_term is None:
             return None

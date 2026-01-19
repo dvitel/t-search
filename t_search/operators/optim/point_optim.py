@@ -54,6 +54,7 @@ class PointOptim(Operator, ServiceBase):
                  closer_to_points_lambda: float = 1e-2,
                  max_holes_to_create: int = 1, # one term can create multiple holes 
                  max_hole_bindings: int = 1, # one hole can have multiple good bindings
+                 debug: bool = False,
                  **kwargs):
         super().__init__(**kwargs)
         self.term_hole_pairs = term_hole_pairs
@@ -100,6 +101,7 @@ class PointOptim(Operator, ServiceBase):
         self.num_total_fills = 0
         self.num_holes_created = 0
         self.num_terms_optimized = 0
+        self.debug = debug
 
     def rand_position_order(self, term: Term) -> deque:
         positions = self.syntax.get_positions(term)
@@ -227,6 +229,9 @@ class PointOptim(Operator, ServiceBase):
     def create_hole(self, term: Term) -> Hole | None:
         ''' Takes one hole at a time, None if no holes left '''
 
+        if not self.semantics.is_valid(term): # do not optimize invalid terms
+            return None
+
         while True: # loop by whole optimization attempt
 
             while True: # picking not yet optimized position
@@ -248,7 +253,8 @@ class PointOptim(Operator, ServiceBase):
                     tolerance_change=self.tolerance_change,
                     tolerance_grad=self.tolerance_grad,
                     torch_gen=self.torch_gen,
-                    num_best_binings=self.max_hole_bindings
+                    num_best_binings=self.max_hole_bindings,
+                    debug=self.debug
                     )
             
             if best_loss is None: 
@@ -295,6 +301,8 @@ class PointOptim(Operator, ServiceBase):
 
         self.cur_parents = population
 
+        population = population[:1]        
+
         holes = []
         hole_bindings = []
         for parent in population:
@@ -331,12 +339,11 @@ class PointOptim(Operator, ServiceBase):
         return children    
     
     def get_finalizer(self):
-        self.add_metrics({
-            "num_better_fills": self.num_better_fills,
-            "num_total_fills": self.num_total_fills,
-            "num_holes_created": self.num_holes_created,
-            "num_terms_optimized": self.num_terms_optimized,
-            "num_terms_created": self.num_terms_created,
-            "tabu_positions": sum(len(v) for v in self.tabu_positions.values()),
-        })
+        self.add_metrics(
+            num_better_fills=self.num_better_fills,
+            num_total_fills=self.num_total_fills,
+            num_holes_created=self.num_holes_created,
+            num_terms_optimized=self.num_terms_optimized,
+            # "num_terms_created": self.num_terms_created,
+            tabu_positions=sum(len(v) for v in self.tabu_positions.values()))
         

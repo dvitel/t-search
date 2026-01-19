@@ -28,6 +28,7 @@ class ConstOptimizer(Optimizer):
                     lr:float = 0.1,
                     tolerance_change: float = 1e-6,
                     tolerance_grad: float = 1e-3,
+                    debug: bool = False
                  ):
         self.num_starts = num_starts
         self.max_evals = max_evals
@@ -44,6 +45,7 @@ class ConstOptimizer(Optimizer):
         self.best_terms_cache: dict[Term, tuple[Term, float]] = {} # optim term to term
         self.default_loss_fn = evaluator.get_loss_fn()
         self.const_range = const_range
+        self.debug = debug
 
     def _get_optim_state(self, term: Term) -> Term | tuple[Term, dict[OptimPoint, torch.Tensor]]:
         ''' Either returns already optimized term or optimization state'''
@@ -110,6 +112,7 @@ class ConstOptimizer(Optimizer):
             tolerance_change=self.tolerance_change,
             tolerance_grad=self.tolerance_grad,
             torch_gen=self.torch_gen,
+            debug=self.debug
         )
 
         if best_loss is not None:

@@ -31,15 +31,17 @@ def optimize(
     tolerance_grad: float = 1e-3,
     torch_gen: torch.Generator | None = None,
     num_best_binings: int = 1,
+    debug: bool = False
     # loss_threshold: float = 0.1,
 ) -> tuple[torch.Tensor | None, dict[Term, torch.Tensor] | None]:
     global optim_id
     
     # assert optim_state.loss_fn is not None, "Optimization loss function is not set"
         
-    optim_id += 1
+    if debug:
+        optim_id += 1
 
-    print(f">>> [{optim_id}] {optim_term}")
+        print(f">>> [{optim_id}] {optim_term}")
 
     params = []
     binding = {}
@@ -84,7 +86,7 @@ def optimize(
     )
 
     best_loss = None
-    best_binding = None
+    best_binding = {}
 
     # iter_loss = []
     # iter_binding = {}
@@ -101,7 +103,7 @@ def optimize(
     num_root_evals = 0
 
     def closure_builder(optimizer: torch.optim.Optimizer):
-        nonlocal best_loss, max_evals, best_binding, num_root_evals
+        nonlocal best_loss, debug, max_evals, num_root_evals
 
         # cur_lr = optimizer.param_groups[0]['lr']
         # print(f"LR: {cur_lr}")        
@@ -121,7 +123,8 @@ def optimize(
             loss_min_pos = fixed_loss.argmin()
             min_loss = fixed_loss[loss_min_pos]
 
-            print(f"\tLoss {min_loss.item()}, evals {num_root_evals}")
+            if debug:
+                print(f"\tLoss {min_loss.item()}, evals {num_root_evals}")
 
             # if min_loss < loss_threshold:
             #     iter_loss.append(loss.detach().clone())
@@ -130,7 +133,6 @@ def optimize(
 
             if best_loss is None or min_loss < best_loss:
                 best_loss = min_loss.detach().clone()
-                best_binding = {}
                 for k, v in binding.items():
                     best_binding[k] = v[loss_min_pos].detach().clone()
         else: # best_loss is 1d tensor of size num_best_binings and best_binding is 2d (best_binding, values)
@@ -138,7 +140,6 @@ def optimize(
                 sort_ids = torch.argsort(fixed_loss)
                 best_sort_ids = sort_ids[:num_best_binings]
                 best_loss = fixed_loss[best_sort_ids].detach().clone()
-                best_binding = {}
                 for k, v in binding.items():
                     best_binding[k] = v[best_sort_ids].detach().clone()
                 del sort_ids, best_sort_ids
@@ -149,7 +150,6 @@ def optimize(
                 if any(best_sort_ids >= best_loss.shape[0]):
                     # some new losses are among best 
                     best_loss = both_loss[best_sort_ids].detach().clone()
-                    best_binding = {}
                     for k, v in binding.items():
                         both_bindings = torch.cat([best_binding[k], v], dim=0)
                         best_binding[k] = both_bindings[best_sort_ids].detach().clone()

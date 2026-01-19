@@ -36,15 +36,19 @@ class ZScoreParams:
 class ZScoreNormalizer(Normalizer, ServiceBase, Generic[TTermPos]):
     """Z-score normalization (mean=0, std=1)."""
     
-    def __init__(self, zero, one):
+    def __init__(self, zero, one, small_std: float = 1e-5):
         self.zero = zero
         self.one = one
+        self.small_std = small_std
         self.params: dict[TTermPos, tuple[torch.Tensor, torch.Tensor]] = {}
     
     def normalize(self, vectors: torch.Tensor, keys: list[TTermPos]) -> torch.Tensor:
         means = torch.mean(vectors, dim=1, keepdim=True)
         stds = torch.std(vectors, dim=1, keepdim=True)
+        zero_mask = torch.all(torch.isclose(stds, self.zero, atol=self.small_std, rtol=0), dim=1)
         normalized = (vectors - means) / stds
+        normalized[zero_mask] = self.zero
+        stds[zero_mask] = self.zero
         
         # Store normalization params per key
         for key, mean, std in zip(keys, means.squeeze(-1), stds.squeeze(-1)):

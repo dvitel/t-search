@@ -4,6 +4,7 @@ from typing import Optional
 
 import torch
 
+from t_search.base import ServiceBase
 from t_search.evaluators.term_spatial import HoleVectorStorage, TermVectorStorage
 from t_search.operators.listeners import EvalListener
 from t_search.operators.mutation import TermMutation
@@ -16,7 +17,7 @@ class PriorityPair:
     term: Term = field(compare=False)
     hole: tuple[Term, TermPos] = field(compare=False)
 
-class TermHolePairs(EvalListener):
+class TermHolePairs(EvalListener, ServiceBase):
     ''' For new terms search for sketches, for new sketches search for terms.  '''
 
     def __init__(self, *, 
@@ -30,7 +31,8 @@ class TermHolePairs(EvalListener):
                     start_delta: float = 1e-5,
                     multiplier: float = 10,
                     num_steps: int = 3,
-                    num_closest: int = 3):
+                    num_closest: int = 3,
+                    small_value: float = 1e-5):
 
         self.target = target
         self.zero = torch.zeros((1,), dtype = target.dtype, device = target.device)
@@ -47,8 +49,23 @@ class TermHolePairs(EvalListener):
         self.num_steps = num_steps
         self.num_closest = num_closest
         self.syntax = syntax
+        self.small_value = small_value
 
         self.term_hole_pairs: list[PriorityPair] = [] # priority queue
+
+        pass 
+
+    def init(self):
+        # NOTE: we have to add to term index at least one constant to discover constant terms for holes
+        if self.syntax.max_consts > 0:
+            zero_term = self.syntax.get_const(value=0.0)
+            # WARNINING: next fake eval works outsied evaluator object - hack that would avoid circular dependencies 
+            # Instead, Value(0) term may have different semantics for different evaluators 
+            fake_eval = torch.zeros_like(self.target) # NOTE: for now we assume it is ok 
+            self.register_terms([zero_term], fake_eval.unsqueeze(0))
+            del fake_eval
+            pass 
+        pass        
 
     def on_eval(self, terms: list[Term], semantics: torch.Tensor):
         ''' New terms appear, queue themfor later optimization '''
@@ -108,19 +125,33 @@ class TermHolePairs(EvalListener):
         # (k * ts + b - hs)^2 --> min
         # Sx = sum(ts), Sy = sum(hs), Sxx = sum(ts^2), Sxy = sum(ts * hs)
 
+        # (k * x + b - y)^2 --> min
+        # 2 (k * x + b - y) * x = 0    
+
         Sx = term_semantics.sum()
         Sy = hole_semantics.sum()
         Sxx = (term_semantics * term_semantics).sum()
         Sxy = (term_semantics * hole_semantics).sum()
         n = term_semantics.shape[0]
-        k = (n * Sxy - Sx * Sy) / (n * Sxx - Sx * Sx)
-        b = (Sy - k * Sx) / n
-        if torch.isfinite(k) == False or torch.isfinite(b) == False:
-            return None
-        
-        hole_term = self.syntax.get_op("add", 
-                        self.syntax.get_op("mul", self.syntax.get_const(value=k), term),
-                        self.syntax.get_const(value=b))
+        n_Covar_xy = (n * Sxy - Sx * Sy)
+        n_Var_x = (n * Sxx - Sx * Sx)
+        if n_Var_x / n < self.small_value: # no variation of x - x == c - searching for best b:
+            b = Sy / n # approximate with constant 
+            hole_term = self.syntax.get_const(value=b)
+        else:
+            k = n_Covar_xy / n_Var_x
+            b = (Sy - k * Sx) / n
+            
+            if torch.abs(k) < self.small_value:
+                # approximate with constant 
+                hole_term = self.syntax.get_const(value=b)
+            elif torch.abs(b) < self.small_value:
+                # approximate with scaling only
+                hole_term = self.syntax.get_op("mul", self.syntax.get_const(value=k), term)
+            else: # general case        
+                hole_term = self.syntax.get_op("add", 
+                                self.syntax.get_op("mul", self.syntax.get_const(value=k), term),
+                                self.syntax.get_const(value=b))
         
         if hole_term is None:
             return None
