@@ -69,15 +69,21 @@ class TermHolePairs(EvalListener, ServiceBase):
 
     def on_eval(self, terms: list[Term], semantics: torch.Tensor):
         ''' New terms appear, queue themfor later optimization '''
-        return self.register_terms(terms, semantics)
+        self.register_terms(terms, semantics)
        
-    def register_terms(self, terms: list[Term], term_params: torch.Tensor) -> list[Term]: 
+    def register_terms(self, terms: list[Term], term_params: torch.Tensor) -> None:
         if len(terms) == 0:
             return []
 
-        self.term_index.insert(terms, term_params)
+        new_terms = self.term_index.insert(terms, term_params)
+        if len(new_terms) == 0:
+            return
 
-        normalized_semantics = self.term_index.get_semantics_for_terms(terms, denormalize=False)
+        normalized_terms, normalized_semantics = self.term_index.get_new_normalized(new_terms)
+
+        if len(normalized_terms) == 0:
+            # print("WARN: no normalized terms found during registering terms")
+            return
         # searching for nearby holes 
         found_holes = self.hole_index.query_closest(normalized_semantics, 
                                      start_delta=self.start_delta, 
@@ -86,20 +92,28 @@ class TermHolePairs(EvalListener, ServiceBase):
                                      num_closest=self.num_closest)
         del normalized_semantics
 
-        for term, holes in zip(terms, found_holes):
+        for term, holes in zip(normalized_terms, found_holes):
             for (l2, hole) in holes:
                 heappush(self.term_hole_pairs, PriorityPair(l2, term, hole))
         
         pass
 
-    def register_holes(self, holes: list[tuple[Term, TermPos]], hole_params: torch.Tensor) -> list[Term]:
+    def register_holes(self, holes: list[tuple[Term, TermPos]], hole_params: torch.Tensor) -> None:
         ''' Adds hole and its semantics to index and outputs currently present fillings '''
         if len(holes) == 0:
             return []
         
-        self.hole_index.insert(holes, hole_params)
+        new_holes = self.hole_index.insert(holes, hole_params)
+        
+        if len(new_holes) == 0:
+            return
 
-        normalized_semantics = self.hole_index.get_semantics_for_terms(holes, denormalize=False)
+        normalized_holes, normalized_semantics = self.hole_index.get_new_normalized(new_holes)
+
+        if len(normalized_holes) == 0:
+            # print("WARN: no normalized holes found during registering holes")
+            return
+        
         found_terms = self.term_index.query_closest(normalized_semantics, 
                                      start_delta=self.start_delta, 
                                      multiplier=self.multiplier, 
@@ -107,7 +121,7 @@ class TermHolePairs(EvalListener, ServiceBase):
                                      num_closest=self.num_closest)
         del normalized_semantics
 
-        for hole, terms in zip(holes, found_terms):
+        for hole, terms in zip(normalized_holes, found_terms):
             for (l2, term) in terms:
                 heappush(self.term_hole_pairs, PriorityPair(l2, term, hole))
 

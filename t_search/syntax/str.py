@@ -53,8 +53,8 @@ def name_to_term(name: str, args: Sequence[Term],
 
 def float_formatter(x: Value, *_) -> str:   
     if torch.is_tensor(x.value):
-        return f"{x.value.item():.2f}"
-    return f"{x.value:.2f}"
+        return f"{x.value.item():.4f}"
+    return f"{x.value:.4f}"
 
 default_formatters = {
     Op: lambda t, *args: f"({t.op_id} {' '.join(args)})",

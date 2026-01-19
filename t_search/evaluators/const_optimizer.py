@@ -101,7 +101,7 @@ class ConstOptimizer(Optimizer):
         
         optim_term, start_binding = optim_state
 
-        best_loss, best_binding = optimize(
+        optim_result = optimize(
             optim_term,
             self.const_range,
             start_binding,
@@ -115,7 +115,10 @@ class ConstOptimizer(Optimizer):
             debug=self.debug
         )
 
-        if best_loss is not None:
+        if len(optim_result.local_minima_losses) > 0:
+
+            best_loss = optim_result.local_minima_losses[0]
+            best_binding = optim_result.local_minima_bindings[0]
 
             def bind_optim_points(term, **_):
                 if isinstance(term, OptimPoint):
@@ -130,7 +133,8 @@ class ConstOptimizer(Optimizer):
             except ValueError as e:                
                 return term
             self.best_terms_cache[optim_term] = (best_term, best_loss.item())
+            for v in best_binding.values():
+                del v
             del best_loss, best_binding
-            return best_term            
-
+            return best_term
         return term

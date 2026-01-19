@@ -119,24 +119,23 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
             vector = self.normalizer.denormalize(vector.unsqueeze(0), [term]).squeeze(0)
         return vector
     
-    def get_semantics_for_terms(self, terms: list[TTermPos], denormalize: bool = True) -> torch.Tensor:
-        res = torch.empty((len(terms), self.index.dims), dtype=self.index.dtype, device=self.index.device)
+    def get_new_normalized(self, terms: list[TTermPos]) -> tuple[list[Term], torch.Tensor]:
         sids: list[int] = []
-        tids: list[int] = []
-        for tid, term in enumerate(terms):
+        normalized_terms: list[TTermPos] = []
+        present_reprs = set()
+        for term in terms:
             if term in self.term_to_sid:
-                sids.append(self.term_to_sid[term])
-                tids.append(tid)
-            else:
-                invalid_sem = self.get_invalid_semantics(term, denormalize=False)
-                if invalid_sem is not None:
-                    res[tid] = invalid_sem
+                term_sid = self.term_to_sid[term]
+                repr_term = self.sid_to_term[term_sid]
+                if (repr_term == term) and (repr_term not in present_reprs):
+                    # NOTE: only NEW and BEST representative is returned
+                    present_reprs.add(repr_term)
+                    normalized_terms.append(repr_term)
+                    sids.append(term_sid)
         if len(sids) > 0:
             vectors = self.index.get_vectors(sids)
-            res[tids] = vectors
-        if denormalize:
-            res = self.normalizer.denormalize(res, terms)
-        return res
+            return normalized_terms, vectors
+        return [], None
     
     def get_term_for_semantics(self, vector: torch.Tensor) -> Optional[TTermPos]:
         mapped_vectors = self.normalizer.normalize(vector.unsqueeze(0), terms=[])
@@ -146,8 +145,16 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
         term = self.sid_to_term.get(sid, None)
         return term
 
-    def insert(self, terms: list[TTermPos], vectors: torch.Tensor) -> None:
-        ''' Returns mapping of term to its id in the equivalence group '''
+    def insert(self, terms: list[TTermPos], vectors: torch.Tensor) -> list[TTermPos]:
+        ''' Insert new terms and their vectors into storage, outputs inserted terms '''
+        new_term_ids = [i for i, term in enumerate(terms) if term not in self.term_to_sid and term not in self.invalid_terms]
+        if len(new_term_ids) == 0:
+            return []
+        require_cleanup = False
+        if len(new_term_ids) < len(terms):
+            terms = [terms[i] for i in new_term_ids]
+            vectors = vectors[new_term_ids]
+            require_cleanup = True
         mapped_vectors = self.normalizer.normalize(vectors, terms)
         finite_all_mask = torch.isfinite(mapped_vectors)
         finite_mask = torch.all(finite_all_mask, dim=1)
@@ -166,7 +173,9 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
             elif self.term_order(term) < self.term_order(self.sid_to_term[sid]):
                 self.sid_to_term[sid] = term
             self.term_to_sid[term] = sid
-        return
+        if require_cleanup:
+            del vectors
+        return terms
     
     def get_repr_terms(self) -> list[TTermPos]:
         repr_terms = [term for term in self.sid_to_term.values()]

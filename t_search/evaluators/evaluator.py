@@ -16,22 +16,7 @@ from t_search.syntax.evaluation import evaluate
 from t_search.syntax.term import Term, Value, Variable
 from t_search.utils import EvSearchTermination, stack_rows
 
-
-# class Evaluations(NamedTuple):
-#     ''' grouped evaluations of many terms '''
-#     term: list[Term]
-#     outputs: list[torch.Tensor] | torch.Tensor
-#     fitness: None | list[torch.Tensor] | torch.Tensor = None
-
 class Evaluator(Operator):
-
-    # def is_const(self, outputs: torch.Tensor) -> Optional[torch.Tensor]:
-    #     ''' Checks if variability of outputs signals is close to contant according to config'''
-    #     pass 
-
-    # def is_valid(self, term: Term) -> bool:
-    #     ''' Checks validity of term according to semantic constraints '''
-    #     pass
 
     def test(self, get_binding: Callable) -> torch.Tensor:    
         ''' Test mode evaluation with test bindings '''
@@ -40,16 +25,9 @@ class Evaluator(Operator):
     def eval(
         self,
         terms: Sequence[Term] | Term,
-        # *,
-        # return_outputs: Literal["list", "tensor"] = "list",
-        # return_fitness: Literal["none", "list", "tensor"] = "none",
     ) -> list[tuple[Term, torch.Tensor]] | tuple[Term, torch.Tensor]:
         ''' Evaluates given terms. '''
         pass
-
-    # def eval_best(self, var_bindings: dict[str, torch.Tensor], ops: dict[str, Callable] | None = None) -> torch.Tensor:
-    #     ''' Evaluates the best term found so far with given variable bindings and operations '''
-    #     pass
 
     def get_loss_fn(self, get_binding: Callable | None = None, set_binding: Callable | None = None, no_cache: bool = False):
         ''' Differentiable loss function aligned with fitness '''
@@ -161,27 +139,6 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         return finalizer
 
-    # def is_const(
-    #     self,
-    #     outputs: torch.Tensor) -> Optional[torch.Tensor]:
-    #     """Check if any of outputs is const or very slow function """
-    #     mean = outputs.mean(dim=-1)
-    #     fitness = self.fitness_fn_builder(mean)(outputs)
-    #     if fitness < self.fitness_atol:
-    #         return mean
-    #     return None 
-    
-    # def is_valid(self, term: Term) -> bool:
-    #     ''' All outputs are non-infinite and non-nan '''
-    #     return term not in self.invalid_terms
-    
-    # def _get_fitness(self, term: Term) -> torch.Tensor:
-    #     if term in self.term_fitness:
-    #         return self.term_fitness[term]
-    #     elif term in self.invalid_terms:
-    #         return self.bad_fitness
-    #     raise ValueError(f"Term {term} has no fitness computed")    
-
     def _get_binding(self, root: Term, term: Term) -> Optional[torch.Tensor]:
         term_semantics = self.semantics.get_binding(term)
         if term_semantics is not None:
@@ -245,22 +202,9 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         term_outputs: dict[Term, torch.Tensor] = {}        
         for term in terms:
-            # if self.is_cuda:
-            #     cuda_stream = torch.cuda.Stream()
-            #     with torch.cuda.stream(cuda_stream):
-            #         output = self._eval_one(term, mode="train")
-            #         term_outputs[term] = output
-            # else:
             self.eval_calls += 1
             output = self._eval_one(term, mode="train")
             term_outputs[term] = output
-        # if self.is_cuda:
-        #     torch.cuda.synchronize()
-
-            # return term_outputs
-        
-        # term_outputs, elapsed = timed(eval_timed)()
-        # self.add_metrics(eval_time=elapsed)
 
         if self.with_inner_evals:
             new_term_outputs = self.new_term_outputs
@@ -281,40 +225,6 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             outputs = term_outputs[terms[0]]
             return outputs
         return [term_outputs[t] for t in terms]
-    
-        # new_outputs = [self.new_term_outputs[t] for t in new_terms]
-        # if len(new_outputs) > 0:
-        #     semantics = stack_rows(new_outputs, self.target)
-        #     finite_semantics_mask = torch.isfinite(semantics).all(dim=-1)  # we do not insert nans and infs
-        #     (valid_ids,) = torch.where(finite_semantics_mask)
-        #     (infinite_ids,) = torch.where(~finite_semantics_mask)
-        #     for infinite_id in infinite_ids.tolist():
-        #         invalid_term = new_terms[infinite_id]
-        #         self.invalid_terms[invalid_term] = outputs[infinite_id]
-        #     new_semantics = semantics[valid_ids]
-        #     valid_terms = [new_terms[i] for i in valid_ids.tolist()]
-        #     del semantics, finite_semantics_mask, infinite_ids, valid_ids
-
-        #     if len(valid_terms) > 0:
-        #         semantics = new_semantics
-
-        #         new_fitness: torch.Tensor = self.fitness_fn(semantics)
-        #         self.storage.insert(valid_terms, semantics)
-        #         for t, f in zip(valid_terms, new_fitness):
-        #             self.term_fitness[t] = f                
-                
-        #         for listener in self.listeners:
-        #             listener_terms = listener.on_eval(valid_terms, semantics, new_fitness)
-        #             if listener_terms is not None:
-        #                 self.new_listener_terms.extend(listener_terms)                
-
-        #         self._update_best_term(semantics, new_fitness)                
-
-        #         del semantics
-
-        # self.new_term_outputs.clear()
-
-        # return optim_terms
     
     def get_loss_fn(self, get_binding: Callable | None = None, set_binding: Callable | None = None, no_cache: bool = False):
         ''' Differentiable function for optimization that iss aligned with fitness (nmse by default) '''

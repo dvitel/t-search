@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Callable, Literal, Optional
 
@@ -18,6 +18,11 @@ class LRAdjust(Exception):
 
 optim_id = -1  # for debugging
 
+@dataclass(frozen=False)
+class OptimResult:
+    local_minima_losses: list[float] = field(default_factory=list)  # list of losses for each local minima
+    local_minima_bindings: list[dict[Term, torch.Tensor]] = field(default_factory=list)
+
 def optimize(
     optim_term: Term,
     start_range: torch.Tensor,
@@ -30,10 +35,10 @@ def optimize(
     tolerance_change: float = 1e-6,
     tolerance_grad: float = 1e-3,
     torch_gen: torch.Generator | None = None,
-    num_best_binings: int = 1,
+    num_local_minimas: int = 1,
     debug: bool = False
     # loss_threshold: float = 0.1,
-) -> tuple[torch.Tensor | None, dict[Term, torch.Tensor] | None]:
+) -> OptimResult:
     global optim_id
     
     # assert optim_state.loss_fn is not None, "Optimization loss function is not set"
@@ -47,7 +52,7 @@ def optimize(
     binding = {}
     for optim_point, optim_value in start_binding.items():
         value = torch.zeros(
-            (num_starts, 1 if len(optim_value.shape) == 0 else optim_value.shape[0]), 
+            (num_starts, start_range.shape[0]), 
             dtype=optim_value.dtype, device=optim_value.device
         )
         value[0] = optim_value
@@ -85,8 +90,8 @@ def optimize(
         line_search_fn="strong_wolfe",
     )
 
-    best_loss = None
-    best_binding = {}
+    best_loss = torch.full((num_starts,), torch.inf, dtype=start_range.dtype, device=start_range.device)
+    best_binding = {k:v.detach().clone() for k, v in binding.items()}
 
     # iter_loss = []
     # iter_binding = {}
@@ -116,45 +121,54 @@ def optimize(
         num_root_evals += 1
         fixed_loss = loss.nan_to_num_(torch.inf)
         # finite_loss_mask = torch.isfinite(loss)
-        if not torch.all(torch.isfinite(fixed_loss)):
-            raise LRAdjust(None)
 
-        if num_best_binings == 1:
-            loss_min_pos = fixed_loss.argmin()
-            min_loss = fixed_loss[loss_min_pos]
+        # if not torch.all(torch.isfinite(fixed_loss)):
+        #     raise LRAdjust(None)
 
-            if debug:
-                print(f"\tLoss {min_loss.item()}, evals {num_root_evals}")
+        where_better = fixed_loss < best_loss
+        best_loss[where_better] = fixed_loss[where_better]
+        for k, v in binding.items():
+            best_binding[k][where_better] = v[where_better]
 
-            # if min_loss < loss_threshold:
-            #     iter_loss.append(loss.detach().clone())
-            #     for k, v in optim_state.binding.items():
-            #         iter_binding.setdefault(k, []).append(v.detach().clone())
+        if debug:
+            print(f"{num_root_evals}\tL {' '.join([f'{f:.1e}' for f in best_loss.tolist()])}")        
+        
+        # if num_best_binings == 1:
+        #     loss_min_pos = fixed_loss.argmin()
+        #     min_loss = fixed_loss[loss_min_pos]
 
-            if best_loss is None or min_loss < best_loss:
-                best_loss = min_loss.detach().clone()
-                for k, v in binding.items():
-                    best_binding[k] = v[loss_min_pos].detach().clone()
-        else: # best_loss is 1d tensor of size num_best_binings and best_binding is 2d (best_binding, values)
-            if best_loss is None: # take num_best_binings best 
-                sort_ids = torch.argsort(fixed_loss)
-                best_sort_ids = sort_ids[:num_best_binings]
-                best_loss = fixed_loss[best_sort_ids].detach().clone()
-                for k, v in binding.items():
-                    best_binding[k] = v[best_sort_ids].detach().clone()
-                del sort_ids, best_sort_ids
-            else: # need to combine current and prev best_loss 
-                both_loss = torch.cat([best_loss, fixed_loss], dim=0)
-                sort_ids = torch.argsort(both_loss)
-                best_sort_ids = sort_ids[:num_best_binings]
-                if any(best_sort_ids >= best_loss.shape[0]):
-                    # some new losses are among best 
-                    best_loss = both_loss[best_sort_ids].detach().clone()
-                    for k, v in binding.items():
-                        both_bindings = torch.cat([best_binding[k], v], dim=0)
-                        best_binding[k] = both_bindings[best_sort_ids].detach().clone()
-                        del both_bindings
-                    del both_loss
+        #     if debug:
+        #         print(f"\tLoss {min_loss.item()}, evals {num_root_evals}")
+
+        #     # if min_loss < loss_threshold:
+        #     #     iter_loss.append(loss.detach().clone())
+        #     #     for k, v in optim_state.binding.items():
+        #     #         iter_binding.setdefault(k, []).append(v.detach().clone())
+
+        #     if best_loss is None or min_loss < best_loss:
+        #         best_loss = min_loss.detach().clone()
+        #         for k, v in binding.items():
+        #             best_binding[k] = v[loss_min_pos].detach().clone()
+        # else: # best_loss is 1d tensor of size num_best_binings and best_binding is 2d (best_binding, values)
+        #     if best_loss is None: # take num_best_binings best 
+        #         sort_ids = torch.argsort(fixed_loss)
+        #         best_sort_ids = sort_ids[:num_best_binings]
+        #         best_loss = fixed_loss[best_sort_ids].detach().clone()
+        #         for k, v in binding.items():
+        #             best_binding[k] = v[best_sort_ids].detach().clone()
+        #         del sort_ids, best_sort_ids
+        #     else: # need to combine current and prev best_loss 
+        #         both_loss = torch.cat([best_loss, fixed_loss], dim=0)
+        #         sort_ids = torch.argsort(both_loss)
+        #         best_sort_ids = sort_ids[:num_best_binings]
+        #         if any(best_sort_ids >= best_loss.shape[0]):
+        #             # some new losses are among best 
+        #             best_loss = both_loss[best_sort_ids].detach().clone()
+        #             for k, v in binding.items():
+        #                 both_bindings = torch.cat([best_binding[k], v], dim=0)
+        #                 best_binding[k] = both_bindings[best_sort_ids].detach().clone()
+        #                 del both_bindings
+        #             del both_loss
 
         # TODO: experiment more with early exit
         # if best_loss is not None:
@@ -167,8 +181,9 @@ def optimize(
         #     #     raise LRAdjust(None)
         #     pass
 
-        finite_loss = fixed_loss[torch.isfinite(fixed_loss)]
-        total_loss = finite_loss.mean()
+        # finite_loss = fixed_loss[torch.isfinite(fixed_loss)]
+        # total_loss = finite_loss.mean()
+        total_loss = fixed_loss.mean() # use all losses including inf
         total_loss.backward()
 
         return total_loss
@@ -201,7 +216,48 @@ def optimize(
         del p.grad
         del p
 
-    return (best_loss, best_binding)
+    res = OptimResult()
+
+    if num_local_minimas == 1:
+        min_pos = best_loss.argmin()
+        min_loss = best_loss[min_pos]
+        if torch.isfinite(min_loss):
+            res.local_minima_losses = [min_loss.item()]
+            res.local_minima_bindings = [{k:v[min_pos].detach().clone() for k, v in best_binding.items()}]
+    else:
+
+        local_minima_vectors = []
+
+        # iterative procedure to detect different local minimas
+        for _ in range(num_starts):  
+            if len(res.local_minima_losses) >= num_local_minimas:
+                break
+            min_pos = best_loss.argmin()
+            min_loss = best_loss[min_pos]
+            if not torch.isfinite(min_loss):
+                break  # no more local minimas
+
+            new_vector = torch.cat([v[min_pos] for k,v in best_binding.items()], dim=0)
+            if any(torch.allclose(new_vector, lv, rtol=1e-3, atol=1e-6) for lv in local_minima_vectors):
+                # already have this minima
+                best_loss[min_pos] = torch.inf
+                continue
+            local_minima_vectors.append(new_vector)
+            res.local_minima_losses.append(min_loss.item())
+            res.local_minima_bindings.append({k:v[min_pos].detach().clone() for k, v in best_binding.items()})
+
+            # exclude this minima from further consideration
+            best_loss[min_pos] = torch.inf
+
+        for v in local_minima_vectors:
+            if debug:
+                print(f"Local minima: {' '.join([f'{vv:.2e}' for vv in v.tolist()])}")
+            del v
+    
+    del best_loss
+    for v in best_binding.values():
+        del v
+    return res
 
 def get_all_grads(term: Term,
                   var_bindings: dict[str, torch.Tensor],

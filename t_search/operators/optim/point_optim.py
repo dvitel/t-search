@@ -199,19 +199,24 @@ class PointOptim(Operator, ServiceBase):
         ranges = torch.stack([range_mins, range_maxs], dim=0).t()
         return optim_term, binding, ranges
     
-    def local_improve(self, orig_term: Term, best_loss: torch.Tensor) -> bool:        
-        cur_loss = self.default_loss_fn(orig_term)
-        where_improved = torch.where((cur_loss - best_loss) > (self.min_loss_rtol * cur_loss))[0]
+    def local_improve(self, orig_term: Term, local_minimas: list[float]) -> list[int]:
+        cur_loss = self.default_loss_fn(orig_term).item()
+        where_improved = []
+        for i, local_minima in enumerate(local_minimas):
+            if (cur_loss - local_minima) > (self.min_loss_rtol * cur_loss):
+                where_improved.append(i)
         return where_improved
     
-    def global_improve(self, orig_term: Term, best_loss: torch.Tensor) -> bool:
+    def global_improve(self, orig_term: Term, local_minimas: list[float]) -> list[int]:
         best_term = self.fitness.best_term
         if best_term is None:
             return True
-        best_term_loss = self.default_loss_fn(best_term)
-        where_imroved = torch.where((best_term_loss - best_loss) > (self.min_loss_rtol * best_term_loss))[0]
-        return where_imroved
-
+        cur_loss = self.default_loss_fn(best_term).item()
+        where_improved = []
+        for i, local_minima in enumerate(local_minimas):
+            if (cur_loss - local_minima) > (self.min_loss_rtol * cur_loss):
+                where_improved.append(i)
+        return where_improved
     
     def get_optim_loss_fn(self, **kwargs) -> callable:
         if self.closer_to_points: # add term that attracts the search to existing points
@@ -245,7 +250,7 @@ class PointOptim(Operator, ServiceBase):
         
             optim_term, start_binding, start_range = optim_state
 
-            best_loss, best_binding = optimize(optim_term, start_range, start_binding,
+            optim_result = optimize(optim_term, start_range, start_binding,
                     loss_fn_builder=self.evaluator.get_loss_fn,
                     num_starts=self.num_starts,
                     lr=self.lr,
@@ -253,40 +258,30 @@ class PointOptim(Operator, ServiceBase):
                     tolerance_change=self.tolerance_change,
                     tolerance_grad=self.tolerance_grad,
                     torch_gen=self.torch_gen,
-                    num_best_binings=self.max_hole_bindings,
+                    num_local_minimas=self.max_hole_bindings,
                     debug=self.debug
                     )
             
-            if best_loss is None: 
+            self.num_terms_optimized += 1
+            
+            if len(optim_result.local_minima_losses) == 0:
                 if self.with_tabu:
                     if term not in self.tabu_positions:
                         self.tabu_positions[term] = set()
                     self.tabu_positions[term].add(position)
                 continue # try next position                
-            
-            assert best_loss is not None 
-            assert best_binding is not None
 
-            # unify shapes to (num_best,) and (num_best, binding_shape)
-            if len(best_loss.shape) == 0: # bring to shape (1,)
-                best_loss = best_loss.unsqueeze(0)
-                best_binding = {k: v.unsqueeze(0) for k, v in best_binding.items()}
-            
-            self.num_terms_optimized += 1
 
-            filtered_ids = self.improve_strategy(term, best_loss)
+            filtered_ids = self.improve_strategy(term, optim_result.local_minima_losses)
 
-            if filtered_ids.numel() == 0: # cannot optimize
+            if len(filtered_ids) == 0: # cannot optimize
                 if self.with_tabu:
                     if term not in self.tabu_positions:
                         self.tabu_positions[term] = set()
                     self.tabu_positions[term].add(position)
                 continue # try next position
             
-            point_best_binding = list(best_binding.values())[0]
-
-            selected_best_binding = [point_best_binding[filter_id].clone() for filter_id in filtered_ids.tolist()]
-            del point_best_binding, filtered_ids
+            selected_best_binding = [b for filter_id in filtered_ids for b in optim_result.local_minima_bindings[filter_id].values()]
             
             # self.term_hole_pairs.register_holes([(term, position)], point_best_binding.unsqueeze(0))
 
@@ -301,7 +296,7 @@ class PointOptim(Operator, ServiceBase):
 
         self.cur_parents = population
 
-        population = population[:1]        
+        population = population[7:8]        
 
         holes = []
         hole_bindings = []

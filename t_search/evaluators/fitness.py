@@ -80,7 +80,8 @@ class Fitness(ServiceBase):
                  syntax: Syntax,
                  name: str = "nmse",
                  target: torch.Tensor,
-                 fitness_atol: float = 1e-6):
+                 fitness_atol: float = 1e-6,
+                 debug: bool = False):
         self.name = name
         self.target = target
         self.syntax = syntax
@@ -92,6 +93,7 @@ class Fitness(ServiceBase):
         self.best_term_size: Optional[int] = None
         self.best_term_outputs: Optional[torch.Tensor] = None
         self.fitness_atol = fitness_atol
+        self.debug = debug
 
     def set_best_term(self, terms: list[Term], outputs: torch.Tensor, fitness: torch.Tensor):
         if len(outputs) == 0:
@@ -104,6 +106,8 @@ class Fitness(ServiceBase):
         if (self.best_term is None) or \
             ((best_new_fitness, best_new_size, best_new_depth) < (self.best_term_fitness, self.best_term_size, self.best_term_depth)):
             # torch.isclose(best_new_fitness, self.best_term_fitness, atol=self.fitness_atol, rtol=0) or \
+            if self.debug:
+                print(f"New best {new_term} fitness={best_new_fitness.item():.6e}, size={best_new_size}, depth={best_new_depth}")
             self.best_term = new_term
             self.best_term_fitness = best_new_fitness
             self.best_term_outputs = new_outputs
