@@ -161,6 +161,9 @@ class Syntax(ServiceBase):
         self.builders.limit_context(context_limits)
 
         self.builders.disable_builders(list(self.waiting_ops)) 
+        
+        self.zero_value = self.const_builder.fn(value=0.0)
+        self.skeletons_cache: dict[Term, Term] = {}
 
     def _alloc_const(self, *, value: Optional[float | torch.Tensor] = None) -> Value:
         if self.const_id >= self.const_tape.shape[0]:
@@ -269,6 +272,18 @@ class Syntax(ServiceBase):
             return cached_term
         except Exception:
             return None        
+        
+    def get_skeleton(self, term: Term) -> Term:
+        ''' Replaces all constants to specified const_value forming unified skeleton for family of terms'''
+        if term in self.skeletons_cache:
+            return self.skeletons_cache[term]
+        def replace_consts(t: Term, *_):
+            if isinstance(t, Value):
+                return self.zero_value
+            return None
+        skeleton = self.replace_fn(term, replace_consts)
+        self.skeletons_cache[term] = skeleton
+        return skeleton
 
     def get_depth(self, term: Term) -> int:
         term_depth = get_depth(term, self.depth_cache)

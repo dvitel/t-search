@@ -51,7 +51,7 @@
         "selection": { 
             "type": "TS", 
             "module": "t_search.operators.classic",
-            "params": { "selection_size": 1000, "tournament_size": 7 } 
+            "params": { "selection_size": 10, "tournament_size": 7 } 
         },
         "mutation": { 
             "type": "RPM", 
@@ -68,10 +68,10 @@
             "module": "t_search.operators.classic",
             "params": { 
                 "evaluator": {"!ref": "evaluator"},
-                "mu": 1000, 
+                "mu": 10, 
                 "strict": false, 
                 "combine": false,
-                "elitism": 10
+                "elitism": 1
             } 
         },
         "reduce_consts": {
@@ -94,7 +94,7 @@
         },
         "hole_index_storage": {"type": "RTreeIndex", "params": {}},
         "hole_index": {
-            "type": "TermVectorStorage",
+            "type": "HoleVectorStorage",
             "params": { 
                 "index": {"!ref": "hole_index_storage"},
                 "normalizer": {"!ref": "zscore"}
@@ -107,10 +107,10 @@
                 "syntax": {"!ref": "syntax"},
                 "term_index": {"!ref": "term_index"},
                 "hole_index": {"!ref": "hole_index"},
-                "start_delta": 0.00001,
+                "start_delta": 1,
                 "multiplier": 10,
-                "num_steps": 10,
-                "num_closest": 3
+                "num_steps": 1,
+                "num_closest": 1
             }
         },
         "evaluator": {
@@ -133,7 +133,6 @@
                 "semantics": {"!ref": "semantics"},
                 "evaluator": {"!ref": "evaluator"},
                 "position_strategy": "rand_position_order",
-                "term_strategy": "rand_term_order",
                 "improve_strategy": "local_improve",
                 "num_starts": 10,
                 "range_delta": 0.1,
@@ -141,12 +140,13 @@
                 "lr": 0.1,
                 "tolerance_change": 0.0000001,
                 "tolerance_grad": 0.0000001,
-                "min_loss_rtol": 0.0001,
+                "min_loss_rtol": 0.95,
                 "with_tabu": true,
-                "closer_to_points": true,
+                "closer_to_points": false,
                 "closer_to_points_lambda": 0.001,
-                "max_holes_to_create": 1,
-                "max_hole_bindings": 2
+                "max_hole_bindings": 1,
+                "hole_batch_size": 10,
+                "num_children": 10
             }
         }
     },

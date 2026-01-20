@@ -209,6 +209,11 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
                 if len(found_ids) > 0:
                     vectors = self.index.get_vectors(found_ids)
                     l2 = torch.sum((vectors - q.unsqueeze(0)) ** 2, dim=1)
+                    if num_closest == 1:
+                        min_l2_id = torch.argmin(l2)
+                        q_res = [(l2[min_l2_id].item(), self.sid_to_term[found_ids[min_l2_id.item()]])]
+                        del l2, vectors, found_ids
+                        break
                     l2_sort_order = torch.argsort(l2)
                     min_l2_ids = l2_sort_order[:num_closest]
                     q_res = [(l2[fid].item(), self.sid_to_term[found_ids[fid]]) for fid in min_l2_ids.tolist()]
@@ -218,17 +223,20 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
                 left_num_steps -= 1      
             if q_res is not None:                  
                 res.append(q_res)
+            else:
+                res.append([])
         return res
     
     def closest_or_self(self, queries: torch.Tensor,
-                            start_delta: float = 1e-5,
+                            start_delta: float = 1e-2,
                             multiplier: float = 10,
-                            num_steps: int = 3) -> torch.Tensor:
+                            max_num_steps: int = 3) -> torch.Tensor:
         ''' Returns closest vector or self '''
         
         closest = torch.clone(queries)
         for qid, q in enumerate(queries):
             delta = start_delta
+            num_steps = max_num_steps
             while num_steps > 0:
                 range = torch.stack([q - delta, q + delta], dim=0)
                 found_ids = self.index.query_range(range)
@@ -246,5 +254,11 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
 class TermVectorStorage(BaseVectorStorage[Term]):
     pass 
 
-class HoleVectorStorage(BaseVectorStorage[tuple[Term, TermPos]]):
-    pass
+def hole_order(term_order: Callable):
+    def fn(hole): 
+        return (hole[1].at_depth, term_order(hole[0]), hole[1].occur)
+    return fn
+
+class HoleVectorStorage(BaseVectorStorage[tuple[Term, TermPos]]):    
+    def __init__(self, *, term_order, **kwargs):
+        super().__init__(term_order=hole_order(term_order), **kwargs)

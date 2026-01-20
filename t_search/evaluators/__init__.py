@@ -1,8 +1,8 @@
 from .evaluator import Evaluator, DefaultEvaluator, OptimEvaluator
-from .term_spatial import TermVectorStorage, IdentityNormalizer, ZScoreNormalizer
+from .term_spatial import TermVectorStorage, HoleVectorStorage, IdentityNormalizer, ZScoreNormalizer
 from .semantics import Semantics
 from .fitness import Fitness
 
 __all__ = ["Evaluator", "DefaultEvaluator", "OptimEvaluator", 
-           "TermVectorStorage", "Semantics", "Fitness",
+           "TermVectorStorage", "HoleVectorStorage", "Semantics", "Fitness",
            "IdentityNormalizer", "ZScoreNormalizer"]

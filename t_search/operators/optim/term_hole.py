@@ -189,9 +189,8 @@ class TermHolePairs(EvalListener, ServiceBase):
             res.append((pp.term, pp.hole))
         return res        
     
-    def get_best_hole_fillings(self, max_fillings: int) -> list[tuple[Term, PriorityPair]]:
-        res: list[tuple[Term, PriorityPair]] = []
-        while len(res) < max_fillings and len(self.term_hole_pairs) > 0:
+    def get_best_hole_filling(self) -> tuple[Term, PriorityPair] | None:
+        while len(self.term_hole_pairs) > 0:
             pp = heappop(self.term_hole_pairs)
             filled = self.fill_hole(pp.term, pp.hole[0], pp.hole[1])
             if filled is not None:
@@ -202,5 +201,5 @@ class TermHolePairs(EvalListener, ServiceBase):
                 # old_fitness = self.fitness.get_fitness(pp.hole[0])
                 # assert new_fitness < old_fitness, "Filling must improve fitness"
 
-                res.append((filled, pp))
-        return res
+                return (filled, pp)
+        return None, None
