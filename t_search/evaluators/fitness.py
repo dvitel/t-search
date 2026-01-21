@@ -157,7 +157,8 @@ class Fitness(ServiceBase):
         return finalize
     
     def get_loss(self, outputs: torch.Tensor) -> torch.Tensor:
-        return torch.mean((outputs - self.target) ** 2, dim=-1)
+        ''' Note: per dim loss, not averaged '''
+        return (outputs - self.target) ** 2
     
     def get_iter_metrics(self):
         iter_fitness = self.best_term_fitness.item()

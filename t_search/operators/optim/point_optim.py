@@ -8,7 +8,7 @@ import torch
 from t_search.base import ServiceBase
 from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.fitness import Fitness
-from t_search.evaluators.optimization import OptimPoint, get_all_grads, optimize
+from t_search.evaluators.optimization import OptimPoint, OptimResult, get_all_grads, optimize
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.operator import Operator
 from t_search.operators.optim.term_hole import TermHolePairs
@@ -16,6 +16,13 @@ from t_search.operators.optim.term_hole import TermHolePairs
 from t_search.syntax import Term, TermPos
 from t_search.syntax.flow import shuffled_position_flow
 from t_search.syntax.syntax import Syntax
+
+@dataclass(frozen=False)
+class OptimState:
+    optim_term: Term # term with OptimPoint
+    path: dict[TermPos, TermPos] # maps new pos to old pos, these points are also collected in optimization
+    binding: dict[OptimPoint, torch.Tensor]
+    ranges: torch.Tensor
 
 @dataclass(order=True)
 class HolePos:
@@ -125,7 +132,7 @@ class PointOptim(Operator, ServiceBase):
         priorities = [ (-grads[(pos.term, pos.occur)].item(), age, ) for age, pos in enumerate(positions)]
         return priorities
 
-    def _get_optim_state(self, term: Term, position: TermPos) -> tuple[Term, dict[OptimPoint, torch.Tensor], torch.Tensor] | None:
+    def _get_optim_state(self, term: Term, position: TermPos) -> OptimState | None:
         ''' None is returned if term,position is already optimized '''
         optim_term = self.optim_term_cache.get((term, (position.term, position.occur)))
         if optim_term is not None:  # position is already optimized
@@ -137,6 +144,7 @@ class PointOptim(Operator, ServiceBase):
                 return optim_point
             return None
         optim_term = self.syntax.replace_fn(term, pos_to_optim_point)
+
         self.optim_term_cache[(term, (position.term, position.occur))] = optim_term
         if optim_term in self.tried_optim_terms:
             return None
@@ -151,7 +159,20 @@ class PointOptim(Operator, ServiceBase):
         range_mins -= self.range_delta
         range_maxs += self.range_delta        
         ranges = torch.stack([range_mins, range_maxs], dim=0).t()
-        return optim_term, binding, ranges
+
+        optim_term_positions = self.syntax.get_positions(optim_term)
+        optim_term_position = next(p for p in optim_term_positions if p.term == optim_point)
+        path = {} # excludes optim point and root
+        cur_pos = optim_term_position.parent
+        cur_real_pos = position.parent
+        while cur_pos.parent is not None:
+            path[cur_pos] = cur_real_pos
+            cur_pos = cur_pos.parent
+            cur_real_pos = cur_real_pos.parent
+
+        optim_state = OptimState(optim_term, path, binding, ranges)
+
+        return optim_state
     
     def local_improve(self, orig_term: Term, local_minimas: list[float]) -> list[int]:
         cur_loss = self.default_loss_fn(orig_term).item()
@@ -216,21 +237,23 @@ class PointOptim(Operator, ServiceBase):
         optim_state = self._get_optim_state(hole_pos.term, hole_pos.pos)
 
         if optim_state is None: # already optimized 
-            return None            
+            return None
         
-        optim_term, start_binding, start_range = optim_state
-
-        optim_result = optimize(optim_term, start_range, start_binding,
-                loss_fn_builder=self.get_optim_loss_fn,
-                num_starts=self.num_starts,
-                lr=self.lr,
-                max_evals=self.max_evals,
-                tolerance_change=self.tolerance_change,
-                tolerance_grad=self.tolerance_grad,
-                torch_gen=self.torch_gen,
-                num_local_minimas=self.max_hole_bindings,
-                debug=self.debug
-                )
+        optim_result: OptimResult = optimize(optim_state.optim_term, 
+                                optim_state.start_range, 
+                                optim_state.start_binding,
+                                loss_fn_builder=self.get_optim_loss_fn,
+                                terms_to_collect=optim_state.path,
+                                num_starts=self.num_starts,
+                                lr=self.lr,
+                                max_evals=self.max_evals,
+                                tolerance_change=self.tolerance_change,
+                                tolerance_grad=self.tolerance_grad,
+                                torch_gen=self.torch_gen,
+                                num_local_minimas=self.max_hole_bindings,
+                                debug=self.debug)
+        
+        
             
         self.num_terms_optimized += 1
             
