@@ -242,8 +242,8 @@ class PointOptim(Operator, ServiceBase):
         pos_to_collect = set(optim_state.path.keys())
         
         optim_result: OptimResult = optimize(optim_state.optim_term, 
-                                optim_state.start_range, 
-                                optim_state.start_binding,
+                                optim_state.ranges, 
+                                optim_state.binding,
                                 loss_fn_builder=self.get_optim_loss_fn,
                                 pos_to_collect=pos_to_collect,
                                 num_starts=self.num_starts,
@@ -305,6 +305,9 @@ class PointOptim(Operator, ServiceBase):
         self.added_terms.add(term)
         return
 
+    # TODO 0: debug strange case of (add cos(x) (neg x)) --> (add cos(x) (mul 1 (neg x))) - why it had good fit??
+    # TODO 1: redo the loop by adding instant jump to children gen when good pair appears, 
+    # TODO 2: do not use batch for holes, but control queues sizes !!!
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]: 
         ''' 
             1. Optimize holes from population
@@ -343,8 +346,8 @@ class PointOptim(Operator, ServiceBase):
             hole_bindings = []
             while len(holes) < self.hole_batch_size and len(self.pos_queue) > 0:
                 hole_pos = heappop(self.pos_queue)
-                holes = self.create_holes(hole_pos)
-                for hole in holes:
+                cur_holes = self.create_holes(hole_pos)
+                for hole in cur_holes:
                     for hole_binding in hole.bindings:
                         holes.append((hole.term, hole.position))
                         hole_bindings.append(hole_binding)

@@ -145,17 +145,16 @@ def optimize(
         #     raise LRAdjust(None)
 
         where_better = fixed_loss < best_loss
-        best_loss[where_better] = fixed_loss[where_better]
+        best_loss.data[where_better] = fixed_loss[where_better]
         for k, v in binding.items():
-            best_binding[k][where_better] = v[where_better]
-        for k, v in best_additional_binding.items():
-            if k in additional_binding:
-                if v is None:
-                    best_additional_binding[k] = additional_binding[k]
-                else:
-                    best_additional_binding[k][where_better] = additional_binding[k][where_better]
-                    del additional_binding[k]
-
+            best_binding[k].data[where_better] = v[where_better]
+        for k, v in additional_binding.items():
+            if k in best_additional_binding:
+                best_additional_binding[k].data[where_better] = additional_binding[k][where_better]                
+            else:
+                best_additional_binding[k] = additional_binding[k].clone()
+        for v in additional_binding.values():
+            del v
         if debug:
             print(f"{num_root_evals}\tL {' '.join([f'{f:.1e}' for f in best_loss.mean(dim=1).tolist()])}")        
         
