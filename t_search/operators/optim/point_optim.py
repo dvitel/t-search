@@ -21,6 +21,7 @@ from t_search.syntax.syntax import Syntax
 class OptimState:
     optim_term: Term # term with OptimPoint
     path: dict[tuple[Term, int], TermPos] # maps new pos to old pos, these points are also collected in optimization
+    tabu_markers: set[Term] # set of skeletons that represent the optimization path
     binding: dict[OptimPoint, torch.Tensor]
     ranges: torch.Tensor
 
@@ -79,7 +80,9 @@ class PointOptim(Operator, ServiceBase):
         self.num_children = num_children
         self.position_strategy = getattr(self, position_strategy)  
         # self.term_position_orders: dict[Term, deque] = {}
-        self.tabu_positions: dict[Term, set[TermPos]] = {} # any position below the tabu position should be ignored
+        # self.tabu_positions: dict[Term, set[TermPos]] = {} # any position below the tabu position should be ignored
+        self.tabu_set: set[Term] = set()
+
         self.rnd = rnd
         self.torch_gen = torch_gen
         self.num_starts = num_starts
@@ -170,7 +173,19 @@ class PointOptim(Operator, ServiceBase):
             cur_pos = cur_pos.parent
             cur_real_pos = cur_real_pos.parent
 
-        optim_state = OptimState(optim_term, path, binding, ranges)
+        tabu_markers = set()
+        if self.with_tabu: # creating tabu markers from path
+            tabu_markers.add(optim_term)
+            for parent_pos in path.values():
+                parent_optim_point = OptimPoint(0)
+                def parent_pos_to_optim_point(term: Term, occur: int):
+                    if term == parent_pos.term and occur == parent_pos.occur:
+                        return parent_optim_point
+                    return None
+                parent_optim_term = self.syntax.replace_fn(term, parent_pos_to_optim_point)
+                tabu_markers.add(parent_optim_term)
+
+        optim_state = OptimState(optim_term, path, tabu_markers, binding, ranges)
 
         return optim_state
     
@@ -206,37 +221,23 @@ class PointOptim(Operator, ServiceBase):
             return optim_loss_fn
         return self.evaluator.get_loss_fn(**kwargs)
     
-    def is_in_tabu(self, term: Term, position: TermPos) -> bool:
-        if term not in self.tabu_positions:
-            return False 
-        
-        term_tabu = self.tabu_positions[term]
-        blocked = False
-        cur_pos = position 
-        while cur_pos is not None:
-            if cur_pos in term_tabu:
-                blocked = True
-                break
-            cur_pos = cur_pos.parent
-        return blocked
+    def is_in_tabu(self, hole_pos: HolePos, optim_state: OptimState) -> bool:
+        no_blocked = set.isdisjoint(optim_state.tabu_markers, self.tabu_set)
+        return not no_blocked
     
-    def add_to_tabu(self, term: Term, position: TermPos) -> None:
+    def add_to_tabu(self, optim_state: OptimState) -> None:
         if self.with_tabu:
-            if term not in self.tabu_positions:
-                self.tabu_positions[term] = set()
-            self.tabu_positions[term].add(position)
-        pass
+            self.tabu_set.add(optim_state.optim_term)
 
     def create_holes(self, hole_pos: HolePos) -> list[Hole]:
         ''' Takes one hole at a time, None if no holes left '''
 
-        # tabu list check
-        if self.is_in_tabu(hole_pos.term, hole_pos.pos):
-            return []
-            
         optim_state = self._get_optim_state(hole_pos.term, hole_pos.pos)
 
         if optim_state is None: # already optimized 
+            return []
+        
+        if self.is_in_tabu(hole_pos, optim_state):
             return []
         
         pos_to_collect = set(optim_state.path.keys())
@@ -260,7 +261,7 @@ class PointOptim(Operator, ServiceBase):
         threshold_optim_result_(optim_result, self.loss_threshold)
 
         if torch.any(torch.all(torch.isinf(optim_result.loss), dim=0)): # no minimas found
-            self.add_to_tabu(hole_pos.term, hole_pos.pos)
+            self.add_to_tabu(optim_state)
             return []
 
         set_local_minimas_(optim_result)
@@ -270,7 +271,7 @@ class PointOptim(Operator, ServiceBase):
         clean_optim_result(optim_result)
 
         if slowest_traces is None:
-            self.add_to_tabu(hole_pos.term, hole_pos.pos)
+            self.add_to_tabu(optim_state)
             return []
             
         slowest_traces_binding = [t.clone() for traces in slowest_traces.binding.values() for t in traces] 
@@ -307,6 +308,7 @@ class PointOptim(Operator, ServiceBase):
     # TODO 1: tabu list as set of skeletons (optim_terms)
     # TODO 2: redo the loop by adding instant jump to children gen when good pair appears, 
     # TODO 3: do not use batch for holes, but control queues sizes !!!
+    # TODO 4: trace step by step execution of the optimizer when loss is inf - for small set of test
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]: 
         ''' 
             1. Optimize holes from population
@@ -373,5 +375,7 @@ class PointOptim(Operator, ServiceBase):
             num_holes_created=self.num_holes_created,
             num_terms_optimized=self.num_terms_optimized,
             # "num_terms_created": self.num_terms_created,
-            tabu_positions=sum(len(v) for v in self.tabu_positions.values()))
+            # tabu_positions=sum(len(v) for v in self.tabu_positions.values())
+            tabu_positions=len(self.tabu_set)
+            )
         
