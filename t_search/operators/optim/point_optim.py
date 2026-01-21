@@ -8,7 +8,7 @@ import torch
 from t_search.base import ServiceBase
 from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.fitness import Fitness
-from t_search.evaluators.optimization import OptimPoint, OptimResult, clean_optim_result, get_all_grads, get_local_minimas, get_slowest_funs, optimize, threshold_optim_result_
+from t_search.evaluators.optimization import OptimPoint, OptimResult, clean_optim_result, get_all_grads, set_local_minimas_, get_slowest_funs, optimize, threshold_optim_result_
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.operator import Operator
 from t_search.operators.optim.term_hole import TermHolePairs
@@ -103,10 +103,10 @@ class PointOptim(Operator, ServiceBase):
         self.added_terms = set() # terms with added positions
 
         #TODO
-        # 1. Metrics 
+        # 1. Metrics - DONE
         # 2. num_holes for one term - not just 1 - DONE
         # 2.2 num_bindings - DONE
-        # 3. Const check for optimized hole.
+        # 3. Const check for optimized hole. - DONE
         # 4. testing on simple term
 
         #metrics 
@@ -259,24 +259,21 @@ class PointOptim(Operator, ServiceBase):
 
         threshold_optim_result_(optim_result, self.loss_threshold)
 
-        local_minimas = get_local_minimas(optim_result)
-
-        clean_optim_result(optim_result)
-
-        if local_minimas is None:
+        if torch.any(torch.all(torch.isinf(optim_result.loss), dim=0)): # no minimas found
             self.add_to_tabu(hole_pos.term, hole_pos.pos)
             return []
 
-        slowest_traces = get_slowest_funs(local_minimas, max_num_funs=self.max_hole_bindings)
+        set_local_minimas_(optim_result)
 
-        clean_optim_result(local_minimas)
+        slowest_traces = get_slowest_funs(optim_result, max_num_funs=self.max_hole_bindings)
+
+        clean_optim_result(optim_result)
+
+        if slowest_traces is None:
+            self.add_to_tabu(hole_pos.term, hole_pos.pos)
+            return []
             
-        # selected_best_binding = [b for filter_id in filtered_ids for b in optim_result.local_minima_bindings[filter_id].values()]
-        
-        # self.term_hole_pairs.register_holes([(term, position)], point_best_binding.unsqueeze(0))
-
         slowest_traces_binding = [t.clone() for traces in slowest_traces.binding.values() for t in traces] 
-
 
         hole = Hole(hole_pos.term, hole_pos.pos, slowest_traces_binding)
         holes = [hole]
@@ -305,9 +302,11 @@ class PointOptim(Operator, ServiceBase):
         self.added_terms.add(term)
         return
 
-    # TODO 0: debug strange case of (add cos(x) (neg x)) --> (add cos(x) (mul 1 (neg x))) - why it had good fit??
-    # TODO 1: redo the loop by adding instant jump to children gen when good pair appears, 
-    # TODO 2: do not use batch for holes, but control queues sizes !!!
+    # TODO -1: bug with extracting local minimas - DONE
+    # TODO 0: debug strange case of (add cos(x) (neg x)) --> (add cos(x) (mul 1 (neg x))) - why it had good fit?? - DONE (not reappearing)
+    # TODO 1: tabu list as set of skeletons (optim_terms)
+    # TODO 2: redo the loop by adding instant jump to children gen when good pair appears, 
+    # TODO 3: do not use batch for holes, but control queues sizes !!!
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]: 
         ''' 
             1. Optimize holes from population

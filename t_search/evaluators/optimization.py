@@ -401,7 +401,7 @@ def get_slowest_funs(optim_result: OptimResult,
     if torch.any(num_fit == 0):
         return None # some tests cannot be fitted 
     if torch.all(num_fit == 1): # exactly one function 
-        pos = torch.argmax(fit_mask, dim=0, keepdim=True) # (1, num_tests)
+        pos = torch.argmax(fit_mask.long(), dim=0, keepdim=True) # (1, num_tests)
         res = gather_optim_pos(optim_result, pos)
         return res 
     # there could be combinations - we check distances to neighbours
@@ -434,48 +434,73 @@ def get_slowest_funs(optim_result: OptimResult,
 
     return res
          
-def get_local_minimas(optim_result: OptimResult,
+def set_local_minimas_(optim_result: OptimResult,
                         rtol: float = 1e-3,
-                        atol: float = 1e-4) -> OptimResult | None:
+                        atol: float = 1e-4) -> None:
     '''
         For each test in (num_start, num_tests) of optim_result.binding, picks unique local minimas:
         1. Smallest by loss
         2. torch.inf to closest to smallest by loss
         3. Repeats until no more local minimas found
     '''
-    local_minima_vectors = []
-    local_minimas = []
-    loss = optim_result.loss.clone()
-    for _ in range(loss.shape[0]):  # at most num_starts local minimas
-        min_pos = loss.argmin(dim=0, keepdim=True)        
-        loss.scatter_(0, min_pos, torch.inf)
-        new_optim_result = gather_optim_pos(optim_result, min_pos)
-        del min_pos
-        if not torch.all(torch.isfinite(new_optim_result.loss)):
-            clean_optim_result(new_optim_result)
-            break
-        optim_vector = torch.cat([v[0] for v in new_optim_result.binding.values()], dim=0)
-        if any(torch.allclose(optim_vector, lv, rtol=rtol, atol=atol) 
-               for lv in local_minima_vectors):
-            del optim_vector
-            clean_optim_result(new_optim_result)
-            continue  # already have this minima
-        local_minima_vectors.append(optim_vector)
-        local_minimas.append(new_optim_result)
-    # combine local minimas into one optim_result
-    if len(local_minimas) == 0:
-        return None
-    all_losses = torch.stack([lm.loss[0] for lm in local_minimas], dim=0)  # (num_local_minimas, num_tests)
-    all_bindings = {}
-    for k in optim_result.binding.keys():
-        all_bindings[k] = torch.stack([lm.binding[k][0] for lm in local_minimas], dim=0)
-    all_additional_bindings = {}
-    for k in optim_result.additional_binding.keys():
-        all_additional_bindings[k] = torch.stack([lm.additional_binding[k][0] for lm in local_minimas], dim=0)
-    res = OptimResult(all_losses, all_bindings, all_additional_bindings)
-    for lm in local_minimas:
-        clean_optim_result(lm)
-    return res
+    # local_minima_vectors = []
+    # local_minimas = []
+
+    sort_ids = torch.argsort(optim_result.loss, dim=0)  # (num_starts, num_tests)
+    sorted_loss = torch.gather(optim_result.loss, dim=0, index=sort_ids)  # (num_starts, num_tests)
+    vectors = [
+        torch.gather(v, dim=0, index=sort_ids)  # (num_starts, num_tests)
+        for v in optim_result.binding.values()
+    ] 
+    assert len(vectors) > 0, "No binding vectors in optim_result"
+
+    for start_id in range(1, sort_ids.shape[0]): # check if previous starts are close by binding vectors and set the loss to inf in such cases
+        prev_values = [v[:start_id] for v in vectors] # (start_id, num_tests) each
+        cur_value = [v[start_id:start_id+1] for v in vectors] #(1, num_tests) each 
+        are_close = [ torch.isclose(cv, pv, rtol=rtol, atol=atol) 
+                      for cv, pv in zip(cur_value, prev_values)]
+        close_mask = are_close[0]
+        for ac in are_close[1:]:
+            close_mask &= ac 
+        start_close_mask = torch.any(close_mask, dim=0)  # (num_tests,)
+        start_close_index = sort_ids[start_id]
+        # scatter inf according to start_close_mask
+        new_loss = sorted_loss[start_id]
+        new_loss[start_close_mask] = torch.inf
+        optim_result.loss.scatter_(0, start_close_index.unsqueeze(0), new_loss.unsqueeze(0))
+        del close_mask, start_close_mask, are_close, prev_values, cur_value
+    del sort_ids, vectors, sorted_loss
+
+    # loss = optim_result.loss.clone()
+    # for _ in range(loss.shape[0]):  # at most num_starts local minimas
+    #     min_pos = loss.argmin(dim=0, keepdim=True)        
+    #     loss.scatter_(0, min_pos, torch.inf)
+    #     new_optim_result = gather_optim_pos(optim_result, min_pos)
+    #     del min_pos
+    #     if not torch.all(torch.isfinite(new_optim_result.loss)):
+    #         clean_optim_result(new_optim_result)
+    #         break
+    #     optim_vector = torch.cat([v[0] for v in new_optim_result.binding.values()], dim=0)
+    #     if any(torch.allclose(optim_vector, lv, rtol=rtol, atol=atol) 
+    #            for lv in local_minima_vectors):
+    #         del optim_vector
+    #         clean_optim_result(new_optim_result)
+    #         continue  # already have this minima
+    #     local_minima_vectors.append(optim_vector)
+    #     local_minimas.append(new_optim_result)
+    # # combine local minimas into one optim_result
+    # if len(local_minimas) == 0:
+    #     return None
+    # all_losses = torch.stack([lm.loss[0] for lm in local_minimas], dim=0)  # (num_local_minimas, num_tests)
+    # all_bindings = {}
+    # for k in optim_result.binding.keys():
+    #     all_bindings[k] = torch.stack([lm.binding[k][0] for lm in local_minimas], dim=0)
+    # all_additional_bindings = {}
+    # for k in optim_result.additional_binding.keys():
+    #     all_additional_bindings[k] = torch.stack([lm.additional_binding[k][0] for lm in local_minimas], dim=0)
+    # res = OptimResult(all_losses, all_bindings, all_additional_bindings)
+    # for lm in local_minimas:
+    #     clean_optim_result(lm)
 
 def get_all_grads(term: Term,
                   var_bindings: dict[str, torch.Tensor],
