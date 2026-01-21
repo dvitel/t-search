@@ -8,7 +8,7 @@ import torch
 from t_search.base import ServiceBase
 from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.fitness import Fitness
-from t_search.evaluators.optimization import OptimPoint, OptimResult, get_all_grads, optimize
+from t_search.evaluators.optimization import OptimPoint, OptimResult, clean_optim_result, get_all_grads, get_local_minimas, get_slowest_funs, optimize, threshold_optim_result_
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.operator import Operator
 from t_search.operators.optim.term_hole import TermHolePairs
@@ -20,7 +20,7 @@ from t_search.syntax.syntax import Syntax
 @dataclass(frozen=False)
 class OptimState:
     optim_term: Term # term with OptimPoint
-    path: dict[TermPos, TermPos] # maps new pos to old pos, these points are also collected in optimization
+    path: dict[tuple[Term, int], TermPos] # maps new pos to old pos, these points are also collected in optimization
     binding: dict[OptimPoint, torch.Tensor]
     ranges: torch.Tensor
 
@@ -51,7 +51,6 @@ class PointOptim(Operator, ServiceBase):
                  torch_gen: torch.Generator,
                  add_metrics: Callable,
                  position_strategy: Literal["rand_position_order", "shallow_to_deep_position_order", "best_grad_position_order"] = "rand_position_order",
-                 improve_strategy: Literal["local_improve", "global_improve"] = "local_improve",
                  num_starts: int = 10,
                  range_delta: float = 0.1,
                  max_evals: int = 20,
@@ -66,6 +65,7 @@ class PointOptim(Operator, ServiceBase):
                  num_children: int = 1000,
                  hole_batch_size: int = 16,
                  debug: bool = False,
+                 loss_threshold: float = 1e-3,
                  **kwargs):
         super().__init__(**kwargs)
         self.term_hole_pairs = term_hole_pairs
@@ -80,7 +80,6 @@ class PointOptim(Operator, ServiceBase):
         self.position_strategy = getattr(self, position_strategy)  
         # self.term_position_orders: dict[Term, deque] = {}
         self.tabu_positions: dict[Term, set[TermPos]] = {} # any position below the tabu position should be ignored
-        self.improve_strategy = getattr(self, improve_strategy)
         self.rnd = rnd
         self.torch_gen = torch_gen
         self.num_starts = num_starts
@@ -98,6 +97,7 @@ class PointOptim(Operator, ServiceBase):
         self.add_metrics = add_metrics
         self.max_hole_bindings = max_hole_bindings
         self.hole_batch_size = hole_batch_size
+        self.loss_threshold = loss_threshold
 
         self.pos_queue: list[HolePos] = [] # hole priority queue
         self.added_terms = set() # terms with added positions
@@ -166,7 +166,7 @@ class PointOptim(Operator, ServiceBase):
         cur_pos = optim_term_position.parent
         cur_real_pos = position.parent
         while cur_pos.parent is not None:
-            path[cur_pos] = cur_real_pos
+            path[(cur_pos.term, cur_pos.occur)] = cur_real_pos
             cur_pos = cur_pos.parent
             cur_real_pos = cur_real_pos.parent
 
@@ -227,23 +227,25 @@ class PointOptim(Operator, ServiceBase):
             self.tabu_positions[term].add(position)
         pass
 
-    def create_hole(self, hole_pos: HolePos) -> Hole | None:
+    def create_holes(self, hole_pos: HolePos) -> list[Hole]:
         ''' Takes one hole at a time, None if no holes left '''
 
         # tabu list check
         if self.is_in_tabu(hole_pos.term, hole_pos.pos):
-            return None
+            return []
             
         optim_state = self._get_optim_state(hole_pos.term, hole_pos.pos)
 
         if optim_state is None: # already optimized 
-            return None
+            return []
+        
+        pos_to_collect = set(optim_state.path.keys())
         
         optim_result: OptimResult = optimize(optim_state.optim_term, 
                                 optim_state.start_range, 
                                 optim_state.start_binding,
                                 loss_fn_builder=self.get_optim_loss_fn,
-                                terms_to_collect=optim_state.path,
+                                pos_to_collect=pos_to_collect,
                                 num_starts=self.num_starts,
                                 lr=self.lr,
                                 max_evals=self.max_evals,
@@ -252,26 +254,39 @@ class PointOptim(Operator, ServiceBase):
                                 torch_gen=self.torch_gen,
                                 num_local_minimas=self.max_hole_bindings,
                                 debug=self.debug)
-        
-        
-            
+                    
         self.num_terms_optimized += 1
+
+        threshold_optim_result_(optim_result, self.loss_threshold)
+
+        local_minimas = get_local_minimas(optim_result)
+
+        clean_optim_result(optim_result)
+
+        if local_minimas is None:
+            self.add_to_tabu(hole_pos.term, hole_pos.pos)
+            return []
+
+        slowest_traces = get_slowest_funs(local_minimas, max_num_funs=self.max_hole_bindings)
+
+        clean_optim_result(local_minimas)
             
-        if len(optim_result.local_minima_losses) == 0:
-            self.add_to_tabu(hole_pos.term, hole_pos.pos)
-            return None
-
-        filtered_ids = self.improve_strategy(hole_pos.term, optim_result.local_minima_losses)
-
-        if len(filtered_ids) == 0: # cannot optimize
-            self.add_to_tabu(hole_pos.term, hole_pos.pos)
-            return None
-        
-        selected_best_binding = [b for filter_id in filtered_ids for b in optim_result.local_minima_bindings[filter_id].values()]
+        # selected_best_binding = [b for filter_id in filtered_ids for b in optim_result.local_minima_bindings[filter_id].values()]
         
         # self.term_hole_pairs.register_holes([(term, position)], point_best_binding.unsqueeze(0))
 
-        return Hole(hole_pos.term, hole_pos.pos, selected_best_binding)
+        slowest_traces_binding = [t.clone() for traces in slowest_traces.binding.values() for t in traces] 
+
+
+        hole = Hole(hole_pos.term, hole_pos.pos, slowest_traces_binding)
+        holes = [hole]
+        for k, v in optim_state.path.items():
+            traces = [t.clone() for t in slowest_traces.additional_binding[k]]
+            new_hole = Hole(hole_pos.term, v, traces)
+            holes.append(new_hole)
+
+        clean_optim_result(slowest_traces)
+        return holes
     
     def add_hole_pos(self, term: Term) -> None:
         ''' Adds term positions into priority of holes to optimize '''
@@ -328,8 +343,8 @@ class PointOptim(Operator, ServiceBase):
             hole_bindings = []
             while len(holes) < self.hole_batch_size and len(self.pos_queue) > 0:
                 hole_pos = heappop(self.pos_queue)
-                hole = self.create_hole(hole_pos)
-                if hole is not None:
+                holes = self.create_holes(hole_pos)
+                for hole in holes:
                     for hole_binding in hole.bindings:
                         holes.append((hole.term, hole.position))
                         hole_bindings.append(hole_binding)

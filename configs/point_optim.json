@@ -146,7 +146,8 @@
                 "closer_to_points_lambda": 0.001,
                 "max_hole_bindings": 1,
                 "hole_batch_size": 10,
-                "num_children": 10
+                "num_children": 10,
+                "loss_threshold": 0.001
             }
         }
     },
