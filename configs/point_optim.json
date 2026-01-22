@@ -110,7 +110,9 @@
                 "start_delta": 1,
                 "multiplier": 10,
                 "num_steps": 1,
-                "num_closest": 1
+                "num_closest": 1,
+                "min_l2_for_instant_buid": 0.01,
+                "max_pair_queue_size": 16                
             }
         },
         "evaluator": {
@@ -145,9 +147,9 @@
                 "closer_to_points": false,
                 "closer_to_points_lambda": 0.001,
                 "max_hole_bindings": 1,
-                "hole_batch_size": 10,
                 "num_children": 10,
-                "loss_threshold": 0.001
+                "loss_threshold": 0.001,
+                "instant_eval": true
             }
         }
     },

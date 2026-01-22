@@ -32,7 +32,10 @@ class TermHolePairs(EvalListener, ServiceBase):
                     multiplier: float = 10,
                     num_steps: int = 3,
                     num_closest: int = 3,
-                    small_value: float = 1e-5):
+                    small_value: float = 1e-5,
+                    min_l2_for_instant_buid: float = 0.01,
+                    max_pair_queue_size: int = 1000,                    
+                    ):
 
         self.target = target
         self.zero = torch.zeros((1,), dtype = target.dtype, device = target.device)
@@ -52,6 +55,9 @@ class TermHolePairs(EvalListener, ServiceBase):
         self.small_value = small_value
 
         self.term_hole_pairs: list[PriorityPair] = [] # priority queue
+
+        self.min_l2_for_instant_buid = min_l2_for_instant_buid
+        self.max_pair_queue_size = max_pair_queue_size        
 
         pass 
 
@@ -189,8 +195,12 @@ class TermHolePairs(EvalListener, ServiceBase):
             res.append((pp.term, pp.hole))
         return res        
     
-    def get_best_hole_filling(self) -> tuple[Term, PriorityPair] | None:
-        while len(self.term_hole_pairs) > 0:
+    def get_best_hole_filling(self, force_pick: bool = False) -> tuple[Term, PriorityPair] | None:
+        while (len(self.term_hole_pairs) > 0) and \
+              (force_pick or \
+               (self.term_hole_pairs[0].priority < self.min_l2_for_instant_buid) or \
+               (len(self.term_hole_pairs) > self.max_pair_queue_size)):
+
             pp = heappop(self.term_hole_pairs)
             filled = self.fill_hole(pp.term, pp.hole[0], pp.hole[1])
             if filled is not None:

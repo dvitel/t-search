@@ -64,9 +64,9 @@ class PointOptim(Operator, ServiceBase):
                  closer_to_points_lambda: float = 1e-2,
                  max_hole_bindings: int = 1, # one hole can have multiple good bindings
                  num_children: int = 1000,
-                 hole_batch_size: int = 16,
                  debug: bool = False,
                  loss_threshold: float = 1e-3,
+                 instant_eval: bool = False,
                  **kwargs):
         super().__init__(**kwargs)
         self.term_hole_pairs = term_hole_pairs
@@ -99,11 +99,11 @@ class PointOptim(Operator, ServiceBase):
         self.closer_to_points_lambda = closer_to_points_lambda
         self.add_metrics = add_metrics
         self.max_hole_bindings = max_hole_bindings
-        self.hole_batch_size = hole_batch_size
         self.loss_threshold = loss_threshold
 
         self.pos_queue: list[HolePos] = [] # hole priority queue
         self.added_terms = set() # terms with added positions
+        self.instant_eval = instant_eval
 
         #TODO
         # 1. Metrics - DONE
@@ -305,10 +305,13 @@ class PointOptim(Operator, ServiceBase):
 
     # TODO -1: bug with extracting local minimas - DONE
     # TODO 0: debug strange case of (add cos(x) (neg x)) --> (add cos(x) (mul 1 (neg x))) - why it had good fit?? - DONE (not reappearing)
-    # TODO 1: tabu list as set of skeletons (optim_terms)
-    # TODO 2: redo the loop by adding instant jump to children gen when good pair appears, 
-    # TODO 3: do not use batch for holes, but control queues sizes !!!
+    # TODO 1: tabu list as set of skeletons (optim_terms) - DONE
+    # TODO 2: redo the loop by adding instant jump to children gen when good pair appears,  - DONE
+    # TODO 3: do not use batch for holes, but control queues sizes !!! - DONE
     # TODO 4: trace step by step execution of the optimizer when loss is inf - for small set of test
+
+    # TODO 5: how optimizer works in constraints of number of constants? --> pick only optim point that would not ruin constant constraints??
+    # TODO 6: term normalization through semantics mapping??? 
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]: 
         ''' 
             1. Optimize holes from population
@@ -327,34 +330,34 @@ class PointOptim(Operator, ServiceBase):
 
         while len(children) < self.num_children:
 
-            # NOTE: first we try to drain the queue of hole-term pairs and then create new holes
-            #       use hole_batch_size to control how many holes to create in advance 
-            child, pair = self.term_hole_pairs.get_best_hole_filling()
+            child, pair = self.term_hole_pairs.get_best_hole_filling(force_pick=(len(self.pos_queue) == 0))
             if child is not None:
-                # self.evaluator.eval(child)
-                # new_fitness = self.fitness.get_fitness(child)
-                # old_fitness = self.fitness.get_fitness(pair.hole[0])
-                # # assert new_fitness < old_fitness, "Filling must improve fitness"  
-                # # self.num_total_fills += 1
-                # if new_fitness < old_fitness:
-                #     self.num_better_fills += 1
+                if self.instant_eval:                    
+                    self.evaluator.eval(child)
+                    new_fitness = self.fitness.get_fitness(child)
+                    old_fitness = self.fitness.get_fitness(pair.hole[0])
+                    if new_fitness < old_fitness:
+                        self.num_better_fills += 1
 
                 self.num_total_fills += 1
                 children.append(child)
                 continue
 
-            holes = []
-            hole_bindings = []
-            while len(holes) < self.hole_batch_size and len(self.pos_queue) > 0:
+            # while len(holes) < self.hole_batch_size and len(self.pos_queue) > 0:
+            cur_holes = []
+            while len(self.pos_queue) > 0 and len(cur_holes) == 0:
                 hole_pos = heappop(self.pos_queue)
                 cur_holes = self.create_holes(hole_pos)
-                for hole in cur_holes:
-                    for hole_binding in hole.bindings:
-                        holes.append((hole.term, hole.position))
-                        hole_bindings.append(hole_binding)
 
-            if len(holes) == 0:
+            if len(self.pos_queue) == 0: # all pos attempted 
                 break
+
+            holes = []
+            hole_bindings = []
+            for hole in cur_holes:
+                for hole_binding in hole.bindings:
+                    holes.append((hole.term, hole.position))
+                    hole_bindings.append(hole_binding)
 
             self.num_holes_created += len(holes)
         
