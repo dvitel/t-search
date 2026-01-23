@@ -180,6 +180,13 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
     def get_repr_terms(self) -> list[TTermPos]:
         repr_terms = [term for term in self.sid_to_term.values()]
         return repr_terms
+    
+    def get_repr_for_term(self, term: TTermPos) -> Optional[TTermPos]:
+        if term not in self.term_to_sid:
+            return None
+        sid = self.term_to_sid[term]
+        repr_term = self.sid_to_term.get(sid, None)
+        return repr_term
         
     def get_semantics(self) -> torch.Tensor:
         all_semantics = self.index.get_vectors()

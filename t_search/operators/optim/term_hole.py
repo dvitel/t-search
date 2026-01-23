@@ -168,6 +168,9 @@ class TermHolePairs(EvalListener, ServiceBase):
             elif torch.abs(b) < self.small_value:
                 # approximate with scaling only
                 hole_term = self.syntax.get_op("mul", self.syntax.get_const(value=k), term)
+            elif torch.abs(k - 1.0) < self.small_value:
+                # approximate with shifting only
+                hole_term = self.syntax.get_op("add", term, self.syntax.get_const(value=b))
             else: # general case        
                 hole_term = self.syntax.get_op("add", 
                                 self.syntax.get_op("mul", self.syntax.get_const(value=k), term),

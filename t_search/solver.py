@@ -16,6 +16,7 @@ from t_search.evaluators.fitness import Fitness, nmse_loss_builder
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.initialization import Initialization
 from t_search.operators.listeners import GenListener
+from t_search.operators.mutation import TermMutation
 from t_search.operators.syntax.reduce import Reduce
 from t_search.solver_utils import get_method_params, read_config, register_services
 from t_search.syntax.syntax import Syntax
@@ -82,6 +83,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         syntax_service_name: str,
         fitness_service_name: str,
         semantics_service_name: str,
+        final_reducer_service_name: str = "",
         eval_listeners: list[str] = [],
 
         ops: dict[str, Callable] | list[str] = default_alg_ops,
@@ -103,6 +105,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.syntax_service_name = syntax_service_name
         self.fitness_service_name = fitness_service_name
         self.semantics_service_name = semantics_service_name
+        self.final_reducer_service_name = final_reducer_service_name
+
+        self.final_reducer: TermMutation | None = None
 
         self.eval_listeners = eval_listeners
         self.services = {}
@@ -310,6 +315,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.semantics = self.services[self.semantics_service_name]
         if not isinstance(self.semantics, Semantics):
             raise ValueError(f"Semantics service '{self.semantics_service_name}' is not Semantics instance")
+        
+        if self.final_reducer_service_name in self.services:
+            self.final_reducer = self.services[self.final_reducer_service_name]
 
         for service in self.services.values():
             if isinstance(service, ServiceBase):
@@ -404,16 +412,35 @@ class GPSolver(BaseEstimator, RegressorMixin):
     
     def on_end(self):
 
+        best_term = self.fitness.best_term
+        best_fitness = None
+        best_term_depth = None
+        best_term_size = None
+
+        if best_term is not None:
+            if self.final_reducer is not None:
+                new_best_term = self.final_reducer.mutate_term(best_term) or best_term
+                if new_best_term != best_term:
+                    if self.debug:
+                        print(f"Reduced solution: {new_best_term}")
+                    best_term = new_best_term
+                    try:
+                        self.evaluator.eval([best_term])
+                    except EvSearchTermination as e:
+                        pass 
+            best_fitness = self.fitness.get_fitness(best_term)
+            best_term_depth = self.syntax.get_depth(best_term) if best_term is not None else None
+            best_term_size = self.syntax.get_size(best_term) if best_term is not None else None
         
         self.add_metrics(
             gen = self.gen,
             final_time = round((perf_counter() - self.start_time) * 1000),
             status = self.status,
             # consts = self.const_id,
-            best_term=self.fitness.best_term, 
-            best_fitness=self.fitness.best_term_fitness.item() if self.fitness.best_term_fitness is not None else None,
-            best_term_depth=self.syntax.get_depth(self.fitness.best_term) if self.fitness.best_term is not None else None,
-            best_term_size=self.syntax.get_size(self.fitness.best_term) if self.fitness.best_term is not None else None
+            best_term=best_term, 
+            best_fitness=best_fitness,
+            best_term_depth=best_term_depth,
+            best_term_size=best_term_size
         )
 
         # if "reducer" in self.services and isinstance(self.services["reducer"], Reduce): # also output reduced final best term for comparison
@@ -426,7 +453,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         #             reduced_best_term=reduced_best_term,
         #             reduced_best_term_depth=reduced_best_term_depth,
         #             reduced_best_term_size=reduced_best_term_size
-        #         )
+        #         )        
+
 
         finalizers = []
         for service in self.services.values():
@@ -571,7 +599,7 @@ def config_pipeline(*, dataset:str, config: str, output="koza-{}.json", device='
     y_pred_valid = y_pred[y_pred_valid_mask]
     target_test_valid = target_test[y_pred_valid_mask]
     nmse_fn = nmse_loss_builder(target_test_valid)
-    nmse = nmse_fn(y_pred_valid).item()
+    nmse = nmse_fn(y_pred_valid).mean(dim=-1).item()
     file_name = os.path.basename(config).split(".")[0]
     metrics = {
         "config_name":file_name, 

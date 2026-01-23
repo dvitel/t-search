@@ -8,7 +8,7 @@ import torch
 from t_search.base import ServiceBase
 from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.fitness import Fitness
-from t_search.evaluators.optimization import OptimPoint, OptimResult, clean_optim_result, get_all_grads, set_local_minimas_, get_slowest_funs, optimize, threshold_optim_result_
+from t_search.evaluators.optimization import OptimPoint, OptimResult, clean_optim_result, get_all_grads, get_best_optim_result, set_local_minimas_, get_slowest_funs, optimize, threshold_optim_result_
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.operator import Operator
 from t_search.operators.optim.term_hole import TermHolePairs
@@ -227,6 +227,8 @@ class PointOptim(Operator, ServiceBase):
     
     def add_to_tabu(self, optim_state: OptimState) -> None:
         if self.with_tabu:
+            if self.debug:
+                print(f"Tabu: {optim_state.optim_term}")
             self.tabu_set.add(optim_state.optim_term)
 
     def create_holes(self, hole_pos: HolePos) -> list[Hole]:
@@ -242,6 +244,10 @@ class PointOptim(Operator, ServiceBase):
         
         pos_to_collect = set(optim_state.path.keys())
         
+        if self.debug: 
+            print("---------------------------------")
+            print(f"Optim: {optim_state.optim_term}")
+        
         optim_result: OptimResult = optimize(optim_state.optim_term, 
                                 optim_state.ranges, 
                                 optim_state.binding,
@@ -252,9 +258,22 @@ class PointOptim(Operator, ServiceBase):
                                 max_evals=self.max_evals,
                                 tolerance_change=self.tolerance_change,
                                 tolerance_grad=self.tolerance_grad,
-                                torch_gen=self.torch_gen,
-                                num_local_minimas=self.max_hole_bindings,
-                                debug=self.debug)
+                                torch_gen=self.torch_gen)
+        
+        if self.debug:
+            best_optim_result = get_best_optim_result(optim_result)
+            min_loss = ' '.join([f'{f:.1e}' for f in best_optim_result.loss[0].tolist()])
+            print(f"Loss: {min_loss}")
+            point = next(iter(best_optim_result.binding.values()))[0]
+            point_trace = ' '.join([f'{f:.1e}' for f in point.tolist()])
+            print(f"Trac: {point_trace}")
+            # NOTE: next is for manual checking of optimization correctness
+            # for x, v in self.var_bindings.items():
+            #     x_trace = ' '.join([f'{f:.1e}' for f in v.tolist()])
+            #     print(f"{x:4}: {x_trace}")
+            # target_trace = ' '.join([f'{f:.1e}' for f in self.target.tolist()])
+            # print(f"Trgt: {target_trace}")
+
                     
         self.num_terms_optimized += 1
 
@@ -284,6 +303,15 @@ class PointOptim(Operator, ServiceBase):
             holes.append(new_hole)
 
         clean_optim_result(slowest_traces)
+
+        # if self.debug:
+        #     for i, hole in enumerate(holes):
+        #         print(f"Hole {i}: {hole.term} at ({hole.position.occur}, {hole.position.term})")
+        #         for j, hb in enumerate(hole.bindings):
+        #             hb_trace = ' '.join([f'{f:.1e}' for f in hb.tolist()])
+        #             print(f"----> {hb_trace}")
+        #     pass
+
         return holes
     
     def add_hole_pos(self, term: Term) -> None:
@@ -308,8 +336,8 @@ class PointOptim(Operator, ServiceBase):
     # TODO 1: tabu list as set of skeletons (optim_terms) - DONE
     # TODO 2: redo the loop by adding instant jump to children gen when good pair appears,  - DONE
     # TODO 3: do not use batch for holes, but control queues sizes !!! - DONE
+    
     # TODO 4: trace step by step execution of the optimizer when loss is inf - for small set of test
-
     # TODO 5: how optimizer works in constraints of number of constants? --> pick only optim point that would not ruin constant constraints??
     # TODO 6: term normalization through semantics mapping??? 
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]: 

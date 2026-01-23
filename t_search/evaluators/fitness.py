@@ -9,7 +9,7 @@ from t_search.utils import EvSearchTermination
 
 
 def mse_loss_builder(target):
-    return lambda output: torch.mean((output - target) ** 2, dim=-1)
+    return lambda output: (output - target) ** 2
 
 
 def nmse_loss_builder(target) -> Callable[[torch.Tensor], torch.Tensor]:
@@ -20,7 +20,7 @@ def nmse_loss_builder(target) -> Callable[[torch.Tensor], torch.Tensor]:
     if norm > 0:
     
         def loss_fn(output: torch.Tensor) -> torch.Tensor:
-            mse = torch.mean((output - target) ** 2, dim=-1)
+            mse = (output - target) ** 2
             nmse = mse / norm
             return nmse
 
@@ -54,7 +54,7 @@ def nmse_loss_builder(target) -> Callable[[torch.Tensor], torch.Tensor]:
 
 
 def l1_loss_builder(target):
-    return lambda outputs: torch.mean(torch.abs(outputs - target), dim=-1)
+    return lambda outputs: torch.abs(outputs - target)
 
 def l2(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     el_dist = (a - b) ** 2
@@ -81,6 +81,7 @@ class Fitness(ServiceBase):
                  name: str = "nmse",
                  target: torch.Tensor,
                  fitness_atol: float = 1e-6,
+                 fitness_err: float = 1e-6,
                  debug: bool = False):
         self.name = name
         self.target = target
@@ -93,28 +94,60 @@ class Fitness(ServiceBase):
         self.best_term_size: Optional[int] = None
         self.best_term_outputs: Optional[torch.Tensor] = None
         self.fitness_atol = fitness_atol
+        self.fitness_err = fitness_err
         self.debug = debug
+
+    def pick_best_around(self, target_fitness_id: int, terms: list[Term], outputs: torch.Tensor, fitness: torch.Tensor) -> int:
+        if len(terms) <= 1:
+            return target_fitness_id
+        target_fitness = fitness[target_fitness_id]
+        close_ids = torch.where(torch.isclose(fitness, target_fitness, atol=self.fitness_err, rtol=0))[0]
+        if len(close_ids) > 1:
+            close_ids_size_depths = [(self.syntax.get_size(terms[i]), self.syntax.get_depth(terms[i]), i) for i in close_ids.tolist()]
+            # take minimal size, then depth, then i 
+            min_val = close_ids_size_depths[0]
+            for idx, val in enumerate(close_ids_size_depths):
+                if val < min_val:
+                    min_val = val
+            target_fitness_id = min_val[2]        
+        return target_fitness_id
 
     def set_best_term(self, terms: list[Term], outputs: torch.Tensor, fitness: torch.Tensor):
         if len(outputs) == 0:
             return
+        new_term = None 
         best_new_fitness, best_new_id = torch.min(fitness, dim=0)
-        new_outputs = outputs[best_new_id]
-        new_term = terms[best_new_id.item()]
-        best_new_depth = self.syntax.get_depth(new_term)
-        best_new_size = self.syntax.get_size(new_term)
-        if (self.best_term is None) or \
-            ((best_new_fitness, best_new_size, best_new_depth) < (self.best_term_fitness, self.best_term_size, self.best_term_depth)):
-            # torch.isclose(best_new_fitness, self.best_term_fitness, atol=self.fitness_atol, rtol=0) or \
-            if self.debug:
-                print(f"New best {new_term} fitness={best_new_fitness.item():.6e}, size={best_new_size}, depth={best_new_depth}")
+        if self.best_term is None:
+            best_new_id = self.pick_best_around(best_new_id.item(), terms, outputs, fitness)
+            new_term = terms[best_new_id]
+        # if torch.isclose(best_new_fitness, self.best_term_fitness, atol=self.fitness_err, rtol=0):
+        #     # very similar by fitness - pick best by (size, depth)
+        #     best_new_depth = self.syntax.get_depth(new_term)
+        #     best_new_size = self.syntax.get_size(new_term)
+        #     if 
+        elif torch.isclose(best_new_fitness, self.best_term_fitness, atol=self.fitness_err, rtol=0):
+            best_new_id = self.pick_best_around(best_new_id.item(), terms, outputs, fitness)
+            new_term = terms[best_new_id]
+            new_size = self.syntax.get_size(new_term)
+            new_depth = self.syntax.get_depth(new_term)
+            if not ((new_size, new_depth) < (self.best_term_size, self.best_term_depth)):
+                new_term = None
+        elif best_new_fitness < self.best_term_fitness:
+            best_new_id = self.pick_best_around(best_new_id.item(), terms, outputs, fitness)
+            new_term = terms[best_new_id]
+
+        if new_term is not None:
             self.best_term = new_term
             self.best_term_fitness = best_new_fitness
-            self.best_term_outputs = new_outputs
-            self.best_term_depth = best_new_depth
-            self.best_term_size = best_new_size
-        if self.best_term_fitness < self.fitness_atol:
-            raise (EvSearchTermination("SOLVED"))        
+            self.best_term_outputs = outputs[best_new_id]
+            self.best_term_depth = self.syntax.get_depth(new_term)
+            self.best_term_size = self.syntax.get_size(new_term)
+            if self.debug:
+                print(f"New best {self.best_term} fitness={self.best_term_fitness.item():.6e}, size={self.best_term_size}, depth={self.best_term_depth}")
+            if self.best_term_fitness < self.fitness_atol:
+                raise (EvSearchTermination("SOLVED"))       
+
+        return
 
     def get_missing(self, terms: list[Term] | Term) -> list[Term]:
         if isinstance(terms, Term):
@@ -136,8 +169,9 @@ class Fitness(ServiceBase):
         return selected_fitness
 
     def set_fitness(self, valid_terms: list[Term], valid_semantics: torch.Tensor) -> None:
-        fitness = self.fitness_fn(valid_semantics)
-        fitness.nan_to_num_(nan=torch.inf)
+        fitness_per_test = self.fitness_fn(valid_semantics)
+        fitness_per_test.nan_to_num_(nan=torch.inf)
+        fitness = torch.mean(fitness_per_test, dim=-1)
         for term, fit in zip(valid_terms, fitness):
             self.fitness[term] = fit.clone()
         self.set_best_term(valid_terms, valid_semantics, fitness)
@@ -158,7 +192,7 @@ class Fitness(ServiceBase):
     
     def get_loss(self, outputs: torch.Tensor) -> torch.Tensor:
         ''' Note: per dim loss, not averaged '''
-        return (outputs - self.target) ** 2
+        return self.fitness_fn(outputs)
     
     def get_iter_metrics(self):
         iter_fitness = self.best_term_fitness.item()

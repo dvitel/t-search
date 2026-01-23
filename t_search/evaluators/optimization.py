@@ -17,7 +17,7 @@ class OptimPoint(Term):
 class LRAdjust(Exception):
     pass
 
-optim_id = -1  # for debugging
+# optim_id = -1  # for debugging
 
 @dataclass(frozen=False)
 class OptimResult:
@@ -44,18 +44,17 @@ def optimize(
     tolerance_change: float = 1e-6,
     tolerance_grad: float = 1e-3,
     torch_gen: torch.Generator | None = None,
-    num_local_minimas: int = 1,
-    debug: bool = False
+    # debug: bool = False
     # loss_threshold: float = 0.1,
 ) -> OptimResult:
-    global optim_id
+    # global optim_id
     
     # assert optim_state.loss_fn is not None, "Optimization loss function is not set"
         
-    if debug:
-        optim_id += 1
+    # if debug:
+    #     optim_id += 1
 
-        print(f">>> [{optim_id}] {optim_term}")
+    #     print(f">>> [{optim_id}] {optim_term}")
 
     params = []
     binding = {}
@@ -128,7 +127,7 @@ def optimize(
     num_root_evals = 0
 
     def closure_builder(optimizer: torch.optim.Optimizer):
-        nonlocal best_loss, debug, max_evals, num_root_evals
+        nonlocal best_loss, max_evals, num_root_evals
 
         # cur_lr = optimizer.param_groups[0]['lr']
         # print(f"LR: {cur_lr}")        
@@ -136,6 +135,7 @@ def optimize(
             raise LRAdjust(None)
         optimizer.zero_grad()
 
+        occurs.clear()
         loss: torch.Tensor = loss_fn(optim_term)
         num_root_evals += 1
         fixed_loss = loss.nan_to_num_(torch.inf)
@@ -155,8 +155,8 @@ def optimize(
                 best_additional_binding[k] = additional_binding[k].clone()
         for v in additional_binding.values():
             del v
-        if debug:
-            print(f"{num_root_evals}\tL {' '.join([f'{f:.1e}' for f in best_loss.mean(dim=1).tolist()])}")        
+        # if debug:
+        #     print(f"{num_root_evals}\tL {' '.join([f'{f:.1e}' for f in best_loss.mean(dim=1).tolist()])}")        
         
         # if num_best_binings == 1:
         #     loss_min_pos = fixed_loss.argmin()
@@ -417,8 +417,8 @@ def get_slowest_funs(optim_result: OptimResult,
         pos = torch.cartesian_prod(*fit_ids) #(num_funcs, num_tests)
         intermediate_res = gather_optim_pos(optim_result, pos)
         variations = torch.zeros(num_funcs, 
-                                 dtype=optim_result.binding.dtype, 
-                                 device=optim_result.binding.device)
+                                 dtype=optim_result.loss.dtype, 
+                                 device=optim_result.loss.device)
         for v in intermediate_res.binding.values():
             total_variation = torch.abs(v[:, 1:] - v[:, :-1]).sum(dim=1) # (num_funcs,)
             variations += total_variation #torch.var(v, dim=1) # (num_funcs,)
@@ -470,37 +470,6 @@ def set_local_minimas_(optim_result: OptimResult,
         optim_result.loss.scatter_(0, start_close_index.unsqueeze(0), new_loss.unsqueeze(0))
         del close_mask, start_close_mask, are_close, prev_values, cur_value
     del sort_ids, vectors, sorted_loss
-
-    # loss = optim_result.loss.clone()
-    # for _ in range(loss.shape[0]):  # at most num_starts local minimas
-    #     min_pos = loss.argmin(dim=0, keepdim=True)        
-    #     loss.scatter_(0, min_pos, torch.inf)
-    #     new_optim_result = gather_optim_pos(optim_result, min_pos)
-    #     del min_pos
-    #     if not torch.all(torch.isfinite(new_optim_result.loss)):
-    #         clean_optim_result(new_optim_result)
-    #         break
-    #     optim_vector = torch.cat([v[0] for v in new_optim_result.binding.values()], dim=0)
-    #     if any(torch.allclose(optim_vector, lv, rtol=rtol, atol=atol) 
-    #            for lv in local_minima_vectors):
-    #         del optim_vector
-    #         clean_optim_result(new_optim_result)
-    #         continue  # already have this minima
-    #     local_minima_vectors.append(optim_vector)
-    #     local_minimas.append(new_optim_result)
-    # # combine local minimas into one optim_result
-    # if len(local_minimas) == 0:
-    #     return None
-    # all_losses = torch.stack([lm.loss[0] for lm in local_minimas], dim=0)  # (num_local_minimas, num_tests)
-    # all_bindings = {}
-    # for k in optim_result.binding.keys():
-    #     all_bindings[k] = torch.stack([lm.binding[k][0] for lm in local_minimas], dim=0)
-    # all_additional_bindings = {}
-    # for k in optim_result.additional_binding.keys():
-    #     all_additional_bindings[k] = torch.stack([lm.additional_binding[k][0] for lm in local_minimas], dim=0)
-    # res = OptimResult(all_losses, all_bindings, all_additional_bindings)
-    # for lm in local_minimas:
-    #     clean_optim_result(lm)
 
 def get_all_grads(term: Term,
                   var_bindings: dict[str, torch.Tensor],

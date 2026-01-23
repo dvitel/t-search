@@ -77,6 +77,9 @@ class CompetentMutation(PositionMutation):
             elif torch.abs(b) < self.small_value:
                 # approximate with scaling only
                 best_term = self.syntax.get_op("mul", self.syntax.get_const(value=k), term)
+            elif torch.abs(k - 1.0) < self.small_value:
+                # approximate with shifting only
+                best_term = self.syntax.get_op("add", term, self.syntax.get_const(value=b))                
             else: # general case
                 best_term = self.syntax.get_op("add", 
                                 self.syntax.get_op("mul", self.syntax.get_const(value=k), term),

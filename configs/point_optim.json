@@ -74,11 +74,10 @@
                 "elitism": 1
             } 
         },
-        "reduce_consts": {
-            "type": "ReduceConsts",
-            "module": "t_search.operators.syntax",
+        "sreduce": {
+            "type": "SReduce",
+            "module": "t_search.operators.semantic",
             "params": {
-                "evaluator": {"!ref": "evaluator"},
                 "semantics": {"!ref": "semantics"},
                 "syntax": {"!ref": "syntax"},
                 "rate": 1.0
@@ -147,8 +146,8 @@
                 "closer_to_points": false,
                 "closer_to_points_lambda": 0.001,
                 "max_hole_bindings": 1,
-                "num_children": 10,
-                "loss_threshold": 0.001,
+                "num_children": 1000,
+                "loss_threshold": 0.00001,
                 "instant_eval": true
             }
         }
@@ -156,6 +155,7 @@
     "init_service_name": "init",
     "operator_service_names": [        
         "point_optim",
+        "sreduce",
         "evaluator",
         "survivor_selection"
     ],
@@ -163,7 +163,8 @@
     "evaluator_service_name": "evaluator",
     "syntax_service_name": "syntax",
     "fitness_service_name": "fitness",
-    "semantics_service_name": "semantics",    
+    "semantics_service_name": "semantics",   
+    "final_reducer_service_name": "sreduce",
     "eval_listeners": [
         "term_hole_pairs"
     ],  
