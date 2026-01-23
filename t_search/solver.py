@@ -213,7 +213,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             "target": self.target,
             "dims": self.target.shape[0],
             "const_range": self.const_range,
-            "term_order": lambda term: self.syntax.get_size(term),
+            "term_order": lambda term: (self.syntax.get_size(term), *(-self.syntax.get_size(a) for a in term.get_args())),
             "max_gen": self.max_gen,
             "get_cur_gen": lambda: self.gen,
             "get_cur_population": lambda: self.cur_population,

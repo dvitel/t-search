@@ -32,9 +32,11 @@ class TermHolePairs(EvalListener, ServiceBase):
                     multiplier: float = 10,
                     num_steps: int = 3,
                     num_closest: int = 3,
+                    small_variation: float = 1e-5,
                     small_value: float = 1e-5,
                     min_l2_for_instant_buid: float = 0.01,
-                    max_pair_queue_size: int = 1000,                    
+                    max_pair_queue_size: int = 1000,
+                    with_linear_fit: bool = False
                     ):
 
         self.target = target
@@ -52,12 +54,14 @@ class TermHolePairs(EvalListener, ServiceBase):
         self.num_steps = num_steps
         self.num_closest = num_closest
         self.syntax = syntax
+        self.small_variation = small_variation
         self.small_value = small_value
 
         self.term_hole_pairs: list[PriorityPair] = [] # priority queue
 
         self.min_l2_for_instant_buid = min_l2_for_instant_buid
         self.max_pair_queue_size = max_pair_queue_size        
+        self.with_linear_fit = with_linear_fit
 
         pass 
 
@@ -146,35 +150,42 @@ class TermHolePairs(EvalListener, ServiceBase):
         # Sx = sum(ts), Sy = sum(hs), Sxx = sum(ts^2), Sxy = sum(ts * hs)
 
         # (k * x + b - y)^2 --> min
-        # 2 (k * x + b - y) * x = 0    
+        # 2 (k * x + b - y) * x = 0   
 
-        Sx = term_semantics.sum()
-        Sy = hole_semantics.sum()
-        Sxx = (term_semantics * term_semantics).sum()
-        Sxy = (term_semantics * hole_semantics).sum()
-        n = term_semantics.shape[0]
-        n_Covar_xy = (n * Sxy - Sx * Sy)
-        n_Var_x = (n * Sxx - Sx * Sx)
-        if n_Var_x / n < self.small_value: # no variation of x - x == c - searching for best b:
-            b = Sy / n # approximate with constant 
-            hole_term = self.syntax.get_const(value=b)
+        if not self.with_linear_fit:
+             hole_term = term 
         else:
-            k = n_Covar_xy / n_Var_x
-            b = (Sy - k * Sx) / n
-            
-            if torch.abs(k) < self.small_value:
-                # approximate with constant 
+
+            Sx = term_semantics.sum()
+            Sy = hole_semantics.sum()
+            Sxx = (term_semantics * term_semantics).sum()
+            Sxy = (term_semantics * hole_semantics).sum()
+            n = term_semantics.shape[0]
+            n_Covar_xy = (n * Sxy - Sx * Sy)
+            n_Var_x = (n * Sxx - Sx * Sx)
+            if n_Var_x / n < self.small_variation: # no variation of x - x == c - searching for best b:
+                b = Sy / n # approximate with constant 
                 hole_term = self.syntax.get_const(value=b)
-            elif torch.abs(b) < self.small_value:
-                # approximate with scaling only
-                hole_term = self.syntax.get_op("mul", self.syntax.get_const(value=k), term)
-            elif torch.abs(k - 1.0) < self.small_value:
-                # approximate with shifting only
-                hole_term = self.syntax.get_op("add", term, self.syntax.get_const(value=b))
-            else: # general case        
-                hole_term = self.syntax.get_op("add", 
-                                self.syntax.get_op("mul", self.syntax.get_const(value=k), term),
-                                self.syntax.get_const(value=b))
+            else:
+                k = n_Covar_xy / n_Var_x
+                b = (Sy - k * Sx) / n
+                
+                if torch.abs(k) < self.small_value:
+                    # approximate with constant 
+                    hole_term = self.syntax.get_const(value=b)
+                elif torch.abs(b) < self.small_value:
+                    # approximate with scaling only
+                    hole_term = self.syntax.get_op("mul", self.syntax.get_const(value=k), term)
+                elif torch.abs(k - 1.0) < self.small_value:
+                    # approximate with shifting only
+                    if torch.abs(b) < self.small_value:
+                        hole_term = term
+                    else:
+                        hole_term = self.syntax.get_op("add", term, self.syntax.get_const(value=b))
+                else: # general case        
+                    hole_term = self.syntax.get_op("add", 
+                                    self.syntax.get_op("mul", self.syntax.get_const(value=k), term),
+                                    self.syntax.get_const(value=b))
         
         if hole_term is None:
             return None

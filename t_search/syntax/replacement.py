@@ -40,6 +40,9 @@ def replace_pos(pos: TermPos, with_term: Term, builders: Builders) -> Optional[T
         new_term = new_parent_term
         cur_pos = cur_pos.parent
 
+    # some asserts for debugging 
+    # new_term_str = str(new_term)
+
     return new_term
 
 def replace_pos_protected(pos: TermPos, with_term: Term, builders: Builders,
@@ -87,12 +90,13 @@ def replace_fn(root: Term,
 
     def _replace_exit(term: Term, term_i: int, parent: Term):
         new_args = arg_stack.pop()
-        builder = builders.get_term_builder(term)
-        new_term = builder.fn(*new_args)
-        if new_term is None:
-            arg_stack.clear()
-            return TRAVERSAL_EXIT
-        arg_stack[-1][term_i] = new_term
+        if any(arg != old_arg for arg, old_arg in zip(new_args, term.get_args())):   
+            builder = builders.get_term_builder(term)
+            new_term = builder.fn(*new_args)
+            if new_term is None:
+                arg_stack.clear()
+                return TRAVERSAL_EXIT
+            arg_stack[-1][term_i] = new_term
         occurs[term] += 1
 
     postorder_traversal(root, _replace_enter, _replace_exit)

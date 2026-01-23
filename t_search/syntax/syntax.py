@@ -255,6 +255,10 @@ class Syntax(ServiceBase):
         try:
             term, _ = parse_term(term_str)
             def map_term(t: Term, args: list[Term]) -> Term:
+                if isinstance(t, Variable):
+                    return self.var_builder.fn(var_id=t.var_id)
+                if isinstance(t, Value):
+                    return self.const_builder.fn(value=t.value)
                 builder = self.builders.get_term_builder(t)                    
                 return builder.fn(*args)
             cached_term = postorder_map(term, map_term)
@@ -266,6 +270,10 @@ class Syntax(ServiceBase):
         try:
             term, _ = parse_const_skeleton_to_term(skeleton_str, const_name=const_name)
             def map_term(t: Term, args: list[Term]) -> Term:
+                if isinstance(t, Variable):
+                    return self.var_builder.fn(var_id=t.var_id)
+                if isinstance(t, Value):
+                    return self.const_builder.fn(value=t.value)                
                 builder = self.builders.get_term_builder(t)                    
                 return builder.fn(*args)
             cached_term = postorder_map(term, map_term)

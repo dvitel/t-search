@@ -263,7 +263,7 @@ class TermVectorStorage(BaseVectorStorage[Term]):
 
 def hole_order(term_order: Callable):
     def fn(hole): 
-        return (hole[1].at_depth, term_order(hole[0]), hole[1].occur)
+        return (hole[1].at_depth, *term_order(hole[0]), hole[1].occur)
     return fn
 
 class HoleVectorStorage(BaseVectorStorage[tuple[Term, TermPos]]):    

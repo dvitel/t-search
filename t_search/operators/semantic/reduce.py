@@ -24,3 +24,8 @@ class SReduce(TermMutation):
         if self.debug and simplified != term:
             print(f"SRed:\n\t{term} --->\n\t{simplified}")
         return simplified
+    
+    def __call__(self, population):
+        new_pop = super().__call__(population)
+        filtered = [t for t in new_pop if self.syntax.is_valid(t)]
+        return filtered
