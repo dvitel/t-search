@@ -216,6 +216,7 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
                 if len(found_ids) > 0:
                     vectors = self.index.get_vectors(found_ids)
                     l2 = torch.sum((vectors - q.unsqueeze(0)) ** 2, dim=1)
+                    # l2_denorm = 
                     if num_closest == 1:
                         min_l2_id = torch.argmin(l2)
                         q_res = [(l2[min_l2_id].item(), self.sid_to_term[found_ids[min_l2_id.item()]])]

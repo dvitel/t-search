@@ -201,6 +201,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.zero = torch.zeros((1,), dtype = self.target.dtype, device = self.target.device)
         self.one = torch.ones((1,), dtype = self.target.dtype, device = self.target.device)
 
+        target_variance = torch.var(self.target, unbiased=False)
+
         default_context = {
             "rnd": self.rnd,
             "torch_gen": self.torch_gen,
@@ -211,6 +213,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             "ops_schedule": self.ops_schedule, 
             "free_vars": self.free_vars,
             "target": self.target,
+            "target_variance": target_variance,
             "dims": self.target.shape[0],
             "const_range": self.const_range,
             "term_order": lambda term: (self.syntax.get_size(term), *(-self.syntax.get_size(a) for a in term.get_args())),
@@ -399,6 +402,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
             # self.evaluator.eval(self.syntax.get_vars())
             for var in self.syntax.get_vars():
                 var_binding = self.var_bindings[var.var_id]
+                if self.debug:
+                    for x_name, x_val in self.var_bindings.items():
+                        print(f"{x_name}: {x_val}")
                 # self.fitness.set_fitness([var], var_binding.unsqueeze(0))
                 self.evaluator.add_initial_terms([var], var_binding.unsqueeze(0))
                 pass

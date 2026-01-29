@@ -67,6 +67,7 @@ class PointOptim(Operator, ServiceBase):
                  debug: bool = False,
                  loss_threshold: float = 1e-3,
                  instant_eval: bool = False,
+                 target_variance: float = 1.0,
                  **kwargs):
         super().__init__(**kwargs)
         self.term_hole_pairs = term_hole_pairs
@@ -99,7 +100,7 @@ class PointOptim(Operator, ServiceBase):
         self.closer_to_points_lambda = closer_to_points_lambda
         self.add_metrics = add_metrics
         self.max_hole_bindings = max_hole_bindings
-        self.loss_threshold = loss_threshold
+        self.loss_threshold = loss_threshold / target_variance
 
         self.pos_queue: list[HolePos] = [] # hole priority queue
         self.added_terms = set() # terms with added positions
@@ -125,7 +126,7 @@ class PointOptim(Operator, ServiceBase):
         return priorities
 
     def shallow_to_deep_position_order(self, term: Term, positions: list[TermPos]) -> list[Any]:
-        priorities = [(p.at_depth, age, self.rnd.random(), ) for age, p in enumerate(positions)]
+        priorities = [(p.at_depth, self.rnd.random(), ) for  p in positions]
         return priorities
 
     def best_grad_position_order(self, term: Term, positions: list[TermPos]) -> list[Any]:
@@ -141,12 +142,14 @@ class PointOptim(Operator, ServiceBase):
         if optim_term is not None:  # position is already optimized
             return None
         
+        # optim_point = OptimPoint(0)
+        # def pos_to_optim_point(term: Term, occur: int):
+        #     if term == position.term and occur == position.occur:
+        #         return optim_point
+        #     return None
+        # optim_term = self.syntax.replace_fn(term, pos_to_optim_point)
         optim_point = OptimPoint(0)
-        def pos_to_optim_point(term: Term, occur: int):
-            if term == position.term and occur == position.occur:
-                return optim_point
-            return None
-        optim_term = self.syntax.replace_fn(term, pos_to_optim_point)
+        optim_term = self.syntax.replace_position(term, position, optim_point, with_validation=False)
 
         self.optim_term_cache[(term, (position.term, position.occur))] = optim_term
         if optim_term in self.tried_optim_terms:
@@ -176,14 +179,13 @@ class PointOptim(Operator, ServiceBase):
         tabu_markers = set()
         if self.with_tabu: # creating tabu markers from path
             tabu_markers.add(optim_term)
-            for parent_pos in path.values():
-                parent_optim_point = OptimPoint(0)
-                def parent_pos_to_optim_point(term: Term, occur: int):
-                    if term == parent_pos.term and occur == parent_pos.occur:
-                        return parent_optim_point
-                    return None
-                parent_optim_term = self.syntax.replace_fn(term, parent_pos_to_optim_point)
-                tabu_markers.add(parent_optim_term)
+            parent_optim_points = [OptimPoint(0) for _ in path.values()]
+            parent_optim_terms = self.syntax.replace_path_unvalidated(optim_term, optim_term_position.parent, parent_optim_points)
+            path_keys = list(path.keys())
+            for pot_key, pot in zip(path_keys, parent_optim_terms):
+                if pot in self.tried_optim_terms:
+                    path.pop(pot_key)
+            tabu_markers.update(parent_optim_terms)
 
         optim_state = OptimState(optim_term, path, tabu_markers, binding, ranges)
 
@@ -262,10 +264,10 @@ class PointOptim(Operator, ServiceBase):
         
         if self.debug:
             best_optim_result = get_best_optim_result(optim_result)
-            min_loss = ' '.join([f'{f:.1e}' for f in best_optim_result.loss[0].tolist()])
+            min_loss = ' '.join([f'{f:.0e}' for f in best_optim_result.loss[0].tolist()])
             print(f"Loss: {min_loss}")
             point = next(iter(best_optim_result.binding.values()))[0]
-            point_trace = ' '.join([f'{f:.1e}' for f in point.tolist()])
+            point_trace = ' '.join([f'{f:+5.2f}' for f in point.tolist()])
             print(f"Trac: {point_trace}")
             # NOTE: next is for manual checking of optimization correctness
             # for x, v in self.var_bindings.items():
@@ -330,6 +332,9 @@ class PointOptim(Operator, ServiceBase):
 
         self.added_terms.add(term)
         return
+    
+    def has_pos_to_optimize(self) -> bool:
+        return len(self.pos_queue) > 0
 
     # TODO -1: bug with extracting local minimas - DONE
     # TODO 0: debug strange case of (add cos(x) (neg x)) --> (add cos(x) (mul 1 (neg x))) - why it had good fit?? - DONE (not reappearing)
@@ -337,9 +342,9 @@ class PointOptim(Operator, ServiceBase):
     # TODO 2: redo the loop by adding instant jump to children gen when good pair appears,  - DONE
     # TODO 3: do not use batch for holes, but control queues sizes !!! - DONE
     
-    # TODO 4: trace step by step execution of the optimizer when loss is inf - for small set of test
-    # TODO 5: how optimizer works in constraints of number of constants? --> pick only optim point that would not ruin constant constraints??
-    # TODO 6: term normalization through semantics mapping??? 
+    # TODO 4: trace step by step execution of the optimizer when loss is inf - for small set of test - DONE
+    # TODO 5: how optimizer works in constraints of number of constants? --> pick only optim point that would not ruin constant constraints?? - Not important - solved on hole filling - validation happens then
+    # TODO 6: term normalization through semantics mapping??? - DONE (note: it does not always work andd simple axioms are not applied, but removes present introns)
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]: 
         ''' 
             1. Optimize holes from population
@@ -356,29 +361,35 @@ class PointOptim(Operator, ServiceBase):
 
         children = []
 
-        while len(children) < self.num_children:
+        while (len(children) < self.num_children) \
+                and (self.term_hole_pairs.has_pairs() or self.has_pos_to_optimize()):
 
-            child, pair = self.term_hole_pairs.get_best_hole_filling(force_pick=(len(self.pos_queue) == 0))
+            child, pair = self.term_hole_pairs.get_best_hole_filling(force_pick=not self.has_pos_to_optimize())
             if child is not None:
-                if self.instant_eval:                    
-                    self.evaluator.eval(child)
-                    new_fitness = self.fitness.get_fitness(child)
+                # if self.debug:
+                #     print("=================================")                
+                #     print(f"Child: {child.term}")
+                #     print(f" {pair.priority:.2f}:  {pair.term} --> {pair.hole[0]} at {pair.hole[1].term}, {pair.hole[1].occur}")
+                if self.instant_eval:
+                    self.evaluator.eval(child.term)
+                    new_fitness = self.fitness.get_fitness(child.term)
                     old_fitness = self.fitness.get_fitness(pair.hole[0])
                     if new_fitness < old_fitness:
                         self.num_better_fills += 1
 
                 self.num_total_fills += 1
-                children.append(child)
+                children.append(child.term)
+                self.tried_optim_terms.update(child.skeletons)
                 continue
 
             # while len(holes) < self.hole_batch_size and len(self.pos_queue) > 0:
             cur_holes = []
-            while len(self.pos_queue) > 0 and len(cur_holes) == 0:
+            while self.has_pos_to_optimize() and (len(cur_holes) == 0):
                 hole_pos = heappop(self.pos_queue)
                 cur_holes = self.create_holes(hole_pos)
 
-            if len(self.pos_queue) == 0: # all pos attempted 
-                break
+            if len(cur_holes) == 0: # all pos attempted 
+                continue
 
             holes = []
             hole_bindings = []
@@ -399,6 +410,9 @@ class PointOptim(Operator, ServiceBase):
 
         return children    
     
+    # TODO: 1 normalize loss_threshold - DONE, test it more
+    # TODO: 2. Where is x in population index??? Should we have it?
+    # TODO: 3. Where is some terms?
     def get_finalizer(self):
         self.add_metrics(
             num_better_fills=self.num_better_fills,

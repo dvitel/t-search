@@ -45,6 +45,37 @@ def replace_pos(pos: TermPos, with_term: Term, builders: Builders) -> Optional[T
 
     return new_term
 
+def replace_path(pos: TermPos, with_terms: list[Term], builders: Builders) -> list[Term]:
+    if len(with_terms) == 0:
+        return []
+    cur_pos = pos
+    new_terms = [with_terms[0]]
+    i = 1
+    while cur_pos.parent is not None:
+        parent = cur_pos.parent.term
+        term_i = cur_pos.pos
+        args = parent.get_args()
+        cur_new_terms = []
+        for new_term in new_terms:
+            new_parent_term_args = tuple((*args[:term_i], new_term, *args[term_i + 1:]))   
+            builder = builders.get_term_builder(parent)
+            new_parent_term = builder.fn(*new_parent_term_args)
+            if new_parent_term is None:
+                continue
+            cur_new_terms.append(new_parent_term)
+        if i < len(with_terms):
+            cur_new_terms.append(with_terms[i])
+            i += 1
+        if len(cur_new_terms) == 0:
+            return []
+        new_terms = cur_new_terms
+        cur_pos = cur_pos.parent
+
+    # some asserts for debugging 
+    # new_term_str = str(new_term)
+
+    return new_terms
+
 def replace_pos_protected(pos: TermPos, with_term: Term, builders: Builders,
                             depth_cache: dict[Term, int], counts_cache: dict[Term, np.ndarray],
                             pos_context_cache: dict[tuple[Term, int], TermGenContext],

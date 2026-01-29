@@ -1,12 +1,14 @@
+from functools import partial
 import torch
 
 from t_search.datasets.benchmark import Benchmark
-from t_search.datasets.sampling import get_interval_grid, get_rand_points
+from t_search.datasets.sampling import get_interval_grid, get_rand_interval_points, get_rand_points
 
 # 2 * x + 3.1 * torch.cos(torch.exp(x)) + 1.56
 # (add (add (mul 1.0000 (mul (mul x0 x0) x0)) x0) (mul x0 x0))
 # x * x + x + 1.0 * x * x * x
-test_0 = Benchmark("test_0", lambda x: x*x*x*x + x*x*x + x*x + x, get_rand_points, {"num_samples": 5, "ranges": [(-1.0, 1.0)]})
+# x*x + x for 10 tests - normalize loss_threshold by target variance
+test_0 = Benchmark("test_0", lambda x: ((x + 1)*x + 1)*x, partial(get_rand_interval_points, transpose=True, pick_rand_grid_points=False), {"num_samples": 10, "ranges": [(-1.0, 1.0)]})
 
 koza_1 = Benchmark(
     "koza_1",

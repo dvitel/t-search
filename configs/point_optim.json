@@ -30,10 +30,41 @@
             "params": { 
                 "max_term_depth": 17,
                 "min_consts": 0,
-                "max_consts": 100,
+                "max_consts": 10,
                 "min_vars": 1,
-                "max_vars": 100,
-                "prohibit_ops_on_consts_only": false
+                "max_vars": 10,
+                "prohibit_ops_on_consts_only": true,
+                "ops_counts": {
+                    "pow": [0, 10],
+                    "neg": [0, 10],
+                    "inv": [0, 10],
+                    "div": [0, 10],
+                    "sub": [0, 10],
+                    "exp": [0, 10],
+                    "log": [0, 10],
+                    "sin": [0, 10],
+                    "cos": [0, 10]
+                },
+                "inner_ops_max_counts": {
+                    "exp": {"exp": 0},
+                    "log": {"log": 0},
+                    "pow": {"pow": 0},
+                    "inv": {"inv": 0},        
+                    "sin": {"sin": 0},
+                    "cos": {"cos": 0}
+                },
+                "immediate_arg_limits": {
+                    "inv": {
+                        "inv": 0,
+                        "mul": 0
+                    },
+                    "neg": {
+                        "neg": 0,
+                        "add": 0
+                    },
+                    "log": {"exp": 0},
+                    "exp": {"log": 0}        
+                }
             }
         },
         "term_vector_storage": { 
@@ -46,7 +77,7 @@
         "init": {
             "type": "Up2D", 
             "module": "t_search.operators.classic",
-            "params": { "depth": 2 } 
+            "params": { "depth": 1 } 
         },
         "selection": { 
             "type": "TS", 
@@ -71,7 +102,7 @@
                 "mu": 10, 
                 "strict": false, 
                 "combine": false,
-                "elitism": 1
+                "elitism": 0
             } 
         },
         "sreduce": {
@@ -106,15 +137,16 @@
                 "syntax": {"!ref": "syntax"},
                 "term_index": {"!ref": "term_index"},
                 "hole_index": {"!ref": "hole_index"},
+                "const_optimizer": {"!ref": "const_optimizer"},
                 "start_delta": 1,
                 "multiplier": 10,
-                "num_steps": 1,
+                "num_steps": 3,
                 "num_closest": 1,
-                "min_l2_for_instant_buid": 0.01,
+                "min_l2_for_instant_build": 0.01,
                 "max_pair_queue_size": 16,
                 "small_value": 1e-2,
                 "small_variation": 1e-4,
-                "with_linear_fit": false
+                "const_fit_type": "optimize"
             }
         },
         "evaluator": {
@@ -136,29 +168,48 @@
                 "fitness": {"!ref": "fitness"},
                 "semantics": {"!ref": "semantics"},
                 "evaluator": {"!ref": "evaluator"},
-                "position_strategy": "rand_position_order",
+                "position_strategy": "shallow_to_deep_position_order",
                 "improve_strategy": "local_improve",
                 "num_starts": 10,
                 "range_delta": 0.1,
-                "max_evals": 20,
+                "max_evals": 30,
                 "lr": 0.1,
-                "tolerance_change": 0.0000001,
-                "tolerance_grad": 0.0000001,
+                "tolerance_change": 0.000001,
+                "tolerance_grad": 0.0001,
                 "min_loss_rtol": 0.95,
                 "with_tabu": true,
                 "closer_to_points": false,
                 "closer_to_points_lambda": 0.001,
                 "max_hole_bindings": 1,
-                "num_children": 1000,
-                "loss_threshold": 0.00001,
-                "instant_eval": true
+                "num_children": 10,
+                "loss_threshold": 0.01,
+                "instant_eval": false
+            }
+        },
+        "const_optimizer": {
+            "type": "ConstOptimizer",
+            "module": "t_search.evaluators.const_optimizer",
+            "params": {
+                "syntax": {"!ref": "syntax"},
+                "evaluator": {"!ref": "evaluator"},
+                "num_starts": 10,
+                "max_evals": 20,
+                "lr": 0.1,
+                "tolerance_change": 0.000001,
+                "tolerance_grad": 0.0001
+            }
+        },
+        "const_optim": {
+            "type": "OptimMutation",
+            "module": "t_search.operators.optim.optim_mutation",
+            "params": {
+                "optimizer": {"!ref": "const_optimizer"}
             }
         }
     },
     "init_service_name": "init",
     "operator_service_names": [        
         "point_optim",
-        "sreduce",
         "evaluator",
         "survivor_selection"
     ],

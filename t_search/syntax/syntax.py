@@ -9,7 +9,7 @@ import torch
 
 from t_search.base import ServiceBase
 from t_search.syntax.generation import Builder, Builders, TermGenContext, gen_all_terms, get_fn_arity, grow
-from t_search.syntax.replacement import replace_fn, replace_pos, replace_pos_protected
+from t_search.syntax.replacement import replace_fn, replace_path, replace_pos, replace_pos_protected
 from t_search.syntax.stats import get_depth, get_positions
 from t_search.syntax.str import parse_const_skeleton_to_term, parse_term
 from t_search.syntax.term import Op, Term, TermPos, Value, Variable
@@ -334,6 +334,16 @@ class Syntax(ServiceBase):
         else:
             child = replace_pos(pos, new_subterm, self.builders)
         return child
+    
+    # def replace_positions_unvalidated(self, term: Term, pos: TermPos, new_subterms: list[Term]) -> list[Term]:
+    #     ''' Replace same position with multiple new subterms, without validation '''
+    #     children = replace_pos(pos, new_subterm, self.builders)
+    #     return children
+    
+    def replace_path_unvalidated(self, term: Term, pos: TermPos, new_subterms: list[Term]) -> list[Term]:
+        if pos is None or len(new_subterms) == 0:
+            return []
+        return replace_path(pos, new_subterms, self.builders)
     
     def replace_fn(self, term: Term, get_replacement_fn: Callable[[Term, int], Optional[Term]]) -> Term:
         replaced_term = replace_fn(term, get_replacement_fn, self.builders)

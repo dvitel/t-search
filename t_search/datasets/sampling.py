@@ -128,16 +128,28 @@ def get_rand_interval_points(
     deltas: Optional[torch.Tensor] = None,
     rand_deltas=True,
     generator: torch.Generator | None = None,
+    pick_rand_grid_points: bool = True,
+    transpose: bool = False,
 ) -> list[torch.Tensor]:
     if steps is None:
         steps = (ranges[:, 1] - ranges[:, 0]) / (num_samples + 1)
     grid_values = get_interval_points(steps, ranges, deltas, rand_deltas, generator=generator)
-    points = [get_rand_grid_point(grid_values, generator=generator) for _ in range(num_samples)]
-    # points = torch.stack(points, dim=0)
-    return points
+    if pick_rand_grid_points:
+        points = [get_rand_grid_point(grid_values, generator=generator) for _ in range(num_samples)]
+        if transpose:
+            points = torch.stack(points, dim=0).t()
+        return points
+    else:
+        points = torch.stack(grid_values, dim=0)
+        if points.shape[1] > num_samples:        
+            new_points = points[:, :num_samples]
+            del points 
+            points = new_points
+        if not transpose:
+            points = points.t()
+        return points
 
-
-# t7 = get_rand_interval_points(10, torch.tensor([[1., 2.], [3., 4.], [5., 6.]]), 0.5)
+# t7 = get_rand_interval_points(5, torch.tensor([[-1.0,1.0]]), rand_deltas=True, transpose=True)
 # pass
 
 

@@ -6,7 +6,7 @@ from t_search.evaluators.evaluator import Evaluator
 from t_search.syntax.syntax import Syntax
 from .optimizer import Optimizer
 
-from .optimization import OptimPoint, optimize
+from .optimization import OptimPoint, clean_optim_result, optimize_consts
 from t_search.syntax.term import Term, Value
     
 class ConstOptimizer(Optimizer):
@@ -44,7 +44,7 @@ class ConstOptimizer(Optimizer):
         self.optim_term_cache: dict[Term, Term] = {}
         self.best_terms_cache: dict[Term, tuple[Term, float]] = {} # optim term to term
         self.default_loss_fn = evaluator.get_loss_fn()
-        self.const_range = const_range
+        self.const_range = const_range.unsqueeze(0)
         self.debug = debug
 
     def _get_optim_state(self, term: Term) -> Term | tuple[Term, dict[OptimPoint, torch.Tensor]]:
@@ -61,35 +61,27 @@ class ConstOptimizer(Optimizer):
                 point = OptimPoint(point_id)
                 optim_points.append(point)
 
-                del steps, rand_points
                 binding[point] = term.value
                 values.append(term)
                 return point
 
         optim_term = self.syntax.replace_fn(term, const_to_optim_point)
 
-        default_loss = self.default_loss_fn(term).item()
+        # default_loss = self.default_loss_fn(term).item()
 
         self.optim_term_cache[term] = optim_term
 
-        if len(binding) == 0:
-            self.best_terms_cache[optim_term] = (term, default_loss) 
-            return term    
+        if optim_term in self.best_terms_cache:
+            return self.best_terms_cache[optim_term][0]
 
-        if optim_term in self.best_terms_cache: # already optimized
-            cur_best_term, cur_best_loss = self.best_terms_cache[optim_term]
-            if default_loss < cur_best_loss:
-                self.best_terms_cache[optim_term] = (term, default_loss)
-                return term
-            else:
-                return cur_best_term  
-
-        self.best_terms_cache[optim_term] = (term, default_loss)          
+        self.best_terms_cache[optim_term] = (term, None)
+        if len(binding) == 0: # nothing to optimize
+            return term
         
         return (optim_term, binding)
     
     def optimize(self,
-        term: Term,
+        term: Term
     ) -> Term:
         """Searches for the term const values that would bring it closer to the target outputs.
         Restarts will reinitialize the constants.
@@ -101,10 +93,10 @@ class ConstOptimizer(Optimizer):
         
         optim_term, start_binding = optim_state
 
-        optim_result = optimize(
+        optim_result = optimize_consts(
             optim_term,
-            self.const_range,
-            start_binding,
+            const_range=self.const_range,
+            start_binding=start_binding,
             loss_fn_builder=self.evaluator.get_loss_fn,
             num_starts=self.num_starts,
             lr=self.lr,
@@ -112,29 +104,30 @@ class ConstOptimizer(Optimizer):
             tolerance_change=self.tolerance_change,
             tolerance_grad=self.tolerance_grad,
             torch_gen=self.torch_gen,
-            debug=self.debug
         )
 
-        if len(optim_result.local_minima_losses) > 0:
+        best_loss_id = torch.argmin(optim_result.loss)
 
-            best_loss = optim_result.local_minima_losses[0]
-            best_binding = optim_result.local_minima_bindings[0]
+        const_vals = []
 
-            def bind_optim_points(term, **_):
-                if isinstance(term, OptimPoint):
-                    const_val = self.syntax.get_const(value=best_binding[term])
-                    # if const_val is None:
-                    #     print(f"Cannot create const term for value {best_binding[term]}")
-                    #     raise ValueError(f"Cannot create const term for value {best_binding[term]}")
-                    return const_val
+        def bind_optim_points(term, *_):
+            if isinstance(term, OptimPoint):
+                const_val = self.syntax.get_const(value=optim_result.binding[term][best_loss_id].item())
+                const_vals.append(const_val)
+                # if const_val is None:
+                #     print(f"Cannot create const term for value {best_binding[term]}")
+                #     raise ValueError(f"Cannot create const term for value {best_binding[term]}")
+                return const_val
 
-            try:
-                best_term = self.syntax.replace_fn(optim_state.optim_term, bind_optim_points)
-            except ValueError as e:                
-                return term
-            self.best_terms_cache[optim_term] = (best_term, best_loss.item())
-            for v in best_binding.values():
-                del v
-            del best_loss, best_binding
-            return best_term
-        return term
+        # try:
+        best_term = self.syntax.replace_fn(optim_term, bind_optim_points)
+        # except ValueError as e:                
+        #     return term
+
+        self.best_terms_cache[optim_term] = (best_term, optim_result.loss[best_loss_id].item())
+
+        clean_optim_result(optim_result)
+
+        # if return_consts:
+        #     return (term, const_vals)
+        return best_term
