@@ -301,6 +301,11 @@ class Syntax(ServiceBase):
         counts = get_counts(term, self.builders, self.counts_cache)
         return counts
     
+    def get_num_consts(self, term: Term) -> int:
+        counts = self.get_counts(term)
+        num_consts = counts[self.const_builder.id].item()
+        return num_consts
+    
     def get_size(self, term: Term):
         counts = self.get_counts(term)
         size = counts.sum().item()

@@ -99,7 +99,7 @@
             "module": "t_search.operators.classic",
             "params": { 
                 "evaluator": {"!ref": "evaluator"},
-                "mu": 10, 
+                "mu": 1000, 
                 "strict": false, 
                 "combine": false,
                 "elitism": 0
@@ -141,12 +141,11 @@
                 "start_delta": 1,
                 "multiplier": 10,
                 "num_steps": 3,
-                "num_closest": 1,
-                "min_l2_for_instant_build": 0.01,
-                "max_pair_queue_size": 16,
+                "num_closest": 2,
+                "good_filling_loss": 0.01,
+                "max_filling_queue_size": 16,
                 "small_value": 1e-2,
-                "small_variation": 1e-4,
-                "const_fit_type": "optimize"
+                "small_variation": 1e-4
             }
         },
         "evaluator": {
@@ -181,7 +180,7 @@
                 "closer_to_points": false,
                 "closer_to_points_lambda": 0.001,
                 "max_hole_bindings": 1,
-                "num_children": 10,
+                "num_children": 1000,
                 "loss_threshold": 0.01,
                 "instant_eval": false
             }

@@ -335,8 +335,9 @@ class PointOptim(Operator, ServiceBase):
     
     def has_pos_to_optimize(self) -> bool:
         return len(self.pos_queue) > 0
+    
+    # TODO: test concrete terms to see the trajectories - collect them for writing
 
-    # TODO -1: bug with extracting local minimas - DONE
     # TODO 0: debug strange case of (add cos(x) (neg x)) --> (add cos(x) (mul 1 (neg x))) - why it had good fit?? - DONE (not reappearing)
     # TODO 1: tabu list as set of skeletons (optim_terms) - DONE
     # TODO 2: redo the loop by adding instant jump to children gen when good pair appears,  - DONE
@@ -362,24 +363,24 @@ class PointOptim(Operator, ServiceBase):
         children = []
 
         while (len(children) < self.num_children) \
-                and (self.term_hole_pairs.has_pairs() or self.has_pos_to_optimize()):
+                and (self.term_hole_pairs.has_fillings() or self.has_pos_to_optimize()):
 
-            child, pair = self.term_hole_pairs.get_best_hole_filling(force_pick=not self.has_pos_to_optimize())
+            child = self.term_hole_pairs.get_best_hole_filling(force_pick=not self.has_pos_to_optimize())
             if child is not None:
                 # if self.debug:
                 #     print("=================================")                
                 #     print(f"Child: {child.term}")
                 #     print(f" {pair.priority:.2f}:  {pair.term} --> {pair.hole[0]} at {pair.hole[1].term}, {pair.hole[1].occur}")
-                if self.instant_eval:
-                    self.evaluator.eval(child.term)
-                    new_fitness = self.fitness.get_fitness(child.term)
-                    old_fitness = self.fitness.get_fitness(pair.hole[0])
-                    if new_fitness < old_fitness:
-                        self.num_better_fills += 1
+                # if self.instant_eval:
+                #     self.evaluator.eval(child.term)
+                #     new_fitness = self.fitness.get_fitness(child.term)
+                #     old_fitness = self.fitness.get_fitness(pair.hole[0])
+                #     if new_fitness < old_fitness:
+                #         self.num_better_fills += 1
 
                 self.num_total_fills += 1
                 children.append(child.term)
-                self.tried_optim_terms.update(child.skeletons)
+                # self.tried_optim_terms.update(child.skeletons)
                 continue
 
             # while len(holes) < self.hole_batch_size and len(self.pos_queue) > 0:
@@ -410,9 +411,6 @@ class PointOptim(Operator, ServiceBase):
 
         return children    
     
-    # TODO: 1 normalize loss_threshold - DONE, test it more
-    # TODO: 2. Where is x in population index??? Should we have it?
-    # TODO: 3. Where is some terms?
     def get_finalizer(self):
         self.add_metrics(
             num_better_fills=self.num_better_fills,

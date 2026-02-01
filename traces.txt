@@ -1,0 +1,6 @@
+Gold: ((x + 1)*x + 1)*x
+
+1. x0 fitness=2.369406e-01, size=1, depth=0
+2. (mul x0 (add (mul 0.8627 (exp x0)) 0.4101)) fitness=7.563544e-03, size=8, depth=4
+3. (mul (add (mul 1.0454 (mul (add (mul 1.0533 (sin x0)) 0.9357) x0)) 0.9989) x0) fitness=1.208784e-04, size=14, depth=7
+4

@@ -1,5 +1,6 @@
 ''' Implementation of optimizer '''
 
+from dataclasses import dataclass
 import torch
 
 from t_search.evaluators.evaluator import Evaluator
@@ -8,6 +9,11 @@ from .optimizer import Optimizer
 
 from .optimization import OptimPoint, clean_optim_result, optimize_consts
 from t_search.syntax.term import Term, Value
+
+@dataclass(frozen=False)
+class Optimized:
+    term: Term
+    loss: float | None
     
 class ConstOptimizer(Optimizer):
 
@@ -42,15 +48,15 @@ class ConstOptimizer(Optimizer):
         self.device = device
         self.dtype = dtype
         self.optim_term_cache: dict[Term, Term] = {}
-        self.best_terms_cache: dict[Term, tuple[Term, float]] = {} # optim term to term
+        self.best_terms_cache: dict[Term, Optimized] = {} # optim term to term
         self.default_loss_fn = evaluator.get_loss_fn()
         self.const_range = const_range.unsqueeze(0)
         self.debug = debug
 
-    def _get_optim_state(self, term: Term) -> Term | tuple[Term, dict[OptimPoint, torch.Tensor]]:
+    def _get_optim_state(self, term: Term) -> Optimized | tuple[Term, dict[OptimPoint, torch.Tensor]]:
         ''' Either returns already optimized term or optimization state'''
         if term in self.optim_term_cache:
-            return self.best_terms_cache[self.optim_term_cache[term]][0]
+            return self.best_terms_cache[self.optim_term_cache[term]]
         optim_points: list[OptimPoint] = []
         binding = {}
         values = []        
@@ -72,24 +78,27 @@ class ConstOptimizer(Optimizer):
         self.optim_term_cache[term] = optim_term
 
         if optim_term in self.best_terms_cache:
-            return self.best_terms_cache[optim_term][0]
+            return self.best_terms_cache[optim_term]
 
-        self.best_terms_cache[optim_term] = (term, None)
+        # self.best_terms_cache[optim_term] = (term, None)
         if len(binding) == 0: # nothing to optimize
-            return term
+            return Optimized(term, None)
         
         return (optim_term, binding)
     
     def optimize(self,
-        term: Term
-    ) -> Term:
+        term: Term,
+        with_loss: bool = False,
+    ) -> Term | Optimized:
         """Searches for the term const values that would bring it closer to the target outputs.
         Restarts will reinitialize the constants.
         """
 
         optim_state = self._get_optim_state(term)
-        if isinstance(optim_state, Term): # already optimized
-            return optim_state # return best known term
+        if isinstance(optim_state, Optimized): # already optimized
+            if with_loss:
+                return optim_state
+            return optim_state.term # return best known term
         
         optim_term, start_binding = optim_state
 
@@ -124,9 +133,15 @@ class ConstOptimizer(Optimizer):
         # except ValueError as e:                
         #     return term
 
-        self.best_terms_cache[optim_term] = (best_term, optim_result.loss[best_loss_id].item())
+        best_loss = optim_result.loss[best_loss_id].item()
+        optimized = Optimized(best_term,  best_loss)
+
+        self.best_terms_cache[optim_term] = optimized
 
         clean_optim_result(optim_result)
+
+        if with_loss:
+            return optimized
 
         # if return_consts:
         #     return (term, const_vals)
