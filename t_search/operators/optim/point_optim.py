@@ -51,6 +51,7 @@ class PointOptim(Operator, ServiceBase):
                  rnd: np.random.Generator,
                  torch_gen: torch.Generator,
                  add_metrics: Callable,
+                 get_cur_gen: Callable,
                  position_strategy: Literal["rand_position_order", "shallow_to_deep_position_order", "best_grad_position_order"] = "rand_position_order",
                  num_starts: int = 10,
                  range_delta: float = 0.1,
@@ -105,6 +106,7 @@ class PointOptim(Operator, ServiceBase):
         self.pos_queue: list[HolePos] = [] # hole priority queue
         self.added_terms = set() # terms with added positions
         self.instant_eval = instant_eval
+        self.get_cur_gen = get_cur_gen
 
         #TODO
         # 1. Metrics - DONE
@@ -126,7 +128,7 @@ class PointOptim(Operator, ServiceBase):
         return priorities
 
     def shallow_to_deep_position_order(self, term: Term, positions: list[TermPos]) -> list[Any]:
-        priorities = [(p.at_depth, self.rnd.random(), ) for  p in positions]
+        priorities = [(self.get_cur_gen(), p.at_depth, self.rnd.random(), ) for  p in positions]
         return priorities
 
     def best_grad_position_order(self, term: Term, positions: list[TermPos]) -> list[Any]:
@@ -362,6 +364,10 @@ class PointOptim(Operator, ServiceBase):
 
         children = []
 
+        if self.debug:
+            print(f"- Par: {len(population)}, Pos: {len(self.pos_queue)}, Fil: {len(self.term_hole_pairs.hole_fillings)}, Tabu: {len(self.tabu_set)} -")
+        pass
+
         while (len(children) < self.num_children) \
                 and (self.term_hole_pairs.has_fillings() or self.has_pos_to_optimize()):
 
@@ -408,6 +414,9 @@ class PointOptim(Operator, ServiceBase):
                 del hb
             
             pass 
+
+        if self.debug: 
+            print(f"= Ch: {len(children)}, Pos: {len(self.pos_queue)}, Fil: {len(self.term_hole_pairs.hole_fillings)}, Tabu: {len(self.tabu_set)} =")
 
         return children    
     

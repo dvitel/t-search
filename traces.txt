@@ -2,5 +2,25 @@ Gold: ((x + 1)*x + 1)*x
 
 1. x0 fitness=2.369406e-01, size=1, depth=0
 2. (mul x0 (add (mul 0.8627 (exp x0)) 0.4101)) fitness=7.563544e-03, size=8, depth=4
-3. (mul (add (mul 1.0454 (mul (add (mul 1.0533 (sin x0)) 0.9357) x0)) 0.9989) x0) fitness=1.208784e-04, size=14, depth=7
-4
+    x(0.4101+0.8627exp(x))
+3. (mul x0 (add (mul 0.9693 (mul (add (mul 1.1734 (sin x0)) 1.0178) x0)) 0.9833)) fitness=5.381370e-05, size=14, depth=7
+    x(0.9833 + 0.9693x(1.1734sin(x) + 1.0178))
+4. (mul x0 (add (add (mul 0.9997 x0) -0.0091) (add (mul 0.9984 (mul x0 x0)) 1.0097))) fitness=7.023132e-08, size=15, depth=5
+    x(0.9997x - 0.0091 + 0.9984x^2 + 1.0097)
+
+
+
+
+TODO: debug how positions are added - added gen to key 
+
+register_term - should we search for holes of terms there and for what terms? - only new terms:
+avoid created terms by register_holes??? or point_optim operators? 
+should we use only one side of this? search for pair of (term, sketch) only in point_optim??? not during eval?
+How term index should be updated? 
+
+TODO: debug selection of constant semantics 
+TODO: debug the trace above - why not exact 1s as in gold term?
+TODO: simplify code - remove some nonworking ideas
+
+TODO: exploration operator
+

@@ -163,6 +163,7 @@ class Syntax(ServiceBase):
         self.builders.disable_builders(list(self.waiting_ops)) 
         
         self.zero_value = self.const_builder.fn(value=0.0)
+        self.one_value = self.const_builder.fn(value=1.0)
         self.skeletons_cache: dict[Term, Term] = {}
 
     def _alloc_const(self, *, value: Optional[float | torch.Tensor] = None) -> Value:
