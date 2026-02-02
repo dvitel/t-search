@@ -34,6 +34,8 @@ def replace_pos(pos: TermPos, with_term: Term, builders: Builders) -> Optional[T
         args = parent.get_args()
         new_parent_term_args = tuple((*args[:term_i], new_term, *args[term_i + 1:]))   
         builder = builders.get_term_builder(parent)
+        if builder is None:
+            return None
         new_parent_term = builder.fn(*new_parent_term_args)
         if new_parent_term is None:
             return None
@@ -59,6 +61,8 @@ def replace_path(pos: TermPos, with_terms: list[Term], builders: Builders) -> li
         for new_term in new_terms:
             new_parent_term_args = tuple((*args[:term_i], new_term, *args[term_i + 1:]))   
             builder = builders.get_term_builder(parent)
+            if builder is None:
+                continue
             new_parent_term = builder.fn(*new_parent_term_args)
             if new_parent_term is None:
                 continue
@@ -123,6 +127,9 @@ def replace_fn(root: Term,
         new_args = arg_stack.pop()
         if any(arg != old_arg for arg, old_arg in zip(new_args, term.get_args())):   
             builder = builders.get_term_builder(term)
+            if builder is None:
+                arg_stack.clear()
+                return TRAVERSAL_EXIT
             new_term = builder.fn(*new_args)
             if new_term is None:
                 arg_stack.clear()

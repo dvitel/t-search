@@ -15,7 +15,10 @@ def get_counts(root: Term, builders: Builders, counts_cache: dict[Term, np.ndarr
             return TRAVERSAL_EXIT_NODE
         elif t.arity() == 0: # leaf
             builder = builders.get_term_builder(t)
-            counts = builders.one_hot[builder.id]
+            if builder is None: # do not add one hot
+                counts = builders.zero.copy()
+            else:
+                counts = builders.one_hot[builder.id]
             counts_stack[-1].append(counts)
             return TRAVERSAL_EXIT_NODE
         else:
@@ -25,7 +28,8 @@ def get_counts(root: Term, builders: Builders, counts_cache: dict[Term, np.ndarr
         args = counts_stack.pop()
         counts = sum(args)
         builder = builders.get_term_builder(t)
-        counts[builder.id] += 1
+        if builder is not None:
+            counts[builder.id] += 1
         counts_cache[t] = counts
         counts_stack[-1].append(counts)
 
@@ -73,7 +77,7 @@ def get_pos_constraints(pos: TermPos, builders: Builders, counts_cache: dict[Ter
         # assert parent_context.sat_args(parent_one_hot)
         # assert parent_context.sat(parent_counts)
 
-        if parent_i == 0: 
+        if (parent_builder is None) or (parent_i == 0): 
             break
         
         arg = chain_to_root[parent_i - 1]
@@ -107,7 +111,8 @@ def get_pos_constraints(pos: TermPos, builders: Builders, counts_cache: dict[Ter
 
         if arg_context.arg_limits is not None:
             arg_builder = builders.get_term_builder(arg.term)
-            assert arg_context.arg_limits[arg_builder.id] > 0
+            if arg_builder is not None:
+                assert arg_context.arg_limits[arg_builder.id] > 0
 
         _context = arg_context
 
@@ -124,7 +129,8 @@ def is_valid(root: Term, *, builders: Builders, counts_cache: dict[Term, np.ndar
     if root_context.arg_limits is not None:
         child_count = builders.zero.copy()
         builder = builders.get_term_builder(root)
-        child_count[builder.id] += 1
+        if builder is not None:
+            child_count[builder.id] += 1
         
         if np.any(child_count > root_context.arg_limits):
             return False
@@ -165,7 +171,8 @@ def validate_term_tree(root: Term, *, builders: Builders, counts_cache: dict[Ter
             child_count = builders.zero.copy()
             for arg in children:
                 builder = builders.get_term_builder(arg)
-                child_count[builder.id] += 1
+                if builder is not None:
+                    child_count[builder.id] += 1
             
             if np.any(child_count > cur_context.arg_limits):
                 is_valid = False
@@ -187,10 +194,11 @@ def validate_term_tree(root: Term, *, builders: Builders, counts_cache: dict[Ter
 
         arg_min_counts = cur_context.min_counts.copy()
         arg_max_counts = cur_context.max_counts.copy()
-        arg_min_counts[term_builder.id] -= 1
-        arg_max_counts[term_builder.id] -= 1
-        if term_builder.context_limits is not None:
-            arg_max_counts = np.minimum(arg_max_counts, term_builder.context_limits)
+        if term_builder is not None:
+            arg_min_counts[term_builder.id] -= 1
+            arg_max_counts[term_builder.id] -= 1
+            if term_builder.context_limits is not None:
+                arg_max_counts = np.minimum(arg_max_counts, term_builder.context_limits)
 
         child_stack.append(term.get_args())
 
@@ -198,7 +206,7 @@ def validate_term_tree(root: Term, *, builders: Builders, counts_cache: dict[Ter
             arg_context = TermGenContext(
                 min_counts=arg_min_counts,
                 max_counts=arg_max_counts,
-                arg_limits=term_builder.arg_limits)
+                arg_limits=None if term_builder is None else term_builder.arg_limits)
             arg_context.min_counts[arg_context.min_counts < 0] = 0
             arg_context.max_counts[arg_context.max_counts < 0] = 0
             current_context_stack.append([arg_context])
@@ -211,7 +219,7 @@ def validate_term_tree(root: Term, *, builders: Builders, counts_cache: dict[Ter
             child_context = TermGenContext(
                 min_counts=(arg_min_counts if (i == term_arity - 1) else arg_min_counts.copy()),
                 max_counts=(arg_max_counts if (i == term_arity - 1) else arg_max_counts.copy()),
-                arg_limits=term_builder.arg_limits)
+                arg_limits=None if term_builder is None else term_builder.arg_limits)
 
             other_counts = sum(cnts for child_i, cnts in enumerate(child_counts) if child_i != i)
 
@@ -246,7 +254,8 @@ def get_pos_sibling_counts(position: TermPos, builders: Builders) -> np.ndarray:
         else:
             arg_counts = get_immediate_counts(position.parent.term, builders)
             position_builder = builders.get_term_builder(position.term)
-            arg_counts[position_builder.id] -= 1
+            if position_builder is not None:
+                arg_counts[position_builder.id] -= 1
         position.sibling_count = arg_counts
     return position.sibling_count
 
@@ -264,6 +273,7 @@ def get_immediate_counts(root: Term, builders: Builders) -> np.ndarray:
     counts = builders.zero.copy()
     for arg in root.get_args():
         builder = builders.get_term_builder(arg)
-        counts[builder.id] += 1
+        if builder is not None:
+            counts[builder.id] += 1
 
     return counts

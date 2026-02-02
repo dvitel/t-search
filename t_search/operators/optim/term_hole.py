@@ -1,7 +1,8 @@
+from collections import deque
 from dataclasses import dataclass
 from heapq import heappop, heappush
 from math import prod
-from typing import Optional
+from typing import Callable, Literal, Optional
 
 import torch
 
@@ -252,31 +253,104 @@ class TermHolePairs(EvalListener, ServiceBase):
                 return (mul_other[0], new_k, b)        
         return (term, k, b)
     
-    def strip_add_mul_consts(self, term: Term) -> Term:
-        if isinstance(term, Op) and ((term.op_id == "add") or (term.op_id == "mul")):
-            non_const_args = [a for a in term.get_args() if not isinstance(a, Value)]
-            if len(non_const_args) == term.arity():
-                return term 
-            if len(non_const_args) == 0:
-                return self.syntax.zero_value 
-            elif len(non_const_args) == 1:
-                return self.strip_add_mul_consts(non_const_args[0])
-            else: 
-                new_op = self.syntax.get_op(term.op_id, *non_const_args)
-                return new_op
-        return term 
+    def reduce_consts(self, term: Term, op_id: str, reduce_fn: Callable, identity_pred: Callable | None = None) -> Term:
+        ''' add/mul for binary is tansformed to one of varying arity and then all constants are combined
+            then, we return to binary ops. Top-down transfomration.
+        '''
+        all_terms = deque([term])
+        final_args = []
+        while len(all_terms) > 0:
+            current = all_terms.popleft()
+            if isinstance(current, Op) and (current.op_id == op_id):
+                for a in current.get_args():
+                    all_terms.append(a)
+            else:
+                final_args.append(current)
+        const_terms, non_const_terms = [], []
+        for a in final_args:
+            (const_terms if isinstance(a, Value) else non_const_terms).append(a)
+        if len(const_terms) == 0: # nothing to reduce - leave as it was 
+            return term
+        final_const = const_terms[0]
+        if len(const_terms) > 1:
+            new_const = reduce_fn([c.value for c in const_terms])
+            final_const = new_const if isinstance(new_const, Value) else self.syntax.get_const(value=new_const)
+        if (identity_pred is None) or (len(non_const_terms) == 0) or (not identity_pred(final_const.value)):
+            non_const_terms.append(final_const)
+        if len(non_const_terms) == 1:
+            return non_const_terms[0]
+        else:
+            new_term = self.syntax.get_op(op_id, *non_const_terms)
+            return new_term
+        
+    def mul_identity(self, v) -> bool:
+        return (v - self.syntax.one_value.value) < self.small_value
+    
+    def add_identity(self, v) -> bool:
+        return (v - self.syntax.zero_value.value) < self.small_value
+        
+    def custom_rule_mul_add_one(self, term: Term) -> Term: 
+        ''' Implements custom reduction rule for (mul (add ? 1) k) -> (add (mul ? k) k) 
+            Goal: reduce number of constants while preserving the term size
+            This is reduction at place - no deep transformation
+        '''
+        def arg_arg_shape(arg_arg: Term) -> bool: 
+            if isinstance(arg_arg, Value) and self.mul_identity(arg_arg):
+                return True
+            return False
+        def arg_shape(arg: Term) -> Optional[Term]:
+            if isinstance(arg, Op) and (arg.op_id == "add"):
+                args = arg.get_args()
+                t1 = args[0]
+                t2 = args[1]
+                if arg_arg_shape(t1):
+                    return t2
+                if arg_arg_shape(t2):
+                    return t1
+            return None
+        if isinstance(term, Op) and (term.op_id == "mul"):
+            args = term.get_args()
+            t1 = args[0]
+            t2 = args[1]
+            arg1 = arg_shape(t1)
+            if arg1 is not None:
+                new_mul = self.syntax.get_op("mul", arg1, t2)
+                new_term = self.syntax.get_op("add", new_mul, t2)
+                return new_term
+            arg2 = arg_shape(t2)
+            if arg2 is not None:
+                new_mul = self.syntax.get_op("mul", arg2, t1)
+                new_term = self.syntax.get_op("add", new_mul, t1)
+                return new_term
+        return term
+        
+    def reduce_all_term_ops_consts(self, term: Term, 
+                                    ops: dict[str, Callable] = {"add": lambda vs: sum(v for v in vs), "mul": lambda vs: prod(v for v in vs)},
+                                    identities: dict[str, Callable] = {}) -> Term:
+        if not isinstance(term, Op):
+            return term
+        new_term = term
+        for op_id, op_reduce in ops.items():
+            new_term = self.reduce_consts(new_term, op_id, op_reduce, identities.get(op_id, None))
+            if new_term != term: # cannot reduce further at point 
+                break 
+        if isinstance(new_term, Op):
+            new_args = [self.reduce_all_term_ops_consts(arg, ops=ops) for arg in new_term.get_args()]
+            final_term = self.syntax.get_op(new_term.op_id, *new_args)
+            return final_term        
+        return new_term
 
     # (add t k), (mul k t)
     def add_fill_hole(self, term: Term, hole_root: Term, hole_pos: TermPos, l2: float) -> Optional[HoleFilling]:
 
-        fit_subterm0 = self.strip_add_mul_consts(term)
-        if isinstance(fit_subterm0, Value):
-            fit_term = fit_subterm0
-        else:
-            k_value = self.syntax.one_value
-            b_value = self.syntax.zero_value
-            fit_subterm1 = self.syntax.get_op("mul", k_value, fit_subterm0)
-            fit_term = self.syntax.get_op("add", fit_subterm1, b_value)
+        # fit_subterm0 = self.strip_add_mul_consts(term)
+        # if isinstance(fit_subterm0, Value):
+        #     fit_term = fit_subterm0
+        # else:
+        k_value = self.syntax.one_value
+        b_value = self.syntax.zero_value
+        fit_subterm1 = self.syntax.get_op("mul", k_value, term)
+        fit_term = self.syntax.get_op("add", fit_subterm1, b_value)
         # NOTE: change hole pos to remove (mul ? c) and (add ? c).
         while hole_pos.parent is not None:   
             parent = hole_pos.parent             
@@ -295,15 +369,23 @@ class TermHolePairs(EvalListener, ServiceBase):
             if self.debug:
                 print(f"\tconstr violation: {fit_term} --> {hole_root}@({hole_pos.term}, {hole_pos.occur})")
             return None
+        
+        # reducing consstants before optimization 
+        new_term = self.reduce_all_term_ops_consts(new_term)
 
         optimized = self.const_optimizer.optimize(new_term, with_loss=True)
         assert optimized.term is not None, "Const optimizer must return valid term"
+
+        # optimized_reduced_term = self.reduce_all_term_ops_consts(optimized.term, 
+        #                                 identities={"add": self.add_identity, "mul": self.mul_identity}
+        #                                 )
         
         new_filling_id = self.filling_id
         self.filling_id += 1
         hole_filling = HoleFilling(optimized.loss, l2, 
                                     new_filling_id,
-                                   optimized.term,
+                                    optimized.term,
+                                #    optimized_reduced_term,
                             term, hole_root, hole_pos,
                             term_semantics=self.term_index.get_semantics_for_term(term, denormalize=True),
                             hole_semantics=self.hole_index.get_semantics_for_term((hole_root, hole_pos), denormalize=True)

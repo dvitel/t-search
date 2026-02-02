@@ -28,6 +28,7 @@ class Syntax(ServiceBase):
                  ops_schedule: dict[str, int], # on what iteration the operation should be activated (used in random syntax generation)
                  get_cur_gen: Callable[[], int],
                  add_metrics: Callable,
+                 commutative: list[str] = [],
                  device: str = 'cpu',
                  dtype: torch.dtype = torch.bfloat16,
                  
@@ -45,7 +46,8 @@ class Syntax(ServiceBase):
                  prohibit_ops_on_consts_only: bool = True,       
                  capacity: int = 1024,
                  rnd: np.random.Generator = GLOBAL_RNG,
-                 torch_gen: torch.Generator | None = None
+                 torch_gen: torch.Generator | None = None,
+                 debug: bool = False
                  ):
         self.ops_signatures = ops_signatures
         self.add_metrics = add_metrics
@@ -71,6 +73,9 @@ class Syntax(ServiceBase):
         self.prohibit_ops_on_consts_only = prohibit_ops_on_consts_only
         self.inner_ops_max_counts = inner_ops_max_counts
         self.immediate_arg_limits = immediate_arg_limits
+        self.commutative = commutative # allows orering of args in cache
+        self.commutative_priority = {}
+        self.debug = debug
 
         self.forbid_patterns = forbid_patterns
         self.match_cache: dict[tuple, UnifyBindings] = {}
@@ -107,13 +112,15 @@ class Syntax(ServiceBase):
         for op_id, op_builder in self.op_builders.items():
             builders[op_id] = op_builder
 
-        def get_term_builder(term: Term):
+        def get_term_builder(term: Term) -> Optional[Builder]:
             if isinstance(term, Op):
                 builder = builders[term.op_id]
-            if isinstance(term, Variable):
+            elif isinstance(term, Variable):
                 builder = builders[Variable]
-            if isinstance(term, Value):
+            elif isinstance(term, Value):
                 builder = builders[Value]
+            else: # meta-terms has not builders
+                return None
             return builder
 
         self.builders = Builders(list(builders.values()), get_term_builder)
@@ -213,11 +220,46 @@ class Syntax(ServiceBase):
             match = match_root(term, fpattern, prev_matches=self.match_cache)
             if match is not None:
                 return False
-        return True    
+        return True  
+
+    def _get_term_priority(self, term: Term) -> tuple:
+        if term in self.commutative_priority:
+            return self.commutative_priority[term]
+        if isinstance(term, Value):
+            priority = (0, term.value.item(),)
+        elif isinstance(term, Variable):
+            priority = (1, term.var_id,)
+        elif isinstance(term, Op):
+            priority = (2, self.get_size(term), term.op_id, *(self._get_term_priority(a) for a in term.get_args()))
+        else:
+            # raise ValueError(f"Unknown term type: {type(term)}")
+            priority = (3,) # for meta-terms
+        self.commutative_priority[term] = priority
+        return priority
     
     def _alloc_op_builder(self, op_id: str) -> Callable:
 
+        def sort_commutative_args(args: tuple[Term, ...]) -> tuple[Term, ...]:
+            # if not all(isinstance(arg, (Value, Variable, Op)) for arg in args):
+            #     return args  # do not sort meta-terms
+            # try:
+            sorted_args = sorted(args, key=self._get_term_priority, reverse=True)
+            if self.debug: 
+                for a in args:
+                    assert a in sorted_args, f"Argument {a} missing in sorted args {sorted_args} for op {op_id}"
+                for a in sorted_args:
+                    assert a in args, f"Sorted argument {a} not in original args {args} for op {op_id}"
+            return sorted_args
+            # except Exception: # NOTE: probablly should be one differently - this is for terms with OptimPoints
+            #     return args
+        
+        def sort_noop(args): 
+            return args
+        
+        sorter = sort_commutative_args if op_id in self.commutative else sort_noop
+
         def _alloc_op(*args):
+            args = sorter(args)
             signature = (op_id, *args)
             if signature in self.syntax:
                 self.add_metrics(syntax_hit=1)
@@ -261,7 +303,7 @@ class Syntax(ServiceBase):
                 if isinstance(t, Value):
                     return self.const_builder.fn(value=t.value)
                 builder = self.builders.get_term_builder(t)                    
-                return builder.fn(*args)
+                return None if builder is None else builder.fn(*args)
             cached_term = postorder_map(term, map_term)
             return cached_term
         except Exception:
@@ -276,7 +318,7 @@ class Syntax(ServiceBase):
                 if isinstance(t, Value):
                     return self.const_builder.fn(value=t.value)                
                 builder = self.builders.get_term_builder(t)                    
-                return builder.fn(*args)
+                return None if builder is None else builder.fn(*args)
             cached_term = postorder_map(term, map_term)
             return cached_term
         except Exception:
@@ -385,12 +427,14 @@ class Syntax(ServiceBase):
             return None
         arity = self.op_builders[op_id].arity()
         if arity == 1 and len(args) != 1:
-            return None
+            raise ValueError(f"Op {op_id} requires 1 argument, got {len(args)}")
+            # return None
         cur_args = args[:arity]
         left_args = args[arity:]
         cur_term = self.op_builders[op_id].fn(*cur_args)
         while len(left_args) > 0:
             new_args = [cur_term, *left_args[:arity - 1]]
+            assert len(new_args) == arity
             cur_term = self.op_builders[op_id].fn(*new_args)
             left_args = left_args[arity - 1:]
         # if check_validity and new_term is not None:

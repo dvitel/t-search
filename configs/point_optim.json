@@ -64,7 +64,8 @@
                     },
                     "log": {"exp": 0},
                     "exp": {"log": 0}        
-                }
+                },
+                "commutative": ["add", "mul"]
             }
         },
         "term_vector_storage": { 
@@ -142,8 +143,8 @@
                 "multiplier": 10,
                 "num_steps": 3,
                 "num_closest": 2,
-                "good_filling_loss": 0.01,
-                "max_filling_queue_size": 16,
+                "good_filling_loss": 0.001,
+                "max_filling_queue_size": 1000,
                 "small_value": 1e-2,
                 "small_variation": 1e-4
             }
@@ -210,6 +211,7 @@
     "operator_service_names": [        
         "point_optim",
         "evaluator",
+        "sreduce",
         "survivor_selection"
     ],
     "ops": ["add", "mul", "neg", "inv", "exp", "log", "sin", "cos"],

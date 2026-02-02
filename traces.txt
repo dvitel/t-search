@@ -1,14 +1,34 @@
 Gold: ((x + 1)*x + 1)*x
 
 1. x0 fitness=2.369406e-01, size=1, depth=0
+   x0 fitness=2.935379e-01, size=1, depth=0
+
 2. (mul x0 (add (mul 0.8627 (exp x0)) 0.4101)) fitness=7.563544e-03, size=8, depth=4
+   (mul (add (mul (exp x0) 0.8893) 0.4042) x0) fitness=7.159559e-03, size=8, depth=4
+   
     x(0.4101+0.8627exp(x))
+   (mul (add (mul (exp x0) 0.8627) 0.4101) x0) fitness=7.563545e-03, size=8, depth=4
+   (mul (add (mul (exp x0) 0.8627) 0.4101) x0) fitness=7.563545e-03, size=8, depth=4
+
+
 3. (mul x0 (add (mul 0.9693 (mul (add (mul 1.1734 (sin x0)) 1.0178) x0)) 0.9833)) fitness=5.381370e-05, size=14, depth=7
+   (mul (add (add (mul (mul x0 x0) 0.5386) (mul (exp x0) 0.9051)) 0.0892) x0) fitness=1.894406e-04, size=14, depth=5
+   
+   (mul (add (mul (mul (add (mul (sin x0) 1.1372) 1.0130) x0) 0.9779) 1.0003) x0) fitness=9.666874e-05, size=14, depth=7
     x(0.9833 + 0.9693x(1.1734sin(x) + 1.0178))
+
+
 4. (mul x0 (add (add (mul 0.9997 x0) -0.0091) (add (mul 0.9984 (mul x0 x0)) 1.0097))) fitness=7.023132e-08, size=15, depth=5
+    New best (mul (add (add (mul (mul x0 x0) 1.0000) (mul x0 1.0000)) 1.0000) x0) fitness=1.474228e-11, size=13, depth=5
+    
     x(0.9997x - 0.0091 + 0.9984x^2 + 1.0097)
+   (mul (add (mul (mul (add (mul x0 1.0315) 1.0357) x0) 0.9651) 1.0029) x0) fitness=6.752500e-07, size=13, depth=6
+   x(1.0029+0.9651x(1.0357+1.0315x))
 
 
+(mul (add (OptimPoint) (mul (OptimPoint) (mul (add (OptimPoint) (mul (OptimPoint) x0)) x0))) x0)
+(mul (add 1.0003       (mul 0.9779       (mul (add 0.0000       (mul 1.0000       x0)) x0))) x0)
+(mul (add 1                              (mul (add 1                              x0 ) x0 )) x0)
 
 
 TODO: debug how positions are added - added gen to key 

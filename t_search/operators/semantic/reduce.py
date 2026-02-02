@@ -27,5 +27,6 @@ class SReduce(TermMutation):
     
     def __call__(self, population):
         new_pop = super().__call__(population)
-        filtered = [t for t in new_pop if self.syntax.is_valid(t)]
-        return filtered
+        # filtered = [t for t in new_pop if self.syntax.is_valid(t)]
+        # return filtered
+        return new_pop

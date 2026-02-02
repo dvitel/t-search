@@ -108,12 +108,12 @@ class Builder:
 
 class Builders:
 
-    def __init__(self, builders: list[Builder], get_term_builder: Callable[[Term], Builder],
+    def __init__(self, builders: list[Builder], get_term_builder: Callable[[Term], Optional[Builder]],
                     disallow_initial_leaves: bool = True, max_depth = 17,
                     global_min_count: np.int8 = 0, global_max_count: np.int8 = 100):
         self.builders: list[Builder] = builders
         self.disabled_builder_ids: np.ndarray = np.zeros((len(builders),), dtype=np.int8)
-        self.get_term_builder: Callable[[Term], Builder] = get_term_builder
+        self.get_term_builder: Callable[[Term], Optional[Builder]] = get_term_builder
         self.leaf_ids = []
         self.nonleaf_ids = []
         self.global_max_count = global_max_count
