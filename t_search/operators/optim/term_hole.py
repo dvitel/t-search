@@ -8,6 +8,7 @@ import torch
 
 from t_search.base import ServiceBase
 from t_search.evaluators.const_optimizer import ConstOptimizer
+from t_search.evaluators.fitness import Fitness
 from t_search.evaluators.term_spatial import HoleVectorStorage, TermVectorStorage
 from t_search.operators.listeners import EvalListener
 from t_search.syntax import Term, TermPos
@@ -71,7 +72,7 @@ class TermHolePairs(EvalListener, ServiceBase):
                     target: torch.Tensor,
                     syntax: Syntax,
                     # evaluator: Evaluator,
-                    # fitness: Fitness,
+                    fitness: Fitness,
                     term_index: TermVectorStorage,
                     hole_index: HoleVectorStorage,
                     const_optimizer: ConstOptimizer,
@@ -111,6 +112,7 @@ class TermHolePairs(EvalListener, ServiceBase):
         self.max_filling_queue_size = max_filling_queue_size 
         self.debug = debug
         self.const_optimizer = const_optimizer
+        self.fitness = fitness
 
         pass 
 
@@ -138,20 +140,20 @@ class TermHolePairs(EvalListener, ServiceBase):
 
         new_terms = self.term_index.insert(terms, term_params)
         if len(new_terms) == 0:
-            if self.debug: # outputing duplicates that were removed
-                for t in terms:
-                    if t not in new_terms:
-                        print(f"[register_terms] duplicate: {t}")
-                pass 
+            # if self.debug: # outputing duplicates that were removed
+            #     for t in terms:
+            #         if t not in new_terms:
+            #             print(f"[register_terms] duplicate: {t}")
+            #     pass 
             return
 
         normalized_terms, normalized_semantics = self.term_index.get_new_normalized(new_terms)
 
         if len(normalized_terms) == 0:
             # print("WARN: no normalized terms found during registering terms")
-            if self.debug: # same semantics alreay represented by some simple terms: 
-                for t in new_terms:
-                    print(f"[register_terms] different repr for: {t}")
+            # if self.debug: # same semantics alreay represented by some simple terms: 
+            #     for t in new_terms:
+            #         print(f"[register_terms] different repr for: {t}")
             return
         # searching for nearby holes 
         found_holes = self.hole_index.query_closest(normalized_semantics, 
@@ -164,8 +166,8 @@ class TermHolePairs(EvalListener, ServiceBase):
         for term, holes in zip(normalized_terms, found_holes):
             for (l2, hole) in holes:
                 if isinstance(term, Value) and isinstance(hole[1].term, Value):      
-                    if self.debug:
-                        print(f"\tskipping known constant: {hole[0]}@({hole[1].term}, {hole[1].occur})")
+                    # if self.debug:
+                    #     print(f"\tskipping known constant: {hole[0]}@({hole[1].term}, {hole[1].occur})")
                     continue                
                 self.add_fill_hole(term, hole[0], hole[1], l2)        
         pass
@@ -178,20 +180,20 @@ class TermHolePairs(EvalListener, ServiceBase):
         new_holes = self.hole_index.insert(holes, hole_params)
         
         if len(new_holes) == 0:
-            if self.debug: # outputing duplicates that were removed
-                for h in holes:
-                    if h not in new_holes:
-                        print(f"[register_holes] duplicate: {h[0]}@({h[1].term}, {h[1].occur})")
-                pass             
+            # if self.debug: # outputing duplicates that were removed
+            #     for h in holes:
+            #         if h not in new_holes:
+            #             print(f"[register_holes] duplicate: {h[0]}@({h[1].term}, {h[1].occur})")
+            #     pass             
             return
 
         normalized_holes, normalized_semantics = self.hole_index.get_new_normalized(new_holes)
 
         if len(normalized_holes) == 0:
             # print("WARN: no normalized holes found during registering holes")
-            if self.debug: # same semantics alreay represented by some simple holes: 
-                for h in new_holes:
-                    print(f"[register_holes] different repr for: {h[0]}@({h[1].term}, {h[1].occur})")
+            # if self.debug: # same semantics alreay represented by some simple holes: 
+            #     for h in new_holes:
+            #         print(f"[register_holes] different repr for: {h[0]}@({h[1].term}, {h[1].occur})")
             return
         
         found_terms = self.term_index.query_closest(normalized_semantics, 
@@ -204,8 +206,8 @@ class TermHolePairs(EvalListener, ServiceBase):
         for hole, terms in zip(normalized_holes, found_terms):
             for (l2, term) in terms: 
                 if isinstance(term, Value) and isinstance(hole[1].term, Value):      
-                    if self.debug:
-                        print(f"\tskipping known constant: {hole[0]}@({hole[1].term}, {hole[1].occur})")
+                    # if self.debug:
+                    #     print(f"\tskipping known constant: {hole[0]}@({hole[1].term}, {hole[1].occur})")
                     continue
                 self.add_fill_hole(term, hole[0], hole[1], l2)
         pass 
@@ -253,35 +255,44 @@ class TermHolePairs(EvalListener, ServiceBase):
                 return (mul_other[0], new_k, b)        
         return (term, k, b)
     
-    def reduce_consts(self, term: Term, op_id: str, reduce_fn: Callable, identity_pred: Callable | None = None) -> Term:
+    def reduce_consts(self, term: Term, 
+                        ops: dict[str, Callable] = {"add": lambda vs: sum(v for v in vs), "mul": lambda vs: prod(v for v in vs)},
+                        identities: dict[str, Callable] = {}
+                      ) -> Term:
         ''' add/mul for binary is tansformed to one of varying arity and then all constants are combined
             then, we return to binary ops. Top-down transfomration.
         '''
+        if not isinstance(term, Op) or (term.op_id not in ops):
+            return term
         all_terms = deque([term])
         final_args = []
         while len(all_terms) > 0:
             current = all_terms.popleft()
-            if isinstance(current, Op) and (current.op_id == op_id):
-                for a in current.get_args():
+            if isinstance(current, Op) and (current.op_id == term.op_id):
+                for a in current.get_args():                    
                     all_terms.append(a)
             else:
-                final_args.append(current)
+                reduced_current = self.reduce_consts(current, ops=ops, identities=identities)
+                final_args.append(reduced_current)
         const_terms, non_const_terms = [], []
         for a in final_args:
             (const_terms if isinstance(a, Value) else non_const_terms).append(a)
-        if len(const_terms) == 0: # nothing to reduce - leave as it was 
-            return term
-        final_const = const_terms[0]
-        if len(const_terms) > 1:
+        # if len(const_terms) == 0: # nothing to reduce - leave as it was 
+        #     return term
+        # final_const = const_terms[0]
+        final_const = None 
+        if len(const_terms) == 1:
+            final_const = const_terms[0]
+        elif len(const_terms) > 1:
+            reduce_fn = ops[term.op_id]
             new_const = reduce_fn([c.value for c in const_terms])
             final_const = new_const if isinstance(new_const, Value) else self.syntax.get_const(value=new_const)
-        if (identity_pred is None) or (len(non_const_terms) == 0) or (not identity_pred(final_const.value)):
+        if (final_const is not None) and ((len(non_const_terms) == 0) or (term.op_id not in identities) or (not identities[term.op_id](final_const.value))):
             non_const_terms.append(final_const)
         if len(non_const_terms) == 1:
             return non_const_terms[0]
-        else:
-            new_term = self.syntax.get_op(op_id, *non_const_terms)
-            return new_term
+        new_term = self.syntax.get_op(term.op_id, *non_const_terms)
+        return new_term
         
     def mul_identity(self, v) -> bool:
         return (v - self.syntax.one_value.value) < self.small_value
@@ -324,21 +335,21 @@ class TermHolePairs(EvalListener, ServiceBase):
                 return new_term
         return term
         
-    def reduce_all_term_ops_consts(self, term: Term, 
-                                    ops: dict[str, Callable] = {"add": lambda vs: sum(v for v in vs), "mul": lambda vs: prod(v for v in vs)},
-                                    identities: dict[str, Callable] = {}) -> Term:
-        if not isinstance(term, Op):
-            return term
-        new_term = term
-        for op_id, op_reduce in ops.items():
-            new_term = self.reduce_consts(new_term, op_id, op_reduce, identities.get(op_id, None))
-            if new_term != term: # cannot reduce further at point 
-                break 
-        if isinstance(new_term, Op):
-            new_args = [self.reduce_all_term_ops_consts(arg, ops=ops) for arg in new_term.get_args()]
-            final_term = self.syntax.get_op(new_term.op_id, *new_args)
-            return final_term        
-        return new_term
+    # def reduce_all_term_ops_consts(self, term: Term, 
+    #                                 ops: dict[str, Callable] = {"add": lambda vs: sum(v for v in vs), "mul": lambda vs: prod(v for v in vs)},
+    #                                 identities: dict[str, Callable] = {}) -> Term:
+    #     if not isinstance(term, Op):
+    #         return term
+    #     new_term = term
+    #     for op_id, op_reduce in ops.items():
+    #         new_term = self.reduce_consts(new_term, ops, identities)
+    #         if new_term != term: # cannot reduce further at point 
+    #             break 
+    #     if isinstance(new_term, Op):
+    #         new_args = [self.reduce_all_term_ops_consts(arg, ops=ops) for arg in new_term.get_args()]
+    #         final_term = self.syntax.get_op(new_term.op_id, *new_args)
+    #         return final_term        
+    #     return new_term
 
     # (add t k), (mul k t)
     def add_fill_hole(self, term: Term, hole_root: Term, hole_pos: TermPos, l2: float) -> Optional[HoleFilling]:
@@ -366,17 +377,17 @@ class TermHolePairs(EvalListener, ServiceBase):
         #             when we above the const limit - for n ow it is intended. Just increase const limit in config (+2)
         new_term = self.syntax.replace_position(hole_root, hole_pos, fit_term)
         if new_term is None:
-            if self.debug:
-                print(f"\tconstr violation: {fit_term} --> {hole_root}@({hole_pos.term}, {hole_pos.occur})")
+            # if self.debug:
+            #     print(f"\tconstr violation: {fit_term} --> {hole_root}@({hole_pos.term}, {hole_pos.occur})")
             return None
         
         # reducing consstants before optimization 
-        new_term = self.reduce_all_term_ops_consts(new_term)
+        new_term = self.reduce_consts(new_term)
 
         optimized = self.const_optimizer.optimize(new_term, with_loss=True)
-        assert optimized.term is not None, "Const optimizer must return valid term"
+        # assert optimized.term is not None, "Const optimizer must return valid term"
 
-        # optimized_reduced_term = self.reduce_all_term_ops_consts(optimized.term, 
+        # optimized_reduced_term = self.reduce_consts(optimized.term, 
         #                                 identities={"add": self.add_identity, "mul": self.mul_identity}
         #                                 )
         
@@ -391,19 +402,19 @@ class TermHolePairs(EvalListener, ServiceBase):
                             hole_semantics=self.hole_index.get_semantics_for_term((hole_root, hole_pos), denormalize=True)
                             ) # no skeletons here as we optimized constants
         
-        if self.debug and len(self.hole_fillings) > 0 and \
-            ((self.hole_fillings[0].priority < hole_filling.priority and self.hole_fillings[0].l2 > hole_filling.l2) or \
-                (self.hole_fillings[0].priority > hole_filling.priority and self.hole_fillings[0].l2 < hole_filling.l2)):
-            print(f"loss/l2: new {hole_filling.priority:.4f}/{hole_filling.l2:.4f} vs best {self.hole_fillings[0].priority:.4f}/{self.hole_fillings[0].l2:.4f}")
-            print(f">> {hole_filling.term}")
-            pass
+        # if self.debug and len(self.hole_fillings) > 0 and \
+        #     ((self.hole_fillings[0].priority < hole_filling.priority and self.hole_fillings[0].l2 > hole_filling.l2) or \
+        #         (self.hole_fillings[0].priority > hole_filling.priority and self.hole_fillings[0].l2 < hole_filling.l2)):
+        #     print(f"loss/l2: new {hole_filling.priority:.4f}/{hole_filling.l2:.4f} vs best {self.hole_fillings[0].priority:.4f}/{self.hole_fillings[0].l2:.4f}")
+        #     print(f">> {hole_filling.term}")
+        #     pass
 
         if hole_filling.term in self.present_fillings:
-            if self.debug:
-                print(f"\tduplicate filling: {hole_filling.term}")
+            # if self.debug:
+            #     print(f"\tduplicate filling: {hole_filling.term}")
             return 
-        if self.debug:
-            print(f"\tadded {hole_filling.term}")        
+        # if self.debug:
+        #     print(f"\tadded {hole_filling.term}")        
         heappush(self.hole_fillings, hole_filling)      
         self.present_fillings.add(hole_filling.term)
 
@@ -411,9 +422,10 @@ class TermHolePairs(EvalListener, ServiceBase):
         return len(self.hole_fillings) > 0   
     
     def get_best_hole_filling(self, force_pick: bool = False) -> HoleFilling | None:
+        loss_threshold = self.good_filling_loss if self.fitness.best_term_fitness is None else min(self.good_filling_loss, self.fitness.best_term_fitness.item())
         while (len(self.hole_fillings) > 0) and \
               (force_pick or \
-               (self.hole_fillings[0].priority < self.good_filling_loss) or \
+               (self.hole_fillings[0].priority < loss_threshold) or \
                (len(self.hole_fillings) > self.max_filling_queue_size)):
 
             filling = heappop(self.hole_fillings)

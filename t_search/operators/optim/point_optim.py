@@ -89,8 +89,8 @@ class PointOptim(Operator, ServiceBase):
         self.torch_gen = torch_gen
         self.num_starts = num_starts
         self.range_delta = range_delta
-        self.optim_term_cache: dict[tuple[Term, tuple[Term, int]], Term] = {}
         self.tried_optim_terms: set[Term] = set()
+        self.tried_optim_terms_hit: int = 0
         self.lr = lr
         self.max_evals = max_evals
         self.tolerance_change = tolerance_change
@@ -138,25 +138,21 @@ class PointOptim(Operator, ServiceBase):
         priorities = [ (-grads[(pos.term, pos.occur)].item(), age, ) for age, pos in enumerate(positions)]
         return priorities
 
+    # TODO X1: optim_term --> optim_term_skeleton ?? Or optimize consts and pos at same time?? -- MANY (add OptimPoint <some_const>) - more complex function of consts could have different vectros for constant 
+    # TODO X2: order of positions to optimize - should we try best term first??? 
+    # TODO X3: when increasing num_starts for pos optimizer it seems that results degrade -> maybe should take mean of loss?? - not sure why. 
+    # TODO X4: random exploration operator of term shapes. 
+    # TODO X5: gathering correlation data for a good predictor (l2 to loss) of good pair and of good position
     def _get_optim_state(self, term: Term, position: TermPos) -> OptimState | None:
         ''' None is returned if term,position is already optimized '''
-        optim_term = self.optim_term_cache.get((term, (position.term, position.occur)))
-        if optim_term is not None:  # position is already optimized
-            return None
-        
-        # optim_point = OptimPoint(0)
-        # def pos_to_optim_point(term: Term, occur: int):
-        #     if term == position.term and occur == position.occur:
-        #         return optim_point
-        #     return None
-        # optim_term = self.syntax.replace_fn(term, pos_to_optim_point)
+
         optim_point = OptimPoint(0)
         optim_term = self.syntax.replace_position(term, position, optim_point, with_validation=False)
 
-        self.optim_term_cache[(term, (position.term, position.occur))] = optim_term
         if optim_term in self.tried_optim_terms:
+            self.tried_optim_terms_hit += 1
             return None
-        self.tried_optim_terms.add(optim_term)        
+        self.tried_optim_terms.add(optim_term)
 
         pos_outputs = self.semantics.get_outputs(position.term)
 
@@ -212,19 +208,6 @@ class PointOptim(Operator, ServiceBase):
                 where_improved.append(i)
         return where_improved
     
-    def get_optim_loss_fn(self, **kwargs) -> callable:
-        if self.closer_to_points: # add term that attracts the search to existing points
-            base_loss_fn = self.evaluator.get_loss_fn(**kwargs)
-            def optim_loss_fn(term: Term, *, binding) -> torch.Tensor:
-                one_binding = next(iter(binding.values()))
-                closest = self.term_hole_pairs.term_index.closest_or_self(one_binding)
-                base_loss = base_loss_fn(term, binding=binding)
-                point_loss = torch.sum((one_binding - closest) ** 2, dim=1)
-                total_loss = base_loss + self.closer_to_points_lambda * point_loss
-                return total_loss
-            return optim_loss_fn
-        return self.evaluator.get_loss_fn(**kwargs)
-    
     def is_in_tabu(self, hole_pos: HolePos, optim_state: OptimState) -> bool:
         no_blocked = set.isdisjoint(optim_state.tabu_markers, self.tabu_set)
         return not no_blocked
@@ -255,7 +238,7 @@ class PointOptim(Operator, ServiceBase):
         optim_result: OptimResult = optimize(optim_state.optim_term, 
                                 optim_state.ranges, 
                                 optim_state.binding,
-                                loss_fn_builder=self.get_optim_loss_fn,
+                                loss_fn_builder=self.evaluator.get_loss_fn,
                                 pos_to_collect=pos_to_collect,
                                 num_starts=self.num_starts,
                                 lr=self.lr,
@@ -264,19 +247,19 @@ class PointOptim(Operator, ServiceBase):
                                 tolerance_grad=self.tolerance_grad,
                                 torch_gen=self.torch_gen)
         
-        if self.debug:
-            best_optim_result = get_best_optim_result(optim_result)
-            min_loss = ' '.join([f'{f:.0e}' for f in best_optim_result.loss[0].tolist()])
-            print(f"Loss: {min_loss}")
-            point = next(iter(best_optim_result.binding.values()))[0]
-            point_trace = ' '.join([f'{f:+5.2f}' for f in point.tolist()])
-            print(f"Trac: {point_trace}")
-            # NOTE: next is for manual checking of optimization correctness
-            # for x, v in self.var_bindings.items():
-            #     x_trace = ' '.join([f'{f:.1e}' for f in v.tolist()])
-            #     print(f"{x:4}: {x_trace}")
-            # target_trace = ' '.join([f'{f:.1e}' for f in self.target.tolist()])
-            # print(f"Trgt: {target_trace}")
+        # if self.debug:
+        #     best_optim_result = get_best_optim_result(optim_result)
+        #     min_loss = ' '.join([f'{f:.0e}' for f in best_optim_result.loss[0].tolist()])
+        #     print(f"Loss: {min_loss}")
+        #     point = next(iter(best_optim_result.binding.values()))[0]
+        #     point_trace = ' '.join([f'{f:+5.2f}' for f in point.tolist()])
+        #     print(f"Trac: {point_trace}")
+        #     # NOTE: next is for manual checking of optimization correctness
+        #     # for x, v in self.var_bindings.items():
+        #     #     x_trace = ' '.join([f'{f:.1e}' for f in v.tolist()])
+        #     #     print(f"{x:4}: {x_trace}")
+        #     # target_trace = ' '.join([f'{f:.1e}' for f in self.target.tolist()])
+        #     # print(f"Trgt: {target_trace}")
 
                     
         self.num_terms_optimized += 1
@@ -365,7 +348,7 @@ class PointOptim(Operator, ServiceBase):
         children = []
 
         if self.debug:
-            print(f"- Par: {len(population)}, Pos: {len(self.pos_queue)}, Fil: {len(self.term_hole_pairs.hole_fillings)}, Tabu: {len(self.tabu_set)} -")
+            print(f"- Par: {len(population)}, Pos: {len(self.pos_queue)}, Fil: {len(self.term_hole_pairs.hole_fillings)}, Tabu: {len(self.tabu_set)}, Tried: {len(self.tried_optim_terms)}, Hit: {self.tried_optim_terms_hit} -")
         pass
 
         while (len(children) < self.num_children) \
@@ -385,7 +368,11 @@ class PointOptim(Operator, ServiceBase):
                 #         self.num_better_fills += 1
 
                 self.num_total_fills += 1
-                children.append(child.term)
+                children.append(child)
+                if child.priority < self.fitness.fitness_atol: # found solution - break 
+                    if self.debug:
+                        print(f"Filling at {child.id}")
+                    break
                 # self.tried_optim_terms.update(child.skeletons)
                 continue
 
@@ -416,9 +403,10 @@ class PointOptim(Operator, ServiceBase):
             pass 
 
         if self.debug: 
-            print(f"= Ch: {len(children)}, Pos: {len(self.pos_queue)}, Fil: {len(self.term_hole_pairs.hole_fillings)}, Tabu: {len(self.tabu_set)} =")
+            print(f"= Ch: {len(children)}, Pos: {len(self.pos_queue)}, Fil: {len(self.term_hole_pairs.hole_fillings)}, Tabu: {len(self.tabu_set)}, Tried: {len(self.tried_optim_terms)}, Hit: {self.tried_optim_terms_hit} =")
 
-        return children    
+        new_terms = [ch.term for ch in children]    
+        return new_terms
     
     def get_finalizer(self):
         self.add_metrics(

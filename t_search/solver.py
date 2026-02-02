@@ -363,9 +363,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
             for operator_name, operator in zip(self.operator_service_names, self.operators):
                 
                 # validation - disable in production for speed
-                if self.debug:
-                    for t in children:
-                        assert self.syntax.is_valid(t), f"Invalid term before operator {operator_name}: {t}"
+                # if self.debug:
+                #     for t in children:
+                #         assert self.syntax.is_valid(t), f"Invalid term before operator {operator_name}: {t}"
 
                 children, elapsed = timed(operator)(children)
                 self.add_metrics(scope=operator_name, step_time=[elapsed], total_time=elapsed)
@@ -427,13 +427,13 @@ class GPSolver(BaseEstimator, RegressorMixin):
             if self.final_reducer is not None:
                 new_best_term = self.final_reducer.mutate_term(best_term) or best_term
                 if new_best_term != best_term:
-                    if self.debug:
-                        print(f"Reduced solution: {new_best_term}")
                     best_term = new_best_term
                     try:
                         self.evaluator.eval([best_term])
                     except EvSearchTermination as e:
                         pass 
+            if self.debug:
+                print(f"Solution: {best_term}")
             best_fitness = self.fitness.get_fitness(best_term)
             best_term_depth = self.syntax.get_depth(best_term) if best_term is not None else None
             best_term_size = self.syntax.get_size(best_term) if best_term is not None else None

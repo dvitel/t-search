@@ -244,11 +244,11 @@ class Syntax(ServiceBase):
             #     return args  # do not sort meta-terms
             # try:
             sorted_args = sorted(args, key=self._get_term_priority, reverse=True)
-            if self.debug: 
-                for a in args:
-                    assert a in sorted_args, f"Argument {a} missing in sorted args {sorted_args} for op {op_id}"
-                for a in sorted_args:
-                    assert a in args, f"Sorted argument {a} not in original args {args} for op {op_id}"
+            # if self.debug: 
+            #     for a in args:
+            #         assert a in sorted_args, f"Argument {a} missing in sorted args {sorted_args} for op {op_id}"
+            #     for a in sorted_args:
+            #         assert a in args, f"Sorted argument {a} not in original args {args} for op {op_id}"
             return sorted_args
             # except Exception: # NOTE: probablly should be one differently - this is for terms with OptimPoints
             #     return args

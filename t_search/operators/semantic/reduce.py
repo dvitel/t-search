@@ -1,5 +1,6 @@
 ''' Reduction of the term based on registered semantics '''
 
+from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.mutation import TermMutation
 from t_search.syntax.term import Term
@@ -11,9 +12,11 @@ class SReduce(TermMutation):
     '''
     def __init__(self, *, 
                     semantics: Semantics,
+                    evaluator: Evaluator,
                     **kwargs):
         super().__init__(**kwargs)
         self.semantics = semantics
+        self.evaluator = evaluator
 
     def mutate_term(self, term) -> Term | None:
         def replace_with_repr(term: Term, *_):
@@ -27,6 +30,9 @@ class SReduce(TermMutation):
     
     def __call__(self, population):
         new_pop = super().__call__(population)
+        to_reeval = [ t for t in new_pop if self.semantics.get_binding(t) is None ]
+        if len(to_reeval) > 0:
+            self.evaluator.eval(to_reeval)
         # filtered = [t for t in new_pop if self.syntax.is_valid(t)]
         # return filtered
         return new_pop

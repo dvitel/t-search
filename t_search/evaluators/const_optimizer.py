@@ -56,6 +56,7 @@ class ConstOptimizer(Optimizer):
     def _get_optim_state(self, term: Term) -> Optimized | tuple[Term, dict[OptimPoint, torch.Tensor]]:
         ''' Either returns already optimized term or optimization state'''
         if term in self.optim_term_cache:
+            # print(f"ConstOptimizer: cache hit for term {term}")
             return self.best_terms_cache[self.optim_term_cache[term]]
         optim_points: list[OptimPoint] = []
         binding = {}

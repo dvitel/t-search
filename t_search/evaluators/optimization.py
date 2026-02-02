@@ -206,7 +206,7 @@ def optimize(
 
         # finite_loss = fixed_loss[torch.isfinite(fixed_loss)]
         # total_loss = finite_loss.mean()
-        total_loss = fixed_loss.sum() # use all losses including inf
+        total_loss = fixed_loss.mean() # use all losses including inf
         total_loss.backward()
 
         return total_loss
