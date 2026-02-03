@@ -363,9 +363,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
             for operator_name, operator in zip(self.operator_service_names, self.operators):
                 
                 # validation - disable in production for speed
-                # if self.debug:
-                #     for t in children:
-                #         assert self.syntax.is_valid(t), f"Invalid term before operator {operator_name}: {t}"
+                if self.debug:
+                    for t in children:
+                        assert self.syntax.is_valid(t), f"Invalid term before operator {operator_name}: {t}"
 
                 children, elapsed = timed(operator)(children)
                 self.add_metrics(scope=operator_name, step_time=[elapsed], total_time=elapsed)

@@ -32,7 +32,7 @@
                 "min_consts": 0,
                 "max_consts": 10,
                 "min_vars": 1,
-                "max_vars": 10,
+                "max_vars": 100,
                 "prohibit_ops_on_consts_only": true,
                 "ops_counts": {
                     "pow": [0, 10],
@@ -49,9 +49,8 @@
                     "exp": {"exp": 0},
                     "log": {"log": 0},
                     "pow": {"pow": 0},
-                    "inv": {"inv": 0},        
-                    "sin": {"sin": 0},
-                    "cos": {"cos": 0}
+                    "sin": {"sin": 0, "cos": 0},
+                    "cos": {"cos": 0, "sin": 0}
                 },
                 "immediate_arg_limits": {
                     "inv": {
@@ -170,21 +169,19 @@
                 "semantics": {"!ref": "semantics"},
                 "evaluator": {"!ref": "evaluator"},
                 "position_strategy": "shallow_to_deep_position_order",
-                "improve_strategy": "local_improve",
-                "num_starts": 10,
+                "num_starts": 30,
+                "const_start_repeat": 10,
                 "range_delta": 0.1,
-                "max_evals": 25,
+                "max_evals": 20,
+                "max_const_traces": 1,
                 "lr": 0.1,
                 "tolerance_change": 0.0000001,
                 "tolerance_grad": 0.000001,
                 "min_loss_rtol": 0.95,
                 "with_tabu": true,
-                "closer_to_points": false,
-                "closer_to_points_lambda": 0.001,
                 "max_hole_bindings": 1,
                 "num_children": 100,
-                "loss_threshold": 0.01,
-                "instant_eval": false
+                "loss_threshold": 0.01
             }
         },
         "const_optimizer": {
@@ -193,8 +190,8 @@
             "params": {
                 "syntax": {"!ref": "syntax"},
                 "evaluator": {"!ref": "evaluator"},
-                "num_starts": 100,
-                "max_evals": 35,
+                "num_starts": 1000,
+                "max_evals": 30,
                 "lr": 0.1,
                 "tolerance_change": 0.0000001,
                 "tolerance_grad": 0.000001

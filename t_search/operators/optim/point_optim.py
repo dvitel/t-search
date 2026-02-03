@@ -8,22 +8,30 @@ import torch
 from t_search.base import ServiceBase
 from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.fitness import Fitness
-from t_search.evaluators.optimization import OptimPoint, OptimResult, clean_optim_result, get_all_grads, get_best_optim_result, set_local_minimas_, get_slowest_funs, optimize, threshold_optim_result_
+from t_search.evaluators.optimization import OptimResult, clean_optim_result, get_all_grads, get_best_optim_result, set_local_minimas_, get_slowest_funs, optimize, threshold_optim_result_
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.operator import Operator
 from t_search.operators.optim.term_hole import TermHolePairs
 
 from t_search.syntax import Term, TermPos
 from t_search.syntax.flow import shuffled_position_flow
+from t_search.syntax.stats import get_path
 from t_search.syntax.syntax import Syntax
+from t_search.syntax.term import Op, OptimPoint, Value, Variable
+
+@dataclass(frozen=False)    
+class PathNode: 
+    optim_term_pos: TermPos 
+    tabu_marker: Term | None = None
 
 @dataclass(frozen=False)
 class OptimState:
     optim_term: Term # term with OptimPoint
-    path: dict[tuple[Term, int], TermPos] # maps new pos to old pos, these points are also collected in optimization
+    path: list[PathNode] # maps new pos to old pos, these points are also collected in optimization
     tabu_markers: set[Term] # set of skeletons that represent the optimization path
     binding: dict[OptimPoint, torch.Tensor]
-    ranges: torch.Tensor
+    # ranges: torch.Tensor
+    const_binding: dict[OptimPoint, torch.Tensor] = field(default_factory=dict)
 
 @dataclass(order=True)
 class HolePos:
@@ -52,8 +60,10 @@ class PointOptim(Operator, ServiceBase):
                  torch_gen: torch.Generator,
                  add_metrics: Callable,
                  get_cur_gen: Callable,
+                 const_range: torch.Tensor,
                  position_strategy: Literal["rand_position_order", "shallow_to_deep_position_order", "best_grad_position_order"] = "rand_position_order",
                  num_starts: int = 10,
+                 const_start_repeat: int = 5,
                  range_delta: float = 0.1,
                  max_evals: int = 20,
                  lr:float = 0.1,
@@ -61,14 +71,12 @@ class PointOptim(Operator, ServiceBase):
                  tolerance_grad: float = 1e-3,
                  min_loss_rtol: float = 1e-1,
                  with_tabu: bool = True,
-                 closer_to_points: bool = False,
-                 closer_to_points_lambda: float = 1e-2,
                  max_hole_bindings: int = 1, # one hole can have multiple good bindings
                  num_children: int = 1000,
                  debug: bool = False,
                  loss_threshold: float = 1e-3,
-                 instant_eval: bool = False,
                  target_variance: float = 1.0,
+                 max_const_traces = 1,
                  **kwargs):
         super().__init__(**kwargs)
         self.term_hole_pairs = term_hole_pairs
@@ -88,6 +96,7 @@ class PointOptim(Operator, ServiceBase):
         self.rnd = rnd
         self.torch_gen = torch_gen
         self.num_starts = num_starts
+        self.const_start_repeat = const_start_repeat
         self.range_delta = range_delta
         self.tried_optim_terms: set[Term] = set()
         self.tried_optim_terms_hit: int = 0
@@ -97,16 +106,21 @@ class PointOptim(Operator, ServiceBase):
         self.tolerance_grad = tolerance_grad
         self.min_loss_rtol = min_loss_rtol
         self.default_loss_fn = evaluator.get_loss_fn()
-        self.closer_to_points = closer_to_points
-        self.closer_to_points_lambda = closer_to_points_lambda
         self.add_metrics = add_metrics
         self.max_hole_bindings = max_hole_bindings
         self.loss_threshold = loss_threshold / target_variance
+        self.max_const_traces = max_const_traces
 
         self.pos_queue: list[HolePos] = [] # hole priority queue
         self.added_terms = set() # terms with added positions
-        self.instant_eval = instant_eval
         self.get_cur_gen = get_cur_gen
+        self.const_range = const_range.unsqueeze(0)
+        min_y = torch.min(self.target) - self.range_delta
+        max_y = torch.max(self.target) + self.range_delta
+        self.ranges = torch.zeros((self.target.shape[0], 2), dtype=self.target.dtype, device=self.target.device)
+        self.ranges[:, 0] = min_y
+        self.ranges[:, 1] = max_y
+        self.optim_point = OptimPoint(0)
 
         #TODO
         # 1. Metrics - DONE
@@ -137,6 +151,38 @@ class PointOptim(Operator, ServiceBase):
                       dtype=self.target.dtype, device=self.target.device)
         priorities = [ (-grads[(pos.term, pos.occur)].item(), age, ) for age, pos in enumerate(positions)]
         return priorities
+    
+    def optim_term_for_consts(self, term: Term) -> Term:
+        const_optim_points: list[OptimPoint] = []
+        const_binding = {}     
+
+        # NOTE: taken from const_optimizer - should it be a separate routine?
+        def const_to_optim_point(term, *_):
+            if isinstance(term, Value):
+                point_id = len(const_optim_points)
+                point = OptimPoint(1 + point_id)
+                const_optim_points.append(point)
+
+                const_binding[point] = term.value
+                return point
+
+        optim_term = self.syntax.replace_fn(term, const_to_optim_point)      
+        return (optim_term, const_binding)
+    
+    def bind_consts(self, term: Term, binding: dict[OptimPoint, torch.Tensor]) -> Term:
+        def optim_point_to_const(term, *_):
+            if term in binding:
+                new_value = self.syntax.get_const(value=binding[term])
+                return new_value
+
+        optim_term = self.syntax.replace_fn(term, optim_point_to_const)      
+        return optim_term
+
+    def is_lincomb_term(self, term: Term, arg_pred: Callable = lambda arg: isinstance(arg, Value)) -> bool:
+        if isinstance(term, Op) and term.op_id in ["add", "mul"]:
+            if any(arg_pred(arg) for arg in term.get_args()):
+                return True 
+        return False
 
     # TODO X1: optim_term --> optim_term_skeleton ?? Or optimize consts and pos at same time?? -- MANY (add OptimPoint <some_const>) - more complex function of consts could have different vectros for constant 
     # TODO X2: order of positions to optimize - should we try best term first??? 
@@ -146,67 +192,55 @@ class PointOptim(Operator, ServiceBase):
     def _get_optim_state(self, term: Term, position: TermPos) -> OptimState | None:
         ''' None is returned if term,position is already optimized '''
 
-        optim_point = OptimPoint(0)
-        optim_term = self.syntax.replace_position(term, position, optim_point, with_validation=False)
+        if self.is_lincomb_term(position.parent.term):
+            if self.debug:
+                print(f"Skipped lincomb: {term}@({position.term},{position.occur})")
+            return None
+        
+        orig_optim_term = self.syntax.replace_position(term, position, self.optim_point, with_validation=False)
+
+        optim_term, const_binding = self.optim_term_for_consts(orig_optim_term)
 
         if optim_term in self.tried_optim_terms:
             self.tried_optim_terms_hit += 1
+            if self.debug:
+                print(f"Skipped tried: {optim_term} for {term}@({position.term},{position.occur})")            
             return None
         self.tried_optim_terms.add(optim_term)
 
         pos_outputs = self.semantics.get_outputs(position.term)
 
-        binding = { optim_point: pos_outputs }
+        binding = { self.optim_point: pos_outputs }
 
-        range_mins = torch.minimum(pos_outputs, self.target)
-        range_maxs = torch.maximum(pos_outputs, self.target)
-        range_mins -= self.range_delta
-        range_maxs += self.range_delta        
-        ranges = torch.stack([range_mins, range_maxs], dim=0).t()
+        # range_mins = torch.minimum(pos_outputs, self.target)
+        # range_maxs = torch.maximum(pos_outputs, self.target)
+        # range_mins -= self.range_delta
+        # range_maxs += self.range_delta        
+        # ranges = torch.stack([range_mins, range_maxs], dim=0).t()
 
         optim_term_positions = self.syntax.get_positions(optim_term)
-        optim_term_position = next(p for p in optim_term_positions if p.term == optim_point)
-        path = {} # excludes optim point and root
-        cur_pos = optim_term_position.parent
-        cur_real_pos = position.parent
-        while cur_pos.parent is not None:
-            path[(cur_pos.term, cur_pos.occur)] = cur_real_pos
-            cur_pos = cur_pos.parent
-            cur_real_pos = cur_real_pos.parent
+        optim_term_position = next(p for p in optim_term_positions if p.term == self.optim_point)
+        path: list[PathNode] = [] # excludes optim point and root
+        cur_pos_path = get_path(optim_term_position, with_current=False, with_root=False)
+        path = [PathNode(p) for p in cur_pos_path]
 
         tabu_markers = set()
         if self.with_tabu: # creating tabu markers from path
             tabu_markers.add(optim_term)
-            parent_optim_points = [OptimPoint(0) for _ in path.values()]
-            parent_optim_terms = self.syntax.replace_path_unvalidated(optim_term, optim_term_position.parent, parent_optim_points)
-            path_keys = list(path.keys())
-            for pot_key, pot in zip(path_keys, parent_optim_terms):
-                if pot in self.tried_optim_terms:
-                    path.pop(pot_key)
-            tabu_markers.update(parent_optim_terms)
+            parent_optim_points = [self.optim_point for _ in path]
+            if len(parent_optim_points) > 0:
+                orig_optim_term_positions = self.syntax.get_positions(orig_optim_term)
+                orig_optim_term_position = next(p for p in orig_optim_term_positions if p.term == self.optim_point)
+                parent_optim_terms = self.syntax.replace_path_unvalidated(orig_optim_term, orig_optim_term_position.parent, parent_optim_points)
+                pass
+                final_parent_optim_terms = [self.optim_term_for_consts(t)[0] for t in parent_optim_terms]
+                for path_node, tabu_marker in zip(path, final_parent_optim_terms):
+                    path_node.tabu_marker = tabu_marker
+                tabu_markers.update(final_parent_optim_terms)
 
-        optim_state = OptimState(optim_term, path, tabu_markers, binding, ranges)
+        optim_state = OptimState(optim_term, path, tabu_markers, binding, const_binding)
 
         return optim_state
-    
-    def local_improve(self, orig_term: Term, local_minimas: list[float]) -> list[int]:
-        cur_loss = self.default_loss_fn(orig_term).item()
-        where_improved = []
-        for i, local_minima in enumerate(local_minimas):
-            if (cur_loss - local_minima) > (self.min_loss_rtol * cur_loss):
-                where_improved.append(i)
-        return where_improved
-    
-    def global_improve(self, orig_term: Term, local_minimas: list[float]) -> list[int]:
-        best_term = self.fitness.best_term
-        if best_term is None:
-            return True
-        cur_loss = self.default_loss_fn(best_term).item()
-        where_improved = []
-        for i, local_minima in enumerate(local_minimas):
-            if (cur_loss - local_minima) > (self.min_loss_rtol * cur_loss):
-                where_improved.append(i)
-        return where_improved
     
     def is_in_tabu(self, hole_pos: HolePos, optim_state: OptimState) -> bool:
         no_blocked = set.isdisjoint(optim_state.tabu_markers, self.tabu_set)
@@ -227,20 +261,27 @@ class PointOptim(Operator, ServiceBase):
             return []
         
         if self.is_in_tabu(hole_pos, optim_state):
+            if self.debug:
+                print(f"Skipped tabu: {optim_state.optim_term} for {hole_pos.term}@({hole_pos.pos.term},{hole_pos.pos.occur})")
             return []
         
-        pos_to_collect = set(optim_state.path.keys())
+        pos_to_collect = [(p.optim_term_pos.term, p.optim_term_pos.occur) 
+                          for p in optim_state.path 
+                          if p.tabu_marker not in self.tried_optim_terms and \
+                            not self.is_lincomb_term(p.tabu_marker, arg_pred=lambda arg: (isinstance(arg, OptimPoint) and (arg.point_id > 0)))]
         
         if self.debug: 
-            print("---------------------------------")
             print(f"Optim: {optim_state.optim_term}")
         
         optim_result: OptimResult = optimize(optim_state.optim_term, 
-                                optim_state.ranges, 
+                                self.ranges, 
                                 optim_state.binding,
+                                self.const_range,
+                                optim_state.const_binding,
                                 loss_fn_builder=self.evaluator.get_loss_fn,
                                 pos_to_collect=pos_to_collect,
                                 num_starts=self.num_starts,
+                                const_start_repeat = self.const_start_repeat,
                                 lr=self.lr,
                                 max_evals=self.max_evals,
                                 tolerance_change=self.tolerance_change,
@@ -266,30 +307,105 @@ class PointOptim(Operator, ServiceBase):
 
         threshold_optim_result_(optim_result, self.loss_threshold)
 
-        if torch.any(torch.all(torch.isinf(optim_result.loss), dim=0)): # no minimas found
-            self.add_to_tabu(optim_state)
-            return []
+        if len(optim_state.const_binding) > 0: # cannot build traces
+            # as in const_optimizer - just pick start with smallest mean loss or smallest majorities of losses 
+            # TODO: voting? etc
+            mean_loss = torch.mean(optim_result.loss, dim=-1) # (num_starts,)
+            # best_loss, best_id = torch.min(mean_loss, dim=0)      
+            sort_ids = torch.argsort(mean_loss, dim=0)
+            loss_mask = torch.isfinite(mean_loss)
 
-        set_local_minimas_(optim_result)
-
-        slowest_traces = get_slowest_funs(optim_result, max_num_funs=self.max_hole_bindings)
-
-        clean_optim_result(optim_result)
-
-        if slowest_traces is None:
-            self.add_to_tabu(optim_state)
-            return []
+            const_vectors = []
+            const_ids = []
+            const_bindings = []            
+            for sid in sort_ids.tolist():
+                if not loss_mask[sid]:
+                    continue
+                cur_const_vector = torch.zeros((len(optim_state.const_binding),), dtype=self.target.dtype, device=self.target.device)
+                cur_const_bindings = {k: optim_result.binding[k][sid] for k in optim_state.const_binding.keys()}
+                for k, v in cur_const_bindings.items():
+                    cur_const_vector.data[k.point_id-1] = v
+                find_close_id = next((cvid for cvid, cv in enumerate(const_vectors) if torch.allclose(cv, cur_const_vector, rtol=1e-4, atol=1e-6)), None)
+                if find_close_id is not None:
+                    const_ids[find_close_id].append(sid) # will be used to query point and additional bindings
+                else:
+                    if len(const_ids) >= self.max_const_traces:
+                        break                    
+                    const_vectors.append(cur_const_vector)
+                    const_ids.append([sid])
+                    const_bindings.append(cur_const_bindings) 
+            del loss_mask, sort_ids, mean_loss
             
-        slowest_traces_binding = [t.clone() for traces in slowest_traces.binding.values() for t in traces] 
+            split_optim_results = []
+            for sids, cb in zip(const_ids, const_bindings):
+                loss = optim_result.loss[sids]
+                point_bindings = {k: optim_result.binding[k][sids] for k in optim_result.binding.keys() if k.point_id == 0}
+                additional_bindings = {k: optim_result.additional_binding[k][sids] for k in optim_result.additional_binding.keys()}
+                cur_optim_result = OptimResult(loss, point_bindings, additional_bindings)
+                cur_term0 = self.bind_consts(optim_state.optim_term, cb)
+                cur_term0_positions = self.syntax.get_positions(cur_term0)
+                cur_term0_optim_point = next(p for p in cur_term0_positions if p.term == self.optim_point)
+                cur_term = self.syntax.replace_position(cur_term0, cur_term0_optim_point, hole_pos.pos.term, with_validation=False)
+                # NOTE: at this point cur_term and original hole_pos.term should have same structure (depends on syntax _get_priority_term)
+                #       only thing that we have changed are constants
+                #       therefore - enumeration of positions should match and we can find corresponding pos for hole_pos.pos
+                orig_positions = self.syntax.get_positions(hole_pos.term)
+                cur_term_positions = self.syntax.get_positions(cur_term)
+                cur_term_position = next(p for (p0, p) in zip(orig_positions, cur_term_positions) if p0 == hole_pos.pos)
+                if self.debug:
+                    p1 = get_path(cur_term_position)
+                    p2 = get_path(hole_pos.pos)
+                    assert len(p1) == len(p2)
+                    for pp1, pp2 in zip(p1, p2):
+                        assert pp1.term.__class__ == pp2.term.__class__
+                        if isinstance(pp1.term, Op):
+                            assert pp1.term.op_id == pp2.term.op_id
+                        if isinstance(pp1.term, Variable):
+                            assert pp1.term.var_id == pp2.term.var_id
+                    pass 
+                split_optim_results.append( (cur_term, cur_term_position, cur_optim_result) )
+            clean_optim_result(optim_result) 
+        else:             
+            if torch.any(torch.all(torch.isinf(optim_result.loss), dim=0)): # no minimas found
+                # self.add_to_tabu(optim_state)
+                split_optim_results = []
+            else: 
+                split_optim_results = [ (hole_pos.term, hole_pos.pos, optim_result) ]
 
-        hole = Hole(hole_pos.term, hole_pos.pos, slowest_traces_binding)
-        holes = [hole]
-        for k, v in optim_state.path.items():
-            traces = [t.clone() for t in slowest_traces.additional_binding[k]]
-            new_hole = Hole(hole_pos.term, v, traces)
-            holes.append(new_hole)
+        if len(split_optim_results) == 0: # tabu term
+            self.add_to_tabu(optim_state)
+            pass
 
-        clean_optim_result(slowest_traces)
+        holes: list[Hole] = []
+
+        for hole_term, hole_pos, optim_result in split_optim_results:
+            
+            set_local_minimas_(optim_result)
+
+            slowest_traces = get_slowest_funs(optim_result, max_num_funs=self.max_hole_bindings)
+
+            clean_optim_result(optim_result)
+
+            # if slowest_traces is None:
+            #     self.add_to_tabu(optim_state)
+            #     continue
+            
+            slowest_traces_binding = [t.clone() for traces in slowest_traces.binding.values() for t in traces] 
+
+            hole = Hole(hole_term, hole_pos, slowest_traces_binding)
+            holes.append(hole)
+            if len(slowest_traces.additional_binding) > 0:
+                new_path = get_path(hole_pos, with_current=False, with_root=False)
+                assert len(new_path) == len(optim_state.path)
+                for path_node, new_pos in zip(optim_state.path, new_path):
+                    key = (path_node.optim_term_pos.term, path_node.optim_term_pos.occur)
+                    if key not in slowest_traces.additional_binding:
+                        continue
+                    traces = [t.clone() for t in slowest_traces.additional_binding[key]]
+                    new_hole = Hole(hole_term, new_pos, traces)
+                    holes.append(new_hole)
+
+            clean_optim_result(slowest_traces)
 
         # if self.debug:
         #     for i, hole in enumerate(holes):
@@ -356,17 +472,6 @@ class PointOptim(Operator, ServiceBase):
 
             child = self.term_hole_pairs.get_best_hole_filling(force_pick=not self.has_pos_to_optimize())
             if child is not None:
-                # if self.debug:
-                #     print("=================================")                
-                #     print(f"Child: {child.term}")
-                #     print(f" {pair.priority:.2f}:  {pair.term} --> {pair.hole[0]} at {pair.hole[1].term}, {pair.hole[1].occur}")
-                # if self.instant_eval:
-                #     self.evaluator.eval(child.term)
-                #     new_fitness = self.fitness.get_fitness(child.term)
-                #     old_fitness = self.fitness.get_fitness(pair.hole[0])
-                #     if new_fitness < old_fitness:
-                #         self.num_better_fills += 1
-
                 self.num_total_fills += 1
                 children.append(child)
                 if child.priority < self.fitness.fitness_atol: # found solution - break 
@@ -380,6 +485,9 @@ class PointOptim(Operator, ServiceBase):
             cur_holes = []
             while self.has_pos_to_optimize() and (len(cur_holes) == 0):
                 hole_pos = heappop(self.pos_queue)
+                if self.debug:
+                    print('---------------------------------')
+                    print(f">>> [{hole_pos.priority}] {hole_pos.term} at ({hole_pos.pos.term}, {hole_pos.pos.occur})")
                 cur_holes = self.create_holes(hole_pos)
 
             if len(cur_holes) == 0: # all pos attempted 

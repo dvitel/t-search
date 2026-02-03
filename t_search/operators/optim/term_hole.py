@@ -358,10 +358,13 @@ class TermHolePairs(EvalListener, ServiceBase):
         # if isinstance(fit_subterm0, Value):
         #     fit_term = fit_subterm0
         # else:
-        k_value = self.syntax.one_value
-        b_value = self.syntax.zero_value
-        fit_subterm1 = self.syntax.get_op("mul", k_value, term)
-        fit_term = self.syntax.get_op("add", fit_subterm1, b_value)
+        if isinstance(term, Value):
+            fit_term = term
+        else:
+            k_value = self.syntax.one_value
+            b_value = self.syntax.zero_value
+            fit_subterm1 = self.syntax.get_op("mul", k_value, term)
+            fit_term = self.syntax.get_op("add", fit_subterm1, b_value)
         # NOTE: change hole pos to remove (mul ? c) and (add ? c).
         while hole_pos.parent is not None:   
             parent = hole_pos.parent             

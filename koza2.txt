@@ -1,0 +1,213 @@
+
+
+(mul (add (mul (cos (add (mul (sin x0) 1.1825) 0.0052)) 2.1814) -1.2896) x0)
+x(2.1814cos(1.1825sin(x) + 0.0052) - 1.2896)
+
+(add (mul (sin x0) 1.1825) 0.0052)
+x0(-1.2896 + 2.1814cos(0.0052 + 1.1825sin(x)))
+
+(add (mul (cos x0) 2.0383) -1.0359)
+x(-0.1109 + cos(x)(-1.0359+2.0383cos(x)))
+
+(mul (add (mul (add (mul (add (mul (mul (add (mul (cos x0) -0.8036) -0.8863) (cos x0)) -0.9581) -0.3633) (cos x0)) -0.2230) (cos x0)) -0.0001) x0)
+(add (mul (mul (add (mul (cos x0) -0.8036) -0.8863) ) -0.9581) )
+x(-0.0001 + cos(x)(-0.2230cos(x)(-0.3633 + (cos x0)())))
+
+
+
+1. Term ordering from best to worst by loss - may be on per test basis
+2. Pos ordering - not by depth, leaves should have better priority - then deeper first
+3. SHould we reduce optim_term ?? (add ?2 (mul ?0 ?1) ) --> ?0? Or effectivelly skip such ?0 under mul by const or add to const.
+4. In const_starts --> give N positions to initial const
+
+
+(add (add (mul (neg x0) -0.2268) x0) 0.1087)
+(add ?2 (add ?0 (mul ?1 (neg x0))))
+
+
+- Par: 5, Pos: 26, Fil: 0, Tabu: 2, Tried: 7, Hit: 2 -
+---------------------------------
+>>> [(1, 1, 0.19463870785196757)] (mul (add (mul (cos x0) 2.1443) -1.3260) x0) at ((add (mul (cos x0) 2.1443) -1.3260), 0)
+Skipped tried: (mul ?0 x0) for (mul (add (mul (cos x0) 2.1443) -1.3260) x0)@((add (mul (cos x0) 2.1443) -1.3260),0)
+---------------------------------
+>>> [(1, 1, 0.2269093490508841)] (cos (add (mul x0 0.2680) -1.5614)) at ((add (mul x0 0.2680) -1.5614), 0)
+Skipped tried: (cos ?0) for (cos (add (mul x0 0.2680) -1.5614))@((add (mul x0 0.2680) -1.5614),0)
+---------------------------------
+>>> [(1, 1, 0.32582535813815194)] (mul x0 0.2633) at (x0, 0)
+Optim: (mul ?0 ?1)
+---------------------------------
+>>> [(1, 1, 0.3704597060348689)] (mul x0 0.2633) at (0.2633, 0)
+Skipped tried: (mul ?0 x0) for (mul x0 0.2633)@(0.2633,0)
+---------------------------------
+>>> [(1, 1, 0.4667210037270342)] (mul (add (mul (cos x0) 2.1443) -1.3260) x0) at (x0, 1)
+Optim: (mul ?0 (add ?2 (mul ?1 (cos x0))))
+---------------------------------
+>>> [(1, 1, 0.6316643991220648)] (add (add (mul (neg x0) 0.7356) x0) 0.0095) at (0.0095, 0)
+Optim: (add ?0 (add (mul ?1 (neg x0)) x0))
+---------------------------------
+>>> [(1, 1, 0.8276311719925821)] (add (add (mul (neg x0) 0.7356) x0) 0.0095) at ((add (mul (neg x0) 0.7356) x0), 0)
+Optim: (add ?0 ?1)
+---------------------------------
+>>> [(1, 1, 0.96750973243421)] (sin (add (mul x0 0.2646) 0.0117)) at ((add (mul x0 0.2646) 0.0117), 0)
+Skipped tried: (sin ?0) for (sin (add (mul x0 0.2646) 0.0117))@((add (mul x0 0.2646) 0.0117),0)
+---------------------------------
+>>> [(1, 2, 0.06381725610417532)] (add (add (mul (neg x0) 0.7356) x0) 0.0095) at (x0, 1)
+Optim: (add ?2 (add ?0 (mul ?1 (neg x0))))
+---------------------------------
+>>> [(1, 2, 0.12992150533547164)] (cos (add (mul x0 0.2680) -1.5614)) at ((mul x0 0.2680), 0)
+Optim: (cos (add ?0 ?1))
+---------------------------------
+>>> [(1, 2, 0.47570492622593374)] (cos (add (mul x0 0.2680) -1.5614)) at (-1.5614, 0)
+Optim: (cos (add ?0 (mul ?1 x0)))
+---------------------------------
+>>> [(1, 2, 0.5545847870158348)] (add (add (mul (neg x0) 0.7356) x0) 0.0095) at ((mul (neg x0) 0.7356), 0)
+Optim: (add ?1 (add ?0 x0))
+---------------------------------
+>>> [(1, 2, 0.6830489532424546)] (sin (add (mul x0 0.2646) 0.0117)) at ((mul x0 0.2646), 0)
+Optim: (sin (add ?0 ?1))
+---------------------------------
+>>> [(1, 2, 0.7447621559078171)] (sin (add (mul x0 0.2646) 0.0117)) at (0.0117, 0)
+Optim: (sin (add ?0 (mul ?1 x0)))
+---------------------------------
+>>> [(1, 2, 0.7783834970737619)] (mul (add (mul (cos x0) 2.1443) -1.3260) x0) at (-1.3260, 0)
+Optim: (mul (add ?0 (mul ?1 (cos x0))) x0)
+---------------------------------
+>>> [(1, 2, 0.8931211213221977)] (mul (add (mul (cos x0) 2.1443) -1.3260) x0) at ((mul (cos x0) 2.1443), 0)
+Optim: (mul (add ?0 ?1) x0)
+---------------------------------
+>>> [(1, 3, 0.04380376578722878)] (sin (add (mul x0 0.2646) 0.0117)) at (x0, 0)
+Optim: (sin (add ?2 (mul ?0 ?1)))
+---------------------------------
+>>> [(1, 3, 0.15428949206754783)] (sin (add (mul x0 0.2646) 0.0117)) at (0.2646, 0)
+Optim: (sin (add ?1 (mul ?0 x0)))
+Tabu: (sin (add ?1 (mul ?0 x0)))
+---------------------------------
+>>> [(1, 3, 0.1894713590842857)] (cos (add (mul x0 0.2680) -1.5614)) at (0.2680, 0)
+Optim: (cos (add ?1 (mul ?0 x0)))
+Tabu: (cos (add ?1 (mul ?0 x0)))
+---------------------------------
+>>> [(1, 3, 0.2272387217847769)] (add (add (mul (neg x0) 0.7356) x0) 0.0095) at (0.7356, 0)
+Optim: (add ?1 (add (mul ?0 (neg x0)) x0))
+---------------------------------
+>>> [(1, 3, 0.35452596812986836)] (mul (add (mul (cos x0) 2.1443) -1.3260) x0) at ((cos x0), 0)
+Optim: (mul (add ?2 (mul ?0 ?1)) x0)
+---------------------------------
+>>> [(1, 3, 0.44341419882733113)] (add (add (mul (neg x0) 0.7356) x0) 0.0095) at ((neg x0), 0)
+Optim: (add ?2 (add (mul ?0 ?1) x0))
+---------------------------------
+>>> [(1, 3, 0.4695558112758079)] (cos (add (mul x0 0.2680) -1.5614)) at (x0, 0)
+Optim: (cos (add ?2 (mul ?0 ?1)))
+---------------------------------
+>>> [(1, 3, 0.9706980243949033)] (mul (add (mul (cos x0) 2.1443) -1.3260) x0) at (2.1443, 0)
+Optim: (mul (add ?1 (mul ?0 (cos x0))) x0)
+---------------------------------
+>>> [(1, 4, 0.7580877400853738)] (mul (add (mul (cos x0) 2.1443) -1.3260) x0) at (x0, 0)
+Optim: (mul (add ?2 (mul ?1 (cos ?0))) x0)
+---------------------------------
+>>> [(1, 4, 0.82276161327083)] (add (add (mul (neg x0) 0.7356) x0) 0.0095) at (x0, 0)
+Optim: (add ?2 (add (mul ?1 (neg ?0)) x0))
+= Ch: 10, Pos: 0, Fil: 0, Tabu: 4, Tried: 29, Hit: 6 =
+
+x * x * x * x * x - 2.0 * x * x * x + x
+
+^\(mul .*? x0\)$ -- 9
+x * x * x * x - 2.0*x*x + 1
+(add ?\d .*?)
+
+
+x * x * x * x - 2.0*x*x
+
+
+(cos ?0)
+(exp ?0)
+(inv ?0)
+(neg ?0)
+(sin ?0)
+(add ?0 x0)
+(mul ?0 x0)
+(add ?1 (add ?0 x0))
+(cos (add ?2 (mul ?1 (inv ?0))))
+(cos (add ?2 (mul ?1 (neg ?0))))
+(mul ?3 (add ?2 (mul ?1 (cos ?0))))
+(mul ?3 (add ?2 (mul ?1 (neg ?0))))
+(add ?2 (add (mul ?1 (cos ?0)) x0))
+(add ?2 (add (mul ?1 (neg ?0)) x0))
+(add ?2 (add (mul ?1 (sin ?0)) x0))
+(add ?2 (add ?0 (mul ?1 (cos x0))))
+(add ?2 (add ?0 (mul ?1 (neg x0))))
+(add ?2 (add ?0 (mul ?1 (sin x0))))
+(cos (add ?3 (mul ?2 (mul ?1 (inv ?0)))))
+(mul (add ?2 (mul ?1 (cos ?0))) x0)
+(mul (add ?2 (mul ?1 (sin ?0))) x0)
+(mul ?0 (add ?2 (mul ?1 (cos x0))))
+(mul ?0 (add ?2 (mul ?1 (neg x0))))
+(mul ?0 (add ?2 (mul ?1 (sin x0))))
+(sin (add ?2 (mul ?1 (add ?0 x0))))
+(add ?2 (add (mul ?1 (mul ?0 x0)) x0))
+(add ?4 (add ?0 (mul ?3 (sin (add ?2 (mul ?1 x0))))))
+(add ?3 (add (mul ?1 (neg x0)) (mul ?2 (cos ?0))))
+(add ?3 (add (mul ?1 (neg x0)) (mul ?2 (sin ?0))))
+(add ?3 (add (mul ?1 (sin x0)) (mul ?2 (neg ?0))))
+(add ?3 (add (mul ?1 (sin x0)) (mul ?2 (sin ?0))))
+(mul ?0 (add ?4 (mul ?3 (cos (add ?2 (mul ?1 x0))))))
+(mul ?0 (add ?4 (mul ?3 (sin (add ?2 (mul ?1 x0))))))
+(add ?4 (add (mul ?3 (cos (add ?2 (mul ?1 (inv ?0))))) x0))
+(add ?4 (add (mul ?3 (mul ?0 (add ?2 (mul ?1 x0)))) x0))
+(add ?4 (add ?0 (mul ?3 (cos (add ?2 (mul ?1 (inv x0)))))))
+(add ?3 (add (mul ?1 (neg x0)) (mul ?2 (mul ?0 x0))))
+(add ?3 (add (mul ?1 (sin x0)) (mul ?2 (mul ?0 x0))))
+(mul (add ?2 (mul ?1 (cos x0))) (add ?4 (mul ?3 (cos ?0))))
+(mul (add ?2 (mul ?1 (cos x0))) (add ?4 (mul ?3 (neg ?0))))
+(mul (add ?2 (mul ?1 (neg x0))) (add ?4 (mul ?3 (cos ?0))))
+(mul (add ?2 (mul ?1 (neg x0))) (add ?4 (mul ?3 (neg ?0))))
+(mul (add ?2 (mul ?1 (sin x0))) (add ?4 (mul ?3 (cos ?0))))
+(mul (add ?2 (mul ?1 (sin x0))) (add ?4 (mul ?3 (sin ?0))))
+(mul (add ?4 (mul ?3 (cos (add ?2 (mul ?1 (inv ?0)))))) x0)
+(mul (add ?4 (mul ?3 (sin (add ?2 (mul ?1 (neg ?0)))))) x0)
+(mul ?0 (add ?4 (mul ?3 (cos (add ?2 (mul ?1 (inv x0)))))))
+(mul ?0 (add ?4 (mul ?3 (sin (add ?2 (mul ?1 (neg x0)))))))
+(sin (add ?3 (mul ?2 (add (mul ?1 (mul ?0 x0)) x0))))
+(add ?5 (add (mul ?3 (sin (add ?2 (mul ?1 x0)))) (mul ?4 (neg ?0))))
+(add ?4 (add (mul ?3 (mul (add ?2 (mul ?1 (sin ?0))) x0)) x0))
+(add ?4 (add ?0 (mul ?3 (mul (add ?2 (mul ?1 (cos x0))) x0))))
+(mul (add ?2 (mul ?1 (mul ?0 x0))) (add ?4 (mul ?3 (cos x0))))
+(mul (add ?5 (mul ?4 (cos (add ?3 (mul ?2 (mul ?1 (inv ?0))))))) x0)
+(mul ?0 (add ?5 (mul ?4 (cos (add ?3 (mul ?2 (mul ?1 (inv x0))))))))
+(mul ?0 (add ?4 (mul ?3 (mul (add ?2 (mul ?1 (cos x0))) x0))))
+(add ?5 (add (mul ?3 (cos (add ?2 (mul ?1 (inv ?0))))) (mul ?4 (neg x0))))
+(add ?5 (add (mul ?3 (cos (add ?2 (mul ?1 (inv x0))))) (mul ?4 (neg ?0))))
+(add ?4 (add (mul ?3 (mul (add ?2 (mul ?1 (mul ?0 x0))) x0)) x0))
+(add ?4 (add (mul ?3 (mul ?0 (add ?2 (mul ?1 (mul x0 x0))))) x0))
+(add ?4 (add ?0 (mul ?3 (mul (add ?2 (mul ?1 (mul x0 x0))) x0))))
+(mul (add ?4 (mul ?3 (cos (add ?2 (mul ?1 x0))))) (add ?6 (mul ?5 (sin ?0))))
+(mul (add ?4 (mul ?3 (sin (add ?2 (mul ?1 x0))))) (add ?6 (mul ?5 (sin ?0))))
+(mul (add ?5 (mul ?4 (cos (add ?3 (mul ?2 (mul ?1 (mul ?0 x0))))))) x0)
+(mul ?0 (add ?5 (mul ?4 (cos (add ?3 (mul ?2 (mul ?1 (mul x0 x0))))))))
+(add ?6 (add (mul ?5 (mul ?0 (add ?4 (mul ?3 (sin (add ?2 (mul ?1 x0))))))) x0))
+(add ?6 (add ?0 (mul ?5 (mul (add ?4 (mul ?3 (sin (add ?2 (mul ?1 x0))))) x0))))
+(add ?5 (add (mul ?3 (mul (add ?2 (mul ?1 (cos ?0))) x0)) (mul ?4 (neg x0))))
+(add ?5 (add (mul ?3 (mul (add ?2 (mul ?1 (cos ?0))) x0)) (mul ?4 (sin x0))))
+(add ?5 (add (mul ?3 (mul ?0 (add ?2 (mul ?1 (cos x0))))) (mul ?4 (neg x0))))
+(add ?5 (add (mul ?3 (mul ?0 (add ?2 (mul ?1 (cos x0))))) (mul ?4 (sin x0))))
+(add ?5 (add (mul ?3 (mul (add ?2 (mul ?1 (cos x0))) x0)) (mul ?4 (neg ?0))))
+(add ?5 (add (mul ?3 (mul (add ?2 (mul ?1 (cos x0))) x0)) (mul ?4 (sin ?0))))
+(mul (add ?4 (mul ?3 (cos (add ?2 (mul ?1 (inv ?0)))))) (add ?6 (mul ?5 (cos x0))))
+(mul (add ?4 (mul ?3 (cos (add ?2 (mul ?1 (inv ?0)))))) (add ?6 (mul ?5 (neg x0))))
+(mul (add ?4 (mul ?3 (sin (add ?2 (mul ?1 (neg ?0)))))) (add ?6 (mul ?5 (sin x0))))
+(mul (add ?4 (mul ?3 (cos (add ?2 (mul ?1 (inv x0)))))) (add ?6 (mul ?5 (cos ?0))))
+(mul (add ?4 (mul ?3 (cos (add ?2 (mul ?1 (inv x0)))))) (add ?6 (mul ?5 (neg ?0))))
+(mul (add ?4 (mul ?3 (sin (add ?2 (mul ?1 (neg x0)))))) (add ?6 (mul ?5 (sin ?0))))
+(add ?6 (add (mul ?5 (mul (add ?2 (mul ?1 (mul ?0 x0))) (add ?4 (mul ?3 x0)))) x0))
+(add ?6 (add (mul ?5 (mul (add ?4 (mul ?3 (sin (add ?2 (mul ?1 (neg ?0)))))) x0)) x0))
+(add ?6 (add (mul ?5 (mul ?0 (add ?4 (mul ?3 (sin (add ?2 (mul ?1 (neg x0)))))))) x0))
+(add ?6 (add ?0 (mul ?5 (mul (add ?2 (mul ?1 (mul x0 x0))) (add ?4 (mul ?3 x0))))))
+(add ?6 (add ?0 (mul ?5 (mul (add ?4 (mul ?3 (sin (add ?2 (mul ?1 (neg x0)))))) x0))))
+(add ?5 (add (mul ?3 (mul (add ?2 (mul ?1 (mul ?0 x0))) x0)) (mul ?4 (sin x0))))
+(add ?5 (add (mul ?3 (mul ?0 (add ?2 (mul ?1 (mul x0 x0))))) (mul ?4 (sin x0))))
+(add ?5 (add (mul ?3 (mul (add ?2 (mul ?1 (mul x0 x0))) x0)) (mul ?4 (sin ?0))))
+(mul (add ?4 (mul ?3 (mul (add ?2 (mul ?1 (cos ?0))) x0))) (add ?6 (mul ?5 (cos x0))))
+(mul (add ?4 (mul ?3 (mul ?0 (add ?2 (mul ?1 (cos x0)))))) (add ?6 (mul ?5 (cos x0))))
+(mul (add ?4 (mul ?3 (mul (add ?2 (mul ?1 (cos x0))) x0))) (add ?6 (mul ?5 (cos ?0))))
+(sin (add ?5 (mul ?4 (add (mul ?3 (mul (add ?2 (mul ?1 (mul ?0 x0))) x0)) x0))))
+(sin (add ?5 (mul ?4 (add (mul ?3 (mul ?0 (add ?2 (mul ?1 (mul x0 x0))))) x0))))
+(sin (add ?5 (mul ?4 (add ?0 (mul ?3 (mul (add ?2 (mul ?1 (mul x0 x0))) x0))))))

@@ -7,8 +7,8 @@ from t_search.evaluators.evaluator import Evaluator
 from t_search.syntax.syntax import Syntax
 from .optimizer import Optimizer
 
-from .optimization import OptimPoint, clean_optim_result, optimize_consts
-from t_search.syntax.term import Term, Value
+from .optimization import clean_optim_result, optimize_consts
+from t_search.syntax.term import OptimPoint, Term, Value
 
 @dataclass(frozen=False)
 class Optimized:
@@ -60,7 +60,7 @@ class ConstOptimizer(Optimizer):
             return self.best_terms_cache[self.optim_term_cache[term]]
         optim_points: list[OptimPoint] = []
         binding = {}
-        values = []        
+        # values = []        
 
         def const_to_optim_point(term, *_):
             if isinstance(term, Value):
@@ -69,7 +69,7 @@ class ConstOptimizer(Optimizer):
                 optim_points.append(point)
 
                 binding[point] = term.value
-                values.append(term)
+                # values.append(term)
                 return point
 
         optim_term = self.syntax.replace_fn(term, const_to_optim_point)

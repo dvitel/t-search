@@ -81,6 +81,18 @@ def get_positions(root: Term, pos_cache: dict[Term, list[TermPos]],
 
     return positions # last one is the root
 
+def get_path(pos: TermPos, with_current: bool = True, with_root: bool = True) -> list[TermPos]:
+    ''' Gets path from cur_pos to root '''
+    path = []
+    cur_pos = pos if with_current else pos.parent
+    pred = lambda cur_pos: cur_pos is not None 
+    if not with_root:
+        pred = lambda cur_pos: cur_pos is not None and cur_pos.parent is not None
+    while pred(cur_pos):
+        path.append(cur_pos)
+        cur_pos = cur_pos.parent
+    return path
+
 def get_inner_terms(root: Term) -> list[Term]:
     present_terms = set()
     inner_terms = []

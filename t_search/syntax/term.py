@@ -55,6 +55,10 @@ class Value(Term):
         return hash(self.value)
     
 @dataclass(frozen=True)
+class OptimPoint(Term):
+    point_id: int  # optim point in root term
+    
+@dataclass(frozen=True)
 class Wildcard(Term):
     name: str
     

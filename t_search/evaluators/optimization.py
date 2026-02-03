@@ -7,12 +7,7 @@ from typing import Callable, Literal, Optional
 import torch
 
 from t_search.datasets.sampling import get_rand_interval_points
-from t_search.syntax.term import Term, Value, Variable
-
-
-@dataclass(frozen=True)
-class OptimPoint(Term):
-    point_id: int  # optim point in root term
+from t_search.syntax.term import OptimPoint, Term, Value, Variable
 
 class LRAdjust(Exception):
     pass
@@ -27,14 +22,21 @@ class OptimResult:
     def agg_loss(self):
         return self.loss.mean(dim=-1)  # (num_starts,) or (1,)
 
+# NOTE: we cannot optimize constants and point at same time 
+#       the problem is than how to recreate the trace
+#       previously, points are selected to minimize variance 
+#       if we optimize both, consts and pointsm we create context specific vectors- starts are dependent from consts
 def optimize(
     optim_term: Term,
     start_range: torch.Tensor,
     start_binding: dict[OptimPoint, torch.Tensor],
+    const_range: torch.Tensor,
+    const_binding: dict[OptimPoint, torch.Tensor], # 1d bindings for constants
     loss_fn_builder: Callable,
     *,
-    pos_to_collect: set[tuple[Term, int]] = set(),
+    pos_to_collect: list[tuple[Term, int]] = [],
     num_starts: int = 10,
+    const_start_repeat: int = 5,
     lr: float = 1.0,
     max_evals: int = 10,
     tolerance_change: float = 1e-6,
@@ -72,6 +74,26 @@ def optimize(
         value.requires_grad_(True)
         binding[optim_point] = value
         params.append(value)
+
+    for optim_point, optim_value in const_binding.items():
+        value = torch.zeros(
+            (num_starts, 1), 
+            dtype=optim_value.dtype, device=optim_value.device
+        )
+        value[0:const_start_repeat] = optim_value
+
+        left_starts = num_starts - const_start_repeat
+        if left_starts > 1:
+            rand_points = get_rand_interval_points(
+                left_starts, const_range,
+                rand_deltas=True, generator=torch_gen,
+                transpose=True, pick_rand_grid_points=False
+            ) # (1, left_starts)
+            value[const_start_repeat:, 0] = rand_points[0]
+                
+        value.requires_grad_(True)
+        binding[optim_point] = value
+        params.append(value)        
 
     # print(f"\t === {optim_state.max_tries} {cur_lr}")
 
@@ -144,8 +166,17 @@ def optimize(
             best_loss = torch.full_like(fixed_loss, torch.inf)
         where_better = fixed_loss < best_loss
         best_loss.data[where_better] = fixed_loss[where_better]
+        const_where_better = None
+        if len(const_binding) > 0:
+            # mean_fixed_loss = fixed_loss.mean(dim=-1)  # (num_starts,)
+            # mean_best_loss = best_loss.mean(dim=-1)
+            const_where_better = torch.any(where_better, dim=-1) # mean_fixed_loss <= mean_best_loss
         for k, v in binding.items():
-            best_binding[k].data[where_better] = v[where_better]
+            bb = best_binding[k]
+            if bb.shape[-1] == 1: # constant - we need to decide should we allow constant update based on general improvement
+                bb.data[const_where_better] = v[const_where_better]
+            else: # per test adjustment
+                bb.data[where_better] = v[where_better]
         for k, v in additional_binding.items():
             if k in best_additional_binding:
                 best_additional_binding[k].data[where_better] = additional_binding[k][where_better]                
@@ -153,59 +184,7 @@ def optimize(
                 best_additional_binding[k] = additional_binding[k].clone()
         for v in additional_binding.values():
             del v
-        # if debug:
-        #     print(f"{num_root_evals}\tL {' '.join([f'{f:.1e}' for f in best_loss.mean(dim=1).tolist()])}")        
         
-        # if num_best_binings == 1:
-        #     loss_min_pos = fixed_loss.argmin()
-        #     min_loss = fixed_loss[loss_min_pos]
-
-        #     if debug:
-        #         print(f"\tLoss {min_loss.item()}, evals {num_root_evals}")
-
-        #     # if min_loss < loss_threshold:
-        #     #     iter_loss.append(loss.detach().clone())
-        #     #     for k, v in optim_state.binding.items():
-        #     #         iter_binding.setdefault(k, []).append(v.detach().clone())
-
-        #     if best_loss is None or min_loss < best_loss:
-        #         best_loss = min_loss.detach().clone()
-        #         for k, v in binding.items():
-        #             best_binding[k] = v[loss_min_pos].detach().clone()
-        # else: # best_loss is 1d tensor of size num_best_binings and best_binding is 2d (best_binding, values)
-        #     if best_loss is None: # take num_best_binings best 
-        #         sort_ids = torch.argsort(fixed_loss)
-        #         best_sort_ids = sort_ids[:num_best_binings]
-        #         best_loss = fixed_loss[best_sort_ids].detach().clone()
-        #         for k, v in binding.items():
-        #             best_binding[k] = v[best_sort_ids].detach().clone()
-        #         del sort_ids, best_sort_ids
-        #     else: # need to combine current and prev best_loss 
-        #         both_loss = torch.cat([best_loss, fixed_loss], dim=0)
-        #         sort_ids = torch.argsort(both_loss)
-        #         best_sort_ids = sort_ids[:num_best_binings]
-        #         if any(best_sort_ids >= best_loss.shape[0]):
-        #             # some new losses are among best 
-        #             best_loss = both_loss[best_sort_ids].detach().clone()
-        #             for k, v in binding.items():
-        #                 both_bindings = torch.cat([best_binding[k], v], dim=0)
-        #                 best_binding[k] = both_bindings[best_sort_ids].detach().clone()
-        #                 del both_bindings
-        #             del both_loss
-
-        # TODO: experiment more with early exit
-        # if best_loss is not None:
-        #     # if torch.allclose(new_min_loss, last_min_loss, rtol=rtol, atol=atol):
-        #     #     raise LRAdjust(None)
-        #     # elif new_min_loss > last_min_loss:
-        #     #     # optimizer.param_groups[0]['lr'] *= 0.5
-        #     #     pass
-        #     # if min_loss >= best_loss:
-        #     #     raise LRAdjust(None)
-        #     pass
-
-        # finite_loss = fixed_loss[torch.isfinite(fixed_loss)]
-        # total_loss = finite_loss.mean()
         total_loss = fixed_loss.mean() # use all losses including inf
         total_loss.backward()
 

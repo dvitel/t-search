@@ -7,7 +7,7 @@ import torch
 
 from .traverse import postorder_map
 
-from .term import LeafStructure, NonLeafStructure, Term, Value, Variable, Op, MetaVariable, OpWildcard, Wildcard, Wildcards
+from .term import LeafStructure, NonLeafStructure, OptimPoint, Term, Value, Variable, Op, MetaVariable, OpWildcard, Wildcard, Wildcards
 
 
 def parse_float_value(s:str, *_) -> Optional[Term]:
@@ -65,6 +65,7 @@ default_formatters = {
     OpWildcard: lambda t, *_: f"({t.op_id} {' '.join([str(a) for a in t.args])})",
     Wildcard: lambda t, *_: t.name,
     MetaVariable: lambda t, *_: t.name,    
+    OptimPoint: lambda t, *_: f"?{t.point_id}"
 }
     
 def term_to_str(term: Term, formatters: dict = default_formatters) -> str: 

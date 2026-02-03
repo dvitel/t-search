@@ -12,7 +12,7 @@ from t_search.syntax.generation import Builder, Builders, TermGenContext, gen_al
 from t_search.syntax.replacement import replace_fn, replace_path, replace_pos, replace_pos_protected
 from t_search.syntax.stats import get_depth, get_positions
 from t_search.syntax.str import parse_const_skeleton_to_term, parse_term
-from t_search.syntax.term import Op, Term, TermPos, Value, Variable
+from t_search.syntax.term import Op, OptimPoint, Term, TermPos, Value, Variable
 from t_search.syntax.traverse import postorder_map
 from t_search.syntax.unification import UnifyBindings, match_root
 from t_search.syntax.validation import get_counts, get_pos_constraints, get_pos_sibling_counts, is_valid
@@ -226,14 +226,16 @@ class Syntax(ServiceBase):
         if term in self.commutative_priority:
             return self.commutative_priority[term]
         if isinstance(term, Value):
-            priority = (0, term.value.item(),)
+            priority = (0,)
         elif isinstance(term, Variable):
             priority = (1, term.var_id,)
         elif isinstance(term, Op):
             priority = (2, self.get_size(term), term.op_id, *(self._get_term_priority(a) for a in term.get_args()))
+        elif isinstance(term, OptimPoint):
+            priority = (3, -term.point_id)
         else:
             # raise ValueError(f"Unknown term type: {type(term)}")
-            priority = (3,) # for meta-terms
+            priority = (100,) # for meta-terms
         self.commutative_priority[term] = priority
         return priority
     
