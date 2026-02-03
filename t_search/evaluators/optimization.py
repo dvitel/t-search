@@ -30,13 +30,10 @@ def optimize(
     optim_term: Term,
     start_range: torch.Tensor,
     start_binding: dict[OptimPoint, torch.Tensor],
-    const_range: torch.Tensor,
-    const_binding: dict[OptimPoint, torch.Tensor], # 1d bindings for constants
     loss_fn_builder: Callable,
     *,
     pos_to_collect: list[tuple[Term, int]] = [],
     num_starts: int = 10,
-    const_start_repeat: int = 5,
     lr: float = 1.0,
     max_evals: int = 10,
     tolerance_change: float = 1e-6,
@@ -74,26 +71,6 @@ def optimize(
         value.requires_grad_(True)
         binding[optim_point] = value
         params.append(value)
-
-    for optim_point, optim_value in const_binding.items():
-        value = torch.zeros(
-            (num_starts, 1), 
-            dtype=optim_value.dtype, device=optim_value.device
-        )
-        value[0:const_start_repeat] = optim_value
-
-        left_starts = num_starts - const_start_repeat
-        if left_starts > 1:
-            rand_points = get_rand_interval_points(
-                left_starts, const_range,
-                rand_deltas=True, generator=torch_gen,
-                transpose=True, pick_rand_grid_points=False
-            ) # (1, left_starts)
-            value[const_start_repeat:, 0] = rand_points[0]
-                
-        value.requires_grad_(True)
-        binding[optim_point] = value
-        params.append(value)        
 
     # print(f"\t === {optim_state.max_tries} {cur_lr}")
 
@@ -166,17 +143,9 @@ def optimize(
             best_loss = torch.full_like(fixed_loss, torch.inf)
         where_better = fixed_loss < best_loss
         best_loss.data[where_better] = fixed_loss[where_better]
-        const_where_better = None
-        if len(const_binding) > 0:
-            # mean_fixed_loss = fixed_loss.mean(dim=-1)  # (num_starts,)
-            # mean_best_loss = best_loss.mean(dim=-1)
-            const_where_better = torch.any(where_better, dim=-1) # mean_fixed_loss <= mean_best_loss
         for k, v in binding.items():
             bb = best_binding[k]
-            if bb.shape[-1] == 1: # constant - we need to decide should we allow constant update based on general improvement
-                bb.data[const_where_better] = v[const_where_better]
-            else: # per test adjustment
-                bb.data[where_better] = v[where_better]
+            bb.data[where_better] = v[where_better]
         for k, v in additional_binding.items():
             if k in best_additional_binding:
                 best_additional_binding[k].data[where_better] = additional_binding[k][where_better]                
