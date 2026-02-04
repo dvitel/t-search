@@ -63,3 +63,48 @@ class EvSearchTermination(Exception):
     def __init__(self, status: GPSolverStatus, *args):
         super().__init__(*args)
         self.status = status
+
+def rank(x: torch.Tensor):
+    ''' 
+        x is tensor of N traces  of size D.
+        Produces tensor of same shape with ranks (averaged for ties) accross D points.
+    '''
+    N, D = x.shape
+    device = x.device
+
+    sorter = x.argsort(dim=-1) # ids to build sort orders 
+    x_sorted = torch.gather(x, dim=-1, index=sorter) # sort
+
+    # compare each element to its neighbor. True (1) if they are different.
+    shifted = torch.cat([torch.full((N, 1), -float('inf'), device=device), x_sorted[:, :-1]], dim=-1)
+    is_diff = (x_sorted != shifted)
+
+    # use cumulative sum to label each ties
+    group_ids = is_diff.cumsum(dim=-1) # (N, D)
+
+    # calculate the ordinal ranks (0, 1, 2... D-1)
+    ordinal_ranks = torch.arange(D, device=device).float().expand(N, D)
+
+    # compute the mean of ordinal ranks within each group
+    group_sums = torch.zeros(N, D + 1, device=device).scatter_add_(1, group_ids, ordinal_ranks)
+    group_counts = torch.zeros(N, D + 1, device=device).scatter_add_(1, group_ids, torch.ones_like(ordinal_ranks))
+    
+    avg_ranks_per_group = group_sums / group_counts
+    
+    # map the average ranks back to the positions
+    sorted_avg_ranks = torch.gather(avg_ranks_per_group, dim=-1, index=group_ids)
+    
+    # unsort
+    inv_sorter = sorter.argsort(dim=-1)
+    final_ranks = torch.gather(sorted_avg_ranks, dim=-1, index=inv_sorter)
+    
+    return final_ranks
+
+
+# test_rank = torch.tensor([[3.1, 1.3, 2.1, 2.0],
+#                           [3.4, 2.5, 3.4, 3.4],
+#                           [2.1, 3.0, 1.1, 1.0],
+#                           [1.1, 1.1, 1.1, 1.1],
+#                           [5.1, 4.1, 3.1, 1.1]])
+
+# rank(test_rank)  # Expected ranks with ties handled appropriately

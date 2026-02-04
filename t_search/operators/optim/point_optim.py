@@ -192,6 +192,7 @@ class PointOptim(Operator, ServiceBase):
     #          DONE - switched to mean
     # TODO X4: random exploration operator of term shapes. 
     # TODO X5: gathering correlation data for a good predictor (l2 to loss) of good pair and of good position
+    #           DONE 1: fixed zscore standardization 
     # TODO X6: fetching terms for filling - should we fetch further terms when search is exhausted? Collect data on l2 with different normalization 
     # TODO X7; should we register complex terms in term index? Should we resort only to unique terms without constants. 
     # TODO X8: theoretical guarantees (visiting all search space positions/completeness/soundness?/l2 vs loss correlation)
@@ -421,8 +422,8 @@ class PointOptim(Operator, ServiceBase):
                     print('---------------------------------')
                     print(f">>> [{hole_pos.priority}] {hole_pos.term} at ({hole_pos.pos.term}, {hole_pos.pos.occur})")
                 cur_holes = self.create_holes(hole_pos.term, hole_pos.pos)
-                if self.debug:
-                    print(f"<<< Created {len(cur_holes)} holes")
+                # if self.debug:
+                #     print(f"<<< Created {len(cur_holes)} holes")
 
             if len(cur_holes) == 0: # all pos attempted 
                 continue

@@ -5,7 +5,7 @@
             "params": {}
         },
         "zscore": {
-            "type": "ZScoreNormalizer",
+            "type": "GaussRankNormalizer",
             "params": {
                 "small_std": 1e-4
             }
@@ -139,12 +139,12 @@
                 "term_index": {"!ref": "term_index"},
                 "hole_index": {"!ref": "hole_index"},
                 "const_optimizer": {"!ref": "const_optimizer"},
-                "start_delta": 100,
+                "start_delta": 1,
                 "multiplier": 10,
                 "num_steps": 3,
-                "num_closest": 3,
+                "num_closest": 2,
                 "good_filling_loss": 0.001,
-                "max_filling_queue_size": 1000,
+                "max_filling_queue_size": 100,
                 "small_value": 1e-2,
                 "small_variation": 1e-4
             }
@@ -168,7 +168,7 @@
                 "fitness": {"!ref": "fitness"},
                 "semantics": {"!ref": "semantics"},
                 "evaluator": {"!ref": "evaluator"},
-                "position_strategy": "rand_position_order",
+                "position_strategy": "shallow_to_deep_position_order",
                 "num_starts": 30,
                 "range_delta": 0.1,
                 "max_evals": 30,
@@ -188,8 +188,8 @@
             "params": {
                 "syntax": {"!ref": "syntax"},
                 "evaluator": {"!ref": "evaluator"},
-                "num_starts": 100,
-                "max_evals": 20,
+                "num_starts": 1000,
+                "max_evals": 30,
                 "lr": 0.1,
                 "tolerance_change": 0.0000001,
                 "tolerance_grad": 0.000001
