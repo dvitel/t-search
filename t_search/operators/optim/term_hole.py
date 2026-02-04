@@ -9,6 +9,7 @@ import torch
 from t_search.base import ServiceBase
 from t_search.evaluators.const_optimizer import ConstOptimizer
 from t_search.evaluators.fitness import Fitness
+from t_search.evaluators.semantics import Semantics
 from t_search.evaluators.term_spatial import HoleVectorStorage, TermVectorStorage
 from t_search.operators.listeners import EvalListener
 from t_search.syntax import Term, TermPos
@@ -30,8 +31,8 @@ class HoleFilling:
     found_term: Term 
     hole_root: Term 
     hole_pos: TermPos
-    term_semantics: torch.Tensor
-    hole_semantics: torch.Tensor
+    # term_semantics: torch.Tensor
+    # hole_semantics: torch.Tensor
     # skeletons: list[Term]
 
 def dn(v: torch.Tensor):
@@ -73,6 +74,7 @@ class TermHolePairs(EvalListener, ServiceBase):
                     syntax: Syntax,
                     # evaluator: Evaluator,
                     fitness: Fitness,
+                    semantics: Semantics,
                     term_index: TermVectorStorage,
                     hole_index: HoleVectorStorage,
                     const_optimizer: ConstOptimizer,
@@ -113,20 +115,21 @@ class TermHolePairs(EvalListener, ServiceBase):
         self.debug = debug
         self.const_optimizer = const_optimizer
         self.fitness = fitness
+        self.semantics = semantics
 
         pass 
 
-    def init(self):
-        # NOTE: we have to add to term index at least one constant to discover constant terms for holes
-        if self.syntax.max_consts > 0:
-            zero_term = self.syntax.get_const(value=0.0)
-            # WARNINING: next fake eval works outsied evaluator object - hack that would avoid circular dependencies 
-            # Instead, Value(0) term may have different semantics for different evaluators 
-            fake_eval = torch.zeros_like(self.target) # NOTE: for now we assume it is ok 
-            self.register_terms([zero_term], fake_eval.unsqueeze(0))
-            del fake_eval
-            pass 
-        pass        
+    # def init(self):
+    #     # NOTE: we have to add to term index at least one constant to discover constant terms for holes
+    #     if self.syntax.max_consts > 0:
+    #         zero_term = self.syntax.get_const(value=0.0)
+    #         # WARNINING: next fake eval works outsied evaluator object - hack that would avoid circular dependencies 
+    #         # Instead, Value(0) term may have different semantics for different evaluators 
+    #         fake_eval = torch.zeros_like(self.target) # NOTE: for now we assume it is ok 
+    #         self.register_terms([zero_term], fake_eval.unsqueeze(0))
+    #         del fake_eval
+    #         pass 
+    #     pass        
 
     def on_eval(self, terms: list[Term], semantics: torch.Tensor):
         ''' New terms appear, queue themfor later optimization '''
@@ -136,9 +139,29 @@ class TermHolePairs(EvalListener, ServiceBase):
        
     def register_terms(self, terms: list[Term], term_params: torch.Tensor) -> None:
         if len(terms) == 0:
-            return []
+            return
+        
+        term_consts = self.semantics.is_const(term_params)
+
+        nonconst_term_ids = []
+
+        for hid, c in enumerate(term_consts):
+            if c is None: # contant fits the hole 
+                nonconst_term_ids.append(hid)  
+
+        if len(nonconst_term_ids) == 0:
+            return
+
+        should_cleanup = False
+        if len(nonconst_term_ids) < len(terms):
+            terms = [terms[i] for i in nonconst_term_ids]
+            term_params = term_params[nonconst_term_ids]
+            should_cleanup = True
 
         new_terms = self.term_index.insert(terms, term_params)
+        if should_cleanup:
+            del term_params
+
         if len(new_terms) == 0:
             # if self.debug: # outputing duplicates that were removed
             #     for t in terms:
@@ -175,9 +198,34 @@ class TermHolePairs(EvalListener, ServiceBase):
     def register_holes(self, holes: list[tuple[Term, TermPos]], hole_params: torch.Tensor) -> None:
         ''' Adds hole and its semantics to index and outputs currently present fillings '''
         if len(holes) == 0:
-            return []
+            return
+        
+        hole_consts = self.semantics.is_const(hole_params)
+
+        const_holes = [] 
+        nonconst_hole_ids = []
+
+        for hid, c in enumerate(hole_consts):
+            if c is not None: # contant fits the hole 
+                const_holes.append((self.syntax.get_const(value=c), holes[hid]))
+            else:
+                nonconst_hole_ids.append(hid)  
+
+        for term, hole in const_holes:
+            self.add_fill_hole(term, hole[0], hole[1], 0.0)
+
+        if len(nonconst_hole_ids) == 0:
+            return
+
+        should_cleanup = False
+        if len(nonconst_hole_ids) < len(holes):
+            holes = [holes[i] for i in nonconst_hole_ids]
+            hole_params = hole_params[nonconst_hole_ids]
+            should_cleanup = True
         
         new_holes = self.hole_index.insert(holes, hole_params)
+        if should_cleanup:
+            del hole_params
         
         if len(new_holes) == 0:
             # if self.debug: # outputing duplicates that were removed
@@ -187,7 +235,7 @@ class TermHolePairs(EvalListener, ServiceBase):
             #     pass             
             return
 
-        normalized_holes, normalized_semantics = self.hole_index.get_new_normalized(new_holes)
+        normalized_holes, normalized_semantics = self.hole_index.get_new_normalized(new_holes, allow_nonrepr=True)
 
         if len(normalized_holes) == 0:
             # print("WARN: no normalized holes found during registering holes")
@@ -354,6 +402,9 @@ class TermHolePairs(EvalListener, ServiceBase):
     # (add t k), (mul k t)
     def add_fill_hole(self, term: Term, hole_root: Term, hole_pos: TermPos, l2: float) -> Optional[HoleFilling]:
 
+        # if self.debug:
+        #     print(f"Proposed term: {term} for l2={l2:.2f}, {hole_root}@({hole_pos.term}, {hole_pos.occur})")
+
         # fit_subterm0 = self.strip_add_mul_consts(term)
         # if isinstance(fit_subterm0, Value):
         #     fit_term = fit_subterm0
@@ -381,7 +432,7 @@ class TermHolePairs(EvalListener, ServiceBase):
         new_term = self.syntax.replace_position(hole_root, hole_pos, fit_term)
         if new_term is None:
             # if self.debug:
-            #     print(f"\tconstr violation: {fit_term} --> {hole_root}@({hole_pos.term}, {hole_pos.occur})")
+            #     print(f"\tDiscarded: {fit_term} --> {hole_root}@({hole_pos.term}, {hole_pos.occur})")
             return None
         
         # reducing consstants before optimization 
@@ -401,10 +452,19 @@ class TermHolePairs(EvalListener, ServiceBase):
                                     optimized.term,
                                 #    optimized_reduced_term,
                             term, hole_root, hole_pos,
-                            term_semantics=self.term_index.get_semantics_for_term(term, denormalize=True),
-                            hole_semantics=self.hole_index.get_semantics_for_term((hole_root, hole_pos), denormalize=True)
                             ) # no skeletons here as we optimized constants
-        
+
+        # if self.debug: 
+        #     # 0. debug - make sure everything is cocmputed correctly
+        #     #    0.1 Consts should not be in term_index/hole_index --> register_term/register_hole should filter out constants
+        #     #    0.2 On uneval we check obtained trace for constant (query_closest)
+        #     # asserting correctness of computed semantics and l2                                     
+        #     term_semantics=self.term_index.get_semantics_for_term(term, denormalize=False)
+        #     hole_semantics=self.hole_index.get_semantics_for_term((hole_root, hole_pos), denormalize=False)
+        #     _l2 = dl2(term_semantics, hole_semantics)
+        #     assert abs(_l2 - l2) < 1e-5, f"Computed l2={l2} differs from actual l2={_l2}"
+        #     pass
+
         # if self.debug and len(self.hole_fillings) > 0 and \
         #     ((self.hole_fillings[0].priority < hole_filling.priority and self.hole_fillings[0].l2 > hole_filling.l2) or \
         #         (self.hole_fillings[0].priority > hole_filling.priority and self.hole_fillings[0].l2 < hole_filling.l2)):
@@ -412,12 +472,24 @@ class TermHolePairs(EvalListener, ServiceBase):
         #     print(f">> {hole_filling.term}")
         #     pass
 
+        # if self.debug:
+        #     print(f"\tNew loss={hole_filling.priority:.4f}, {hole_filling.term}")  
+        #     print("\tVectors: ")      
+        #     term_semantics = self.term_index.get_semantics_for_term(hole_filling.found_term, denormalize=True)
+        #     term_semantics_normalized = self.term_index.get_semantics_for_term(hole_filling.found_term, denormalize=False)
+        #     hole_semantics = self.hole_index.get_semantics_for_term((hole_filling.hole_root, hole_filling.hole_pos), denormalize=True)
+        #     hole_semantics_normalized = self.hole_index.get_semantics_for_term((hole_filling.hole_root, hole_filling.hole_pos), denormalize=False)
+        #     print(f"\t\tx=torch.tensor([{', '.join([f'{f:+5.4f}' for f in self.semantics.var_bindings['x0'].tolist()])}])")
+        #     print(f"\t\ty=torch.tensor([{', '.join([f'{f:+5.4f}' for f in self.target.tolist()])}])")
+        #     print(f"\t\tts=torch.tensor([{', '.join([f'{f:+5.4f}' for f in term_semantics.tolist()])}])")
+        #     print(f"\t\ths=torch.tensor([{', '.join([f'{f:+5.4f}' for f in hole_semantics.tolist()])}])")
+        #     print(f"\t\ttsN=torch.tensor([{', '.join([f'{f:+5.4f}' for f in term_semantics_normalized.tolist()])}])")
+        #     print(f"\t\thsN=torch.tensor([{', '.join([f'{f:+5.4f}' for f in hole_semantics_normalized.tolist()])}])")
+
         if hole_filling.term in self.present_fillings:
             # if self.debug:
-            #     print(f"\tduplicate filling: {hole_filling.term}")
+            #     print(f"\tDuplicate dicarded")
             return 
-        # if self.debug:
-        #     print(f"\tadded {hole_filling.term}")        
         heappush(self.hole_fillings, hole_filling)      
         self.present_fillings.add(hole_filling.term)
 

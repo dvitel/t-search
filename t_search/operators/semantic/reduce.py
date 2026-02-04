@@ -29,10 +29,14 @@ class SReduce(TermMutation):
         return simplified
     
     def __call__(self, population):
+        if self.debug:
+            print("SReduce start")
         new_pop = super().__call__(population)
         to_reeval = [ t for t in new_pop if self.semantics.get_binding(t) is None ]
         if len(to_reeval) > 0:
             self.evaluator.eval(to_reeval)
         # filtered = [t for t in new_pop if self.syntax.is_valid(t)]
         # return filtered
+        if self.debug:
+            print("SReduce end")        
         return new_pop

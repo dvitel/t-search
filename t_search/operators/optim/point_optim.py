@@ -186,7 +186,7 @@ class PointOptim(Operator, ServiceBase):
         return False
 
     # TODO X1: optim_term --> optim_term_skeleton ?? Or optimize consts and pos at same time?? -- MANY (add OptimPoint <some_const>) - more complex function of consts could have different vectros for constant 
-    #          DONE with ssikiping lincomb. Attempted optimization of consts with point became complicated and unstable - reverted back to point optim then const optim.
+    #          DONE with skipping lincomb. Attempted optimization of consts with point became complicated and unstable - reverted back to point optim then const optim.
     # TODO X2: order of positions to optimize - should we try best term first??? experiment with position grad and random.
     # TODO X3: when increasing num_starts for pos optimizer it seems that results degrade -> maybe should take mean of loss?? - not sure why. 
     #          DONE - switched to mean
@@ -421,6 +421,8 @@ class PointOptim(Operator, ServiceBase):
                     print('---------------------------------')
                     print(f">>> [{hole_pos.priority}] {hole_pos.term} at ({hole_pos.pos.term}, {hole_pos.pos.occur})")
                 cur_holes = self.create_holes(hole_pos.term, hole_pos.pos)
+                if self.debug:
+                    print(f"<<< Created {len(cur_holes)} holes")
 
             if len(cur_holes) == 0: # all pos attempted 
                 continue

@@ -12,7 +12,8 @@ from t_search.syntax.term import Term, TermPos
 TTermPos = TypeVar('TTermPos')
 
 class Normalizer(Protocol, Generic[TTermPos]):
-    def normalize(self, vectors: torch.Tensor, terms: list[TTermPos]) -> torch.Tensor:
+    def normalize(self, vectors: torch.Tensor, terms: list[TTermPos]) -> tuple[torch.Tensor, list[TTermPos]]:
+        ''' Normalizes term vectors and removes bad terms'''
         pass 
 
     def denormalize(self, normalized_vectors: torch.Tensor, terms: list[TTermPos]) -> torch.Tensor:
@@ -22,8 +23,9 @@ class Normalizer(Protocol, Generic[TTermPos]):
         return None
 
 class IdentityNormalizer(Normalizer):
-    def normalize(self, vectors: torch.Tensor, terms: list[Any]) -> torch.Tensor:
-        return vectors
+    def normalize(self, vectors: torch.Tensor, terms: list[Any]) -> tuple[torch.Tensor, list[Any]]:
+        ''' Normalizes term vectors and removes bad terms'''
+        return vectors, terms
 
     def denormalize(self, normalized_vectors: torch.Tensor, terms: list[Any]) -> torch.Tensor:
         return normalized_vectors
@@ -36,25 +38,53 @@ class ZScoreParams:
 class ZScoreNormalizer(Normalizer, ServiceBase, Generic[TTermPos]):
     """Z-score normalization (mean=0, std=1)."""
     
-    def __init__(self, zero, one, small_std: float = 1e-5):
+    def __init__(self, zero, one, 
+                 target: torch.Tensor,
+                 ensure_positive_correlation: bool = True,
+                 small_std: float = 1e-5):
         self.zero = zero
         self.one = one
         self.small_std = small_std
+        self.target = target # we ensure positive Pearson correlation - flipping normalized vectors 
+        self.target_normalized = (target - torch.mean(target)) / torch.std(target)
         self.params: dict[TTermPos, tuple[torch.Tensor, torch.Tensor]] = {}
+        self.ensure_positive_correlation = ensure_positive_correlation
     
-    def normalize(self, vectors: torch.Tensor, keys: list[TTermPos]) -> torch.Tensor:
+    def normalize(self, vectors: torch.Tensor, keys: list[TTermPos]) -> tuple[torch.Tensor, list[TTermPos]]:
+        ''' Normalizes term vectors and removes constant terms'''
         means = torch.mean(vectors, dim=1, keepdim=True)
         stds = torch.std(vectors, dim=1, keepdim=True)
         zero_mask = torch.all(torch.isclose(stds, self.zero, atol=self.small_std, rtol=0), dim=1)
-        normalized = (vectors - means) / stds
-        normalized[zero_mask] = self.zero
-        stds[zero_mask] = self.zero
+        not_const_mask = ~zero_mask
+        where_not_constant = torch.where(not_const_mask)[0]
+        should_cleanup = False
+        if len(where_not_constant) < len(keys):
+            keys = [keys[i] for i in where_not_constant.tolist()] if len(keys) > 0 else []
+            filtered_vectors = vectors[where_not_constant]
+            filtered_means = means[where_not_constant]
+            filtered_stds = stds[where_not_constant]
+            should_cleanup = True
+        else:
+            filtered_vectors = vectors
+            filtered_means = means
+            filtered_stds = stds
+        normalized = (filtered_vectors - filtered_means) / filtered_stds
+        # for normalized vectors 
+        if self.ensure_positive_correlation:
+            # compute pearson correlation with target 
+            correlations = torch.sum(normalized * self.target_normalized.unsqueeze(0), dim=1)
+            neg_corr_mask = correlations < 0
+            normalized[neg_corr_mask] *= -1.0
+            pass
         
         # Store normalization params per key
-        for key, mean, std in zip(keys, means.squeeze(-1), stds.squeeze(-1)):
-            self.params[key] = (mean, std)
+        for key, mean, std in zip(keys, filtered_means.squeeze(-1), filtered_stds.squeeze(-1)):
+            self.params[key] = (mean.clone(), std.clone())
         
-        return normalized
+        del filtered_means, filtered_stds, stds, means, zero_mask, not_const_mask, where_not_constant
+        if should_cleanup:
+            del filtered_vectors
+        return (normalized, keys)
     
     def denormalize(self, vectors: torch.Tensor, keys: list[TTermPos]) -> torch.Tensor:
         """Denormalize using stored params."""
@@ -119,14 +149,19 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
             vector = self.normalizer.denormalize(vector.unsqueeze(0), [term]).squeeze(0)
         return vector
     
-    def get_new_normalized(self, terms: list[TTermPos]) -> tuple[list[Term], torch.Tensor]:
+    def get_new_normalized(self, terms: list[TTermPos], allow_nonrepr: bool = False) -> tuple[list[Term], torch.Tensor]:
         sids: list[int] = []
         normalized_terms: list[TTermPos] = []
         present_reprs = set()
         for term in terms:
             if term in self.term_to_sid:
                 term_sid = self.term_to_sid[term]
-                repr_term = self.sid_to_term[term_sid]
+                if allow_nonrepr:
+                    repr_term = term
+                else:
+                    repr_term = self.sid_to_term[term_sid]
+                # NOTE: (add ?0 1) has same semantics as (neg ?0) and as ?0. Holes are subjects to constraints 
+                #        therefore, holes should not be filtered by repr (neg ?0) can be blocked
                 if (repr_term == term) and (repr_term not in present_reprs):
                     # NOTE: only NEW and BEST representative is returned
                     present_reprs.add(repr_term)
@@ -138,7 +173,9 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
         return [], None
     
     def get_term_for_semantics(self, vector: torch.Tensor) -> Optional[TTermPos]:
-        mapped_vectors = self.normalizer.normalize(vector.unsqueeze(0), terms=[])
+        mapped_vectors, _ = self.normalizer.normalize(vector.unsqueeze(0), terms=[])
+        if len(mapped_vectors) == 0:
+            return None
         sid, *_ = self.index.query_points(mapped_vectors)
         if sid == -1:
             return None
@@ -155,7 +192,9 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
             terms = [terms[i] for i in new_term_ids]
             vectors = vectors[new_term_ids]
             require_cleanup = True
-        mapped_vectors = self.normalizer.normalize(vectors, terms)
+        mapped_vectors, terms = self.normalizer.normalize(vectors, terms)
+        if len(mapped_vectors) == 0: # all filtered
+            return []
         finite_all_mask = torch.isfinite(mapped_vectors)
         finite_mask = torch.all(finite_all_mask, dim=1)
         invalid_ids, = torch.where(~finite_mask)

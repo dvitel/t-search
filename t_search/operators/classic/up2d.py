@@ -18,4 +18,6 @@ class Up2D(Initialization):
 
     def __call__(self) -> list[Term]:
         population = self.syntax.get_all_terms(up2depth=self.depth, max_consts=self.max_consts)
+        # tt = self.syntax.get_op("add", self.syntax.get_var("x0"), self.syntax.get_const(1.0))
+        # population.append(tt)
         return population

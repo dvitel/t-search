@@ -211,3 +211,11 @@ x * x * x * x - 2.0*x*x
 (sin (add ?5 (mul ?4 (add (mul ?3 (mul (add ?2 (mul ?1 (mul ?0 x0))) x0)) x0))))
 (sin (add ?5 (mul ?4 (add (mul ?3 (mul ?0 (add ?2 (mul ?1 (mul x0 x0))))) x0))))
 (sin (add ?5 (mul ?4 (add ?0 (mul ?3 (mul (add ?2 (mul ?1 (mul x0 x0))) x0))))))
+
+
+
+(cos (add (mul (inv x0) 0.0330) 1.4092)
+
+cos(0.0330/x + 1.4092)
+(add (add (mul (neg x0) 0.9911) x0) 0.0801)
+-0.9911x + x + 0.0801
