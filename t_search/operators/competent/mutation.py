@@ -48,7 +48,8 @@ class CompetentMutation(PositionMutation):
             return None
         
         best_vector = all_semantics[best_sem_id]
-        best_term = self.l.index.get_term_for_semantics(best_vector)
+        best_term = self.l.index.get_terms_for_semantics(best_vector.unsqueeze(0))[0]
+        assert best_term is not None
 
         # bring best_term closer to desired with linear trnsformation k * t + b
 

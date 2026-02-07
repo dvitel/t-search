@@ -35,8 +35,9 @@ class SReduce(TermMutation):
         to_reeval = [ t for t in new_pop if self.semantics.get_binding(t) is None ]
         if len(to_reeval) > 0:
             self.evaluator.eval(to_reeval)
-        # filtered = [t for t in new_pop if self.syntax.is_valid(t)]
-        # return filtered
+        if self.debug:
+            print("SReduce validation")                    
+        filtered = [t for t in new_pop if self.syntax.is_valid(t)]
         if self.debug:
             print("SReduce end")        
-        return new_pop
+        return filtered

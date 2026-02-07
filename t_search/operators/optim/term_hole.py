@@ -10,7 +10,7 @@ from t_search.base import ServiceBase
 from t_search.evaluators.const_optimizer import ConstOptimizer
 from t_search.evaluators.fitness import Fitness
 from t_search.evaluators.semantics import Semantics
-from t_search.evaluators.term_spatial import HoleVectorStorage, TermVectorStorage
+from t_search.evaluators.term_spatial import HoleVectorStorage, Normalizer, TermVectorStorage
 from t_search.operators.listeners import EvalListener
 from t_search.syntax import Term, TermPos
 from t_search.syntax.syntax import Syntax
@@ -25,6 +25,7 @@ from t_search.syntax.term import Op, Value
 @dataclass(order=True)
 class HoleFilling:
     priority: float
+    start_loss: float
     l2: float
     id: int # sequential id in a sequence of created fillings
     term: Term
@@ -35,36 +36,11 @@ class HoleFilling:
     # hole_semantics: torch.Tensor
     # skeletons: list[Term]
 
-def dn(v: torch.Tensor):
-    c = v - v.mean()
-    n = c / c.norm() 
-    return n
-
-def ds(v:torch.Tensor):
-    c = v - v.mean()
-    s = c / v.std()
-    return s
-
-def dl2(a, b):
-    return ((a - b) ** 2).sum()
-
-def covar(a, b):
-    a_mean = a.mean()
-    b_mean = b.mean()
-    return ((a - a_mean) * (b - b_mean)).mean()
-
-def dstat(*s:HoleFilling):
-    return [ 
-        {
-            "dnl2": dl2(dn(hf.term_semantics), dn(hf.hole_semantics)),
-            "dsl2": dl2(ds(hf.term_semantics), ds(hf.hole_semantics)),
-            "covalN": covar(dn(hf.term_semantics), dn(hf.hole_semantics)),
-            "covalS": covar(ds(hf.term_semantics), ds(hf.hole_semantics)),
-            "l2": hf.l2, 
-            "loss": hf.priority
-        }
-        for hf in s 
-    ]
+    def __repr__(self):
+        return self.__str__()
+    
+    def __str__(self):
+        return f"HF[{self.id:04d}](loss={self.priority:.3f}←{self.start_loss:4.3f} l2={self.l2:.2f}\n\t\t{self.term}\n\t\t{self.hole_root}@({self.hole_pos.term}, {self.hole_pos.occur}) with {self.found_term})"
 
 class TermHolePairs(EvalListener, ServiceBase):
     ''' For new terms search for sketches, for new sketches search for terms.  '''
@@ -73,6 +49,7 @@ class TermHolePairs(EvalListener, ServiceBase):
                     target: torch.Tensor,
                     syntax: Syntax,
                     # evaluator: Evaluator,
+                    normalizer: Normalizer,
                     fitness: Fitness,
                     semantics: Semantics,
                     term_index: TermVectorStorage,
@@ -86,6 +63,8 @@ class TermHolePairs(EvalListener, ServiceBase):
                     small_value: float = 1e-5,
                     good_filling_loss: float = 0.01,
                     max_filling_queue_size: int = 1000,
+                    term_filter_strategy: str = "term_filter_accept_all",
+                    hole_filter_strategy: str = "hole_filter_accept_all",
                     debug: bool = False
                     ):
 
@@ -107,7 +86,7 @@ class TermHolePairs(EvalListener, ServiceBase):
         self.small_value = small_value
 
         self.filling_id = 0
-        self.hole_fillings: list[HoleFilling] = []
+        self.delayed_terms: list[tuple[Term, torch.Tensor]] = [] # new terms on eval 
         self.present_fillings: set[Term] = set()
 
         self.good_filling_loss = good_filling_loss
@@ -116,6 +95,9 @@ class TermHolePairs(EvalListener, ServiceBase):
         self.const_optimizer = const_optimizer
         self.fitness = fitness
         self.semantics = semantics
+        self.normalizer = normalizer
+        self.term_filter_strategy = getattr(self, term_filter_strategy)
+        self.hole_filter_strategy = getattr(self, hole_filter_strategy)
 
         pass 
 
@@ -134,131 +116,169 @@ class TermHolePairs(EvalListener, ServiceBase):
     def on_eval(self, terms: list[Term], semantics: torch.Tensor):
         ''' New terms appear, queue themfor later optimization '''
         # filtered_terms = [t for t in terms if self.syntax.get_num_consts(t) == 0]
-        self.register_terms(terms, semantics)
+        self.insert_new_terms(terms, semantics)
+        # self.register_terms(terms, semantics)
         pass
-       
-    def register_terms(self, terms: list[Term], term_params: torch.Tensor) -> None:
-        if len(terms) == 0:
-            return
-        
-        term_consts = self.semantics.is_const(term_params)
 
+    def deduplicate(self, terms: list[Term], vectors: torch.Tensor) -> tuple[list[Term], torch.Tensor]:
+        ''' Remove duplicates from terms based on their vectors '''
+        unique_set = set()
+        unique_ids = []
+        for i, t in enumerate(terms):
+            if t in unique_set or not self.semantics.is_valid(t):
+                continue
+            unique_set.add(t)
+            unique_ids.append(i)
+        if len(unique_ids) == len(terms):
+            return terms, vectors
+        unique_terms = [terms[i] for i in unique_ids]
+        unique_vectors = vectors[unique_ids]
+        return unique_terms, unique_vectors
+    
+    def split_const_nonconst(self, terms: list[Term], vectors: torch.Tensor, return_consts: bool = False) -> tuple:
+        term_consts = self.semantics.is_const(vectors)
+
+        const_terms = [] 
         nonconst_term_ids = []
 
         for hid, c in enumerate(term_consts):
-            if c is None: # contant fits the hole 
+            if c is not None and return_consts:
+                const_terms.append((terms[hid], self.syntax.get_const(value=c)))
+            else:
                 nonconst_term_ids.append(hid)  
 
-        if len(nonconst_term_ids) == 0:
-            return
-
-        should_cleanup = False
         if len(nonconst_term_ids) < len(terms):
             terms = [terms[i] for i in nonconst_term_ids]
-            term_params = term_params[nonconst_term_ids]
-            should_cleanup = True
+            vectors = vectors[nonconst_term_ids]
 
-        new_terms = self.term_index.insert(terms, term_params)
-        if should_cleanup:
-            del term_params
+        return const_terms, terms, vectors
+    
+    def term_filter_accept_all(self, terms: list[Term], vectors: torch.Tensor) -> tuple:
+        return terms, vectors
+    
+    def hole_filter_accept_all(self, holes: list[tuple[Term, TermPos]], vectors: torch.Tensor) -> tuple:
+        return holes, vectors
+    
+    def term_filter_no_consts(self, terms: list[Term], vectors: torch.Tensor) -> tuple:
+        term_ids = []
+        for hid, t in enumerate(terms):
+            if self.syntax.get_num_consts(t) == 0:
+                term_ids.append(hid)
+        if len(term_ids) < len(terms):
+            terms = [terms[i] for i in term_ids]
+            vectors = vectors[term_ids]        
+        return terms, vectors
+    
+    def insert_new_terms(self, terms: list[Term], term_params: torch.Tensor) -> None:
+
+        terms, term_params = self.deduplicate(terms, term_params)
+        
+        _, terms, term_params = self.split_const_nonconst(terms, term_params, return_consts=False)
+        if len(terms) == 0:
+            return
+        
+        new_terms, new_term_params = self.term_index.filter_new(terms, term_params)  
+        if len(new_terms) == 0: # already queried earlier as querying happens just after insert
+            return
+        
+        new_normalized, new_terms = self.normalizer.normalize(new_term_params, new_terms)
 
         if len(new_terms) == 0:
-            # if self.debug: # outputing duplicates that were removed
-            #     for t in terms:
-            #         if t not in new_terms:
-            #             print(f"[register_terms] duplicate: {t}")
-            #     pass 
             return
-
-        normalized_terms, normalized_semantics = self.term_index.get_new_normalized(new_terms)
-
-        if len(normalized_terms) == 0:
-            # print("WARN: no normalized terms found during registering terms")
-            # if self.debug: # same semantics alreay represented by some simple terms: 
-            #     for t in new_terms:
-            #         print(f"[register_terms] different repr for: {t}")
+        
+        #deduplication by normalized semantics
+        new_terms, new_normalized = self.term_index.find_unique(new_terms, new_normalized, return_type='entries')
+        if len(new_terms) == 0:
             return
-        # searching for nearby holes 
-        found_holes = self.hole_index.query_closest(normalized_semantics, 
-                                     start_delta=self.start_delta, 
-                                     multiplier=self.multiplier, 
-                                     num_steps=self.num_steps,
-                                     num_closest=self.num_closest)
-        del normalized_semantics
+        
+        term_to_insert, vectors_to_insert = self.term_filter_strategy(new_terms, new_normalized)
 
-        for term, holes in zip(normalized_terms, found_holes):
-            for (l2, hole) in holes:
-                if isinstance(term, Value) and isinstance(hole[1].term, Value):      
-                    # if self.debug:
-                    #     print(f"\tskipping known constant: {hole[0]}@({hole[1].term}, {hole[1].occur})")
-                    continue                
-                self.add_fill_hole(term, hole[0], hole[1], l2)        
+        self.term_index.insert(term_to_insert, vectors_to_insert)
+
+        # adding mew_terms, new_normalized to delayed list
+        # for t, v in zip(new_terms, new_normalized):
+        self.delayed_terms.append((new_terms, new_normalized))
         pass
+       
+    def register_delayed_terms(self) -> list[HoleFilling]:
 
-    def register_holes(self, holes: list[tuple[Term, TermPos]], hole_params: torch.Tensor) -> None:
-        ''' Adds hole and its semantics to index and outputs currently present fillings '''
+        result_fillings = []
+        if len(self.delayed_terms) == 0:
+            return result_fillings
+        
+        for new_terms, new_normalized in self.delayed_terms:
+
+            # searching for nearby holes 
+            found_holes = self.hole_index.query_closest(new_normalized, 
+                                        start_delta=self.start_delta, 
+                                        multiplier=self.multiplier, 
+                                        num_steps=self.num_steps,
+                                        num_closest=self.num_closest)
+            del new_normalized
+
+            for term, holes in zip(new_terms, found_holes):
+                for (l2, hole) in holes:
+                    new_filling = self.fill_holes(term, hole[0], hole[1], l2, use_global_threshold=True)        
+                    if new_filling is not None:
+                        result_fillings.append(new_filling)          
+
+        self.delayed_terms.clear() 
+
+        return result_fillings
+
+    def register_holes(self, holes: list[tuple[Term, TermPos]], 
+                        hole_params: torch.Tensor) -> list[HoleFilling]:
+        ''' Adds new sketches and produces good terms '''
+        result_fillings = []
         if len(holes) == 0:
-            return
+            return result_fillings
         
-        hole_consts = self.semantics.is_const(hole_params)
-
-        const_holes = [] 
-        nonconst_hole_ids = []
-
-        for hid, c in enumerate(hole_consts):
-            if c is not None: # contant fits the hole 
-                const_holes.append((self.syntax.get_const(value=c), holes[hid]))
-            else:
-                nonconst_hole_ids.append(hid)  
-
-        for term, hole in const_holes:
-            self.add_fill_hole(term, hole[0], hole[1], 0.0)
-
-        if len(nonconst_hole_ids) == 0:
-            return
-
-        should_cleanup = False
-        if len(nonconst_hole_ids) < len(holes):
-            holes = [holes[i] for i in nonconst_hole_ids]
-            hole_params = hole_params[nonconst_hole_ids]
-            should_cleanup = True
+        holes, hole_params = self.deduplicate(holes, hole_params)
         
-        new_holes = self.hole_index.insert(holes, hole_params)
-        if should_cleanup:
-            del hole_params
+        const_holes, holes, hole_params = self.split_const_nonconst(holes, hole_params, return_consts=True)
+
+        for hole, term in const_holes:
+            new_filling = self.fill_holes(term, hole[0], hole[1], 0.0)
+            if new_filling is not None:
+                result_fillings.append(new_filling)
+
+        if len(holes) == 0:
+            return result_fillings
         
+        new_holes, new_hole_params = self.hole_index.filter_new(holes, hole_params)
+        if len(new_holes) == 0:          
+            return result_fillings
+        
+        new_normalized, new_holes = self.normalizer.normalize(new_hole_params, new_holes)
+
         if len(new_holes) == 0:
-            # if self.debug: # outputing duplicates that were removed
-            #     for h in holes:
-            #         if h not in new_holes:
-            #             print(f"[register_holes] duplicate: {h[0]}@({h[1].term}, {h[1].occur})")
-            #     pass             
-            return
-
-        normalized_holes, normalized_semantics = self.hole_index.get_new_normalized(new_holes, allow_nonrepr=True)
-
-        if len(normalized_holes) == 0:
-            # print("WARN: no normalized holes found during registering holes")
-            # if self.debug: # same semantics alreay represented by some simple holes: 
-            #     for h in new_holes:
-            #         print(f"[register_holes] different repr for: {h[0]}@({h[1].term}, {h[1].occur})")
-            return
+            return result_fillings
         
-        found_terms = self.term_index.query_closest(normalized_semantics, 
+        # NOTE: should we deduplicate holes by normalized semantics? 
+                #deduplication by normalized semantics
+        new_holes, new_normalized = self.hole_index.find_unique(new_holes, new_normalized, return_type='entries')
+        if len(new_holes) == 0:
+            return result_fillings
+        
+        holes_to_insert, vectors_to_insert = self.hole_filter_strategy(new_holes, new_normalized)
+        
+        self.hole_index.insert(holes_to_insert, vectors_to_insert)        
+
+        # normalized_holes, normalized_semantics = self.hole_index.get_new_normalized(new_holes, allow_nonrepr=True)
+
+        found_terms = self.term_index.query_closest(new_normalized, 
                                      start_delta=self.start_delta, 
                                      multiplier=self.multiplier, 
                                      num_steps=self.num_steps,
                                      num_closest=self.num_closest)
-        del normalized_semantics
-
-        for hole, terms in zip(normalized_holes, found_terms):
+        del new_normalized
+        
+        for hole, terms in zip(new_holes, found_terms):
             for (l2, term) in terms: 
-                if isinstance(term, Value) and isinstance(hole[1].term, Value):      
-                    # if self.debug:
-                    #     print(f"\tskipping known constant: {hole[0]}@({hole[1].term}, {hole[1].occur})")
-                    continue
-                self.add_fill_hole(term, hole[0], hole[1], l2)
-        pass 
+                new_filling = self.fill_holes(term, hole[0], hole[1], l2)
+                if new_filling is not None:
+                    result_fillings.append(new_filling)
+        return result_fillings
 
     # TODO 1: simplify linear combination - DONE 
     # TODO 1.1: Add const optimization to the pipeline
@@ -346,61 +366,10 @@ class TermHolePairs(EvalListener, ServiceBase):
         return (v - self.syntax.one_value.value) < self.small_value
     
     def add_identity(self, v) -> bool:
-        return (v - self.syntax.zero_value.value) < self.small_value
-        
-    def custom_rule_mul_add_one(self, term: Term) -> Term: 
-        ''' Implements custom reduction rule for (mul (add ? 1) k) -> (add (mul ? k) k) 
-            Goal: reduce number of constants while preserving the term size
-            This is reduction at place - no deep transformation
-        '''
-        def arg_arg_shape(arg_arg: Term) -> bool: 
-            if isinstance(arg_arg, Value) and self.mul_identity(arg_arg):
-                return True
-            return False
-        def arg_shape(arg: Term) -> Optional[Term]:
-            if isinstance(arg, Op) and (arg.op_id == "add"):
-                args = arg.get_args()
-                t1 = args[0]
-                t2 = args[1]
-                if arg_arg_shape(t1):
-                    return t2
-                if arg_arg_shape(t2):
-                    return t1
-            return None
-        if isinstance(term, Op) and (term.op_id == "mul"):
-            args = term.get_args()
-            t1 = args[0]
-            t2 = args[1]
-            arg1 = arg_shape(t1)
-            if arg1 is not None:
-                new_mul = self.syntax.get_op("mul", arg1, t2)
-                new_term = self.syntax.get_op("add", new_mul, t2)
-                return new_term
-            arg2 = arg_shape(t2)
-            if arg2 is not None:
-                new_mul = self.syntax.get_op("mul", arg2, t1)
-                new_term = self.syntax.get_op("add", new_mul, t1)
-                return new_term
-        return term
-        
-    # def reduce_all_term_ops_consts(self, term: Term, 
-    #                                 ops: dict[str, Callable] = {"add": lambda vs: sum(v for v in vs), "mul": lambda vs: prod(v for v in vs)},
-    #                                 identities: dict[str, Callable] = {}) -> Term:
-    #     if not isinstance(term, Op):
-    #         return term
-    #     new_term = term
-    #     for op_id, op_reduce in ops.items():
-    #         new_term = self.reduce_consts(new_term, ops, identities)
-    #         if new_term != term: # cannot reduce further at point 
-    #             break 
-    #     if isinstance(new_term, Op):
-    #         new_args = [self.reduce_all_term_ops_consts(arg, ops=ops) for arg in new_term.get_args()]
-    #         final_term = self.syntax.get_op(new_term.op_id, *new_args)
-    #         return final_term        
-    #     return new_term
+        return (v - self.syntax.zero_value.value) < self.small_value        
 
-    # (add t k), (mul k t)
-    def add_fill_hole(self, term: Term, hole_root: Term, hole_pos: TermPos, l2: float) -> Optional[HoleFilling]:
+    def fill_holes(self, term: Term, hole_root: Term, hole_pos: TermPos, l2: float,
+                        use_global_threshold: bool = False) -> Optional[HoleFilling]:
 
         # if self.debug:
         #     print(f"Proposed term: {term} for l2={l2:.2f}, {hole_root}@({hole_pos.term}, {hole_pos.occur})")
@@ -439,6 +408,15 @@ class TermHolePairs(EvalListener, ServiceBase):
         new_term = self.reduce_consts(new_term)
 
         optimized = self.const_optimizer.optimize(new_term, with_loss=True)
+
+        if use_global_threshold and self.fitness.best_term_fitness is not None:
+            original_loss = self.fitness.best_term_fitness.item()
+        else:
+            original_loss = self.fitness.get_fitness(hole_root).item()
+
+        if optimized.loss >= original_loss:
+            return None
+        
         # assert optimized.term is not None, "Const optimizer must return valid term"
 
         # optimized_reduced_term = self.reduce_consts(optimized.term, 
@@ -447,7 +425,9 @@ class TermHolePairs(EvalListener, ServiceBase):
         
         new_filling_id = self.filling_id
         self.filling_id += 1
-        hole_filling = HoleFilling(optimized.loss, l2, 
+        hole_filling = HoleFilling(optimized.loss, 
+                                    original_loss,
+                                    l2, 
                                     new_filling_id,
                                     optimized.term,
                                 #    optimized_reduced_term,
@@ -486,24 +466,11 @@ class TermHolePairs(EvalListener, ServiceBase):
         #     print(f"\t\ttsN=torch.tensor([{', '.join([f'{f:+5.4f}' for f in term_semantics_normalized.tolist()])}])")
         #     print(f"\t\thsN=torch.tensor([{', '.join([f'{f:+5.4f}' for f in hole_semantics_normalized.tolist()])}])")
 
-        if hole_filling.term in self.present_fillings:
-            # if self.debug:
-            #     print(f"\tDuplicate dicarded")
-            return 
-        heappush(self.hole_fillings, hole_filling)      
-        self.present_fillings.add(hole_filling.term)
-
-    def has_fillings(self) -> bool:
-        return len(self.hole_fillings) > 0   
-    
-    def get_best_hole_filling(self, force_pick: bool = False) -> HoleFilling | None:
-        loss_threshold = self.good_filling_loss if self.fitness.best_term_fitness is None else min(self.good_filling_loss, self.fitness.best_term_fitness.item())
-        while (len(self.hole_fillings) > 0) and \
-              (force_pick or \
-               (self.hole_fillings[0].priority < loss_threshold) or \
-               (len(self.hole_fillings) > self.max_filling_queue_size)):
-
-            filling = heappop(self.hole_fillings)
-            self.present_fillings.remove(filling.term)
-            return filling
-        return None
+        # TODO: FINISH THIS
+        # if hole_filling.term in self.present_fillings:
+        #     # if self.debug:
+        #     #     print(f"\tDuplicate dicarded")
+        #     return 
+        # heappush(self.hole_fillings, hole_filling)      
+        # self.present_fillings.add(hole_filling.term)
+        return hole_filling

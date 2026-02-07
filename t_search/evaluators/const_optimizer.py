@@ -8,12 +8,13 @@ from t_search.syntax.syntax import Syntax
 from .optimizer import Optimizer
 
 from .optimization import clean_optim_result, optimize_consts
-from t_search.syntax.term import OptimPoint, Term, Value
+from t_search.syntax.term import Op, OptimPoint, Term, Value
 
 @dataclass(frozen=False)
 class Optimized:
     term: Term
     loss: float | None
+    # start_loss: float | None = None
     
 class ConstOptimizer(Optimizer):
 
@@ -62,13 +63,20 @@ class ConstOptimizer(Optimizer):
         binding = {}
         # values = []        
 
-        def const_to_optim_point(term, *_):
+        def const_to_optim_point(term, _, parent):
             if isinstance(term, Value):
                 point_id = len(optim_points)
                 point = OptimPoint(point_id)
                 optim_points.append(point)
 
-                binding[point] = term.value
+                binding_values = [term.value]
+                # adding identities 
+                if isinstance(parent, Op):
+                    if parent.op_id == "mul": 
+                        binding_values.append(self.syntax.one_value.value)
+                    elif parent.op_id == "add":
+                        binding_values.append(self.syntax.zero_value.value)
+                binding[point] = binding_values
                 # values.append(term)
                 return point
 
@@ -83,7 +91,7 @@ class ConstOptimizer(Optimizer):
 
         # self.best_terms_cache[optim_term] = (term, None)
         if len(binding) == 0: # nothing to optimize
-            return Optimized(term, None)
+            return Optimized(term, None, None)
         
         return (optim_term, binding)
     
@@ -135,7 +143,8 @@ class ConstOptimizer(Optimizer):
         #     return term
 
         best_loss = optim_result.loss[best_loss_id].item()
-        optimized = Optimized(best_term,  best_loss)
+        # start_loss = optim_result.start_loss.item()
+        optimized = Optimized(best_term, best_loss)
 
         self.best_terms_cache[optim_term] = optimized
 

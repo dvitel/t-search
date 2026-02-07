@@ -47,18 +47,21 @@ def replace_pos(pos: TermPos, with_term: Term, builders: Builders) -> Optional[T
 
     return new_term
 
-def replace_path(pos: TermPos, with_terms: list[Term], builders: Builders) -> list[Term]:
-    if len(with_terms) == 0:
+def replace_path(pos: TermPos, new_subterm_fn: Callable, builders: Builders) -> list[Term]:
+    if pos is None:
         return []
+    new_terms = []
+    first_new_term = new_subterm_fn(pos, 0)    
+    new_terms.append(first_new_term)
     cur_pos = pos
-    new_terms = [with_terms[0]]
-    i = 1
     while cur_pos.parent is not None:
         parent = cur_pos.parent.term
         term_i = cur_pos.pos
         args = parent.get_args()
         cur_new_terms = []
         for new_term in new_terms:
+            if new_term is None:
+                continue
             new_parent_term_args = tuple((*args[:term_i], new_term, *args[term_i + 1:]))   
             builder = builders.get_term_builder(parent)
             if builder is None:
@@ -67,9 +70,8 @@ def replace_path(pos: TermPos, with_terms: list[Term], builders: Builders) -> li
             if new_parent_term is None:
                 continue
             cur_new_terms.append(new_parent_term)
-        if i < len(with_terms):
-            cur_new_terms.append(with_terms[i])
-            i += 1
+        new_subterm = new_subterm_fn(cur_pos, len(new_terms))    
+        cur_new_terms.append(new_subterm)
         if len(cur_new_terms) == 0:
             return []
         new_terms = cur_new_terms
@@ -100,7 +102,7 @@ def replace_pos_protected(pos: TermPos, with_term: Term, builders: Builders,
     return new_term
 
 def replace_fn(root: Term,
-            get_replacement_fn: Callable[[Term, int], Optional[Term]],
+            get_replacement_fn: Callable[[Term, int, Term], Optional[Term]],
             builders: Builders) -> Optional[Term]:
 
     occurs = {}
@@ -110,7 +112,7 @@ def replace_fn(root: Term,
 
     def _replace_enter(term: Term, term_i: int, parent: Term):
         cur_occur = occurs.setdefault(term, 0)
-        new_term = get_replacement_fn(term, cur_occur)
+        new_term = get_replacement_fn(term, cur_occur, parent)
         if new_term is not None:
             if isinstance(new_term, Term):
                 arg_stack[-1].append(new_term)

@@ -1,11 +1,7 @@
 {
     "service_definitions": {
-        "identity": {
-            "type": "IdentityNormalizer",
-            "params": {}
-        },
-        "zscore": {
-            "type": "GaussRankNormalizer",
+        "normalizer": {
+            "type": "ZScoreNormalizer",
             "params": {
                 "small_std": 1e-4
             }
@@ -70,8 +66,7 @@
         "term_vector_storage": { 
             "type": "TermVectorStorage", 
             "params": { 
-                "index": {"!ref": "vector_storage"},
-                "normalizer": {"!ref": "identity"}
+                "index": {"!ref": "vector_storage"}
             } 
         },          
         "init": {
@@ -119,16 +114,14 @@
         "term_index": {
             "type": "TermVectorStorage",
             "params": { 
-                "index": {"!ref": "term_index_storage"},
-                "normalizer": {"!ref": "zscore"}
+                "index": {"!ref": "term_index_storage"}                
             } 
         },
         "hole_index_storage": {"type": "RTreeIndex", "params": {}},
         "hole_index": {
             "type": "HoleVectorStorage",
             "params": { 
-                "index": {"!ref": "hole_index_storage"},
-                "normalizer": {"!ref": "zscore"}
+                "index": {"!ref": "hole_index_storage"}
             } 
         },
         "term_hole_pairs": {
@@ -139,6 +132,9 @@
                 "term_index": {"!ref": "term_index"},
                 "hole_index": {"!ref": "hole_index"},
                 "const_optimizer": {"!ref": "const_optimizer"},
+                "normalizer": {"!ref": "normalizer"},
+                "term_filter_strategy": "term_filter_accept_all",
+                "hole_filter_strategy": "hole_filter_accept_all",
                 "start_delta": 1,
                 "multiplier": 10,
                 "num_steps": 3,
@@ -168,7 +164,7 @@
                 "fitness": {"!ref": "fitness"},
                 "semantics": {"!ref": "semantics"},
                 "evaluator": {"!ref": "evaluator"},
-                "position_strategy": "shallow_to_deep_position_order",
+                "position_strategy": "rand_position_order",
                 "num_starts": 30,
                 "range_delta": 0.1,
                 "max_evals": 30,
@@ -178,8 +174,7 @@
                 "min_loss_rtol": 0.95,
                 "with_tabu": true,
                 "max_hole_bindings": 1,
-                "num_children": 100,
-                "loss_threshold": 0.001
+                "num_children": 100
             }
         },
         "const_optimizer": {
@@ -191,8 +186,8 @@
                 "num_starts": 1000,
                 "max_evals": 30,
                 "lr": 0.1,
-                "tolerance_change": 0.0000001,
-                "tolerance_grad": 0.000001
+                "tolerance_change": 0.0000000001,
+                "tolerance_grad": 0.000000001
             }
         },
         "const_optim": {

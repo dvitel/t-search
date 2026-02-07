@@ -390,12 +390,10 @@ class Syntax(ServiceBase):
     #     children = replace_pos(pos, new_subterm, self.builders)
     #     return children
     
-    def replace_path_unvalidated(self, term: Term, pos: TermPos, new_subterms: list[Term]) -> list[Term]:
-        if pos is None or len(new_subterms) == 0:
-            return []
-        return replace_path(pos, new_subterms, self.builders)
+    def replace_path_unvalidated(self, term: Term, pos: TermPos, new_subterm_fn: Callable) -> list[Term]:
+        return replace_path(pos, new_subterm_fn, self.builders)
     
-    def replace_fn(self, term: Term, get_replacement_fn: Callable[[Term, int], Optional[Term]]) -> Term:
+    def replace_fn(self, term: Term, get_replacement_fn: Callable[[Term, int, Term], Optional[Term]]) -> Term:
         replaced_term = replace_fn(term, get_replacement_fn, self.builders)
         return replaced_term
 

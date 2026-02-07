@@ -59,6 +59,52 @@ def find_pred(store: torch.Tensor, query: torch.Tensor,
     # del ids 
     return ids
 
+def find_unique(vectors: torch.Tensor, rtol: float, atol: float,
+                store_batch_size = 1024, query_batch_size = 256, dim_batch_size = 8) -> tuple[torch.Tensor, torch.Tensor]: 
+
+    if vectors.shape[0] > 1:
+
+        # unique_vectors, unique_indices = torch.unique(vectors, dim=0, return_inverse=True)
+        close_mask = find_pred(vectors, vectors,
+                        lambda s, q: torch.isclose(s, q, rtol=rtol, atol=atol), 
+                        store_batch_size=store_batch_size, query_batch_size=query_batch_size, 
+                        dim_batch_size=dim_batch_size,
+                        return_shape="mask") #(n, n) mask of matches
+        
+        # Step 2: For each row, find its representative (first close match)
+        # Use argmax to find first True in each row
+        representative_indices = torch.argmax(close_mask.long(), dim=1)  # (n,)
+        # representative_indices[i] = index of first vector close to vectors[i]
+        
+        # Step 3: Find unique representatives
+        unique_ids = torch.unique(representative_indices)  # Unique representative indices
+        unique_vectors = vectors[unique_ids]
+        
+        # Step 4: Build mapping from representative to position in unique_vectors
+        rep_to_unique_pos = {rep.item(): i for i, rep in enumerate(unique_ids)}
+        
+        # Step 5: Map each original vector to its position in unique_vectors
+        unique_indices = torch.tensor(
+            [rep_to_unique_pos[rep.item()] for rep in representative_indices],
+            dtype=torch.long,
+            device=vectors.device
+        )  # (n,) - maps each vector to position in unique_vectors
+    
+
+        # pos_ids = [] 
+        # unique_indices = []
+        # for i in range(close_mask.shape[0]):
+        #     # we pick only last 
+        #     close_ids = torch.where(close_mask[i, i+1:])[0]
+        #     if len(close_ids) == 0: # unique 
+        #         pos_ids.append(i)
+    else:
+        unique_vectors = vectors.clone()
+        unique_indices = torch.zeros((vectors.shape[0],), dtype=torch.long, device=vectors.device)  
+
+    return unique_vectors, unique_indices
+
+
 def find_close(store: torch.Tensor, query: torch.Tensor, rtol=1e-5, atol=1e-4,
                     store_batch_size = 1024, query_batch_size = 128, dim_batch_size = 64,
                     return_shape: Literal["mask", "ids"] = "ids") -> torch.Tensor:
@@ -317,6 +363,15 @@ class VectorStorage(ServiceBase):
                                dim_batch_size=self.dim_batch_size)
         del selection
         return remap_ids(found_ids, ids)
+    
+    def find_unique(self, vectors: torch.Tensor) -> tuple[torch.Tensor, list[int]]:
+        unique_vectors, unique_indices = find_unique(vectors, rtol=self.rtol, atol=self.atol,
+                                                    store_batch_size=self.store_batch_size, 
+                                                    query_batch_size=self.query_batch_size, 
+                                                    dim_batch_size=self.dim_batch_size)
+        unique_indices_list = unique_indices.tolist()
+        del unique_indices
+        return unique_vectors, unique_indices_list
 
     def find_closest(self, ids: None | tuple[int, int] | list[int], q: torch.Tensor,
                         obj_ids: torch.Tensor | None = None) -> list[int]:
@@ -430,48 +485,10 @@ class SpatialIndex(VectorStorage):
         ''' Insert vectors into index.
         '''
 
-        if vectors.shape[0] > 1:
-
-            # unique_vectors, unique_indices = torch.unique(vectors, dim=0, return_inverse=True)
-            close_mask = find_pred(vectors, vectors,
-                            lambda s, q: torch.isclose(s, q, rtol=self.rtol, atol=self.atol), 
-                            store_batch_size=self.store_batch_size, query_batch_size=self.query_batch_size, 
-                            dim_batch_size=self.dim_batch_size,
-                            return_shape="mask") #(n, n) mask of matches
-            
-            # Step 2: For each row, find its representative (first close match)
-            # Use argmax to find first True in each row
-            representative_indices = torch.argmax(close_mask.long(), dim=1)  # (n,)
-            # representative_indices[i] = index of first vector close to vectors[i]
-            
-            # Step 3: Find unique representatives
-            unique_ids = torch.unique(representative_indices)  # Unique representative indices
-            unique_vectors = vectors[unique_ids]
-            
-            # Step 4: Build mapping from representative to position in unique_vectors
-            rep_to_unique_pos = {rep.item(): i for i, rep in enumerate(unique_ids)}
-            
-            # Step 5: Map each original vector to its position in unique_vectors
-            unique_indices = torch.tensor(
-                [rep_to_unique_pos[rep.item()] for rep in representative_indices],
-                dtype=torch.long,
-                device=vectors.device
-            )  # (n,) - maps each vector to position in unique_vectors
-        
-
-            # pos_ids = [] 
-            # unique_indices = []
-            # for i in range(close_mask.shape[0]):
-            #     # we pick only last 
-            #     close_ids = torch.where(close_mask[i, i+1:])[0]
-            #     if len(close_ids) == 0: # unique 
-            #         pos_ids.append(i)
-        else:
-            unique_vectors = vectors.clone()
-            unique_indices = torch.zeros((vectors.shape[0],), dtype=torch.long, device=vectors.device)  
+        unique_vectors, unique_indices = self.find_unique(vectors)
 
         found_ids = self._insert_distinct(unique_vectors)
-        ids = [found_ids[unique_id] for unique_id in unique_indices.tolist()]
+        ids = [found_ids[unique_id] for unique_id in unique_indices]
         del unique_vectors, unique_indices
         return ids
 

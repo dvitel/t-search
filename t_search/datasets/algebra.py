@@ -8,6 +8,8 @@ from t_search.datasets.sampling import get_interval_grid, get_rand_interval_poin
 # (add (add (mul 1.0000 (mul (mul x0 x0) x0)) x0) (mul x0 x0))
 # x * x + x + 1.0 * x * x * x
 # x*x + x for 10 tests - normalize loss_threshold by target variance
+# '(mul (add ?1 (mul ?0 (mul x0 x0))) (add ?3 (mul ?2 x0)))'
+# (k * x * x + b) * (k*x + b) (x*x + 1) * (x + 1)
 test_0 = Benchmark("test_0", lambda x: (((x + 1)*x + 1)*x + 1), partial(get_rand_interval_points, transpose=True, pick_rand_grid_points=False), {"num_samples": 20, "ranges": [(-1.0, 1.0)]})
 
 koza_1 = Benchmark(

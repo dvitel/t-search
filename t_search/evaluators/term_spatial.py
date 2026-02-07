@@ -1,7 +1,7 @@
 ''' Adds syntax to plain vector storage '''
 
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, Optional, Protocol, Sequence
+from typing import Any, Callable, Generic, Literal, Optional, Protocol, Sequence
 from pyparsing import TypeVar
 import torch
 
@@ -210,12 +210,11 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
 
     def __init__(self, *, 
                  term_order: Callable[[TTermPos], Any],
-                 normalizer: Normalizer[TTermPos],
+                #  normalizer: Normalizer[TTermPos],
                  add_metrics: Callable,
                  index: VectorStorage):
         self.term_order = term_order
         self.index = index
-        self.normalizer: Normalizer[TTermPos] = normalizer
         self.sid_to_term: dict[int, TTermPos] = {} # stores only one representative term per semantics id
         self.term_to_sid: dict[TTermPos, int] = {}
         self.invalid_terms: dict[TTermPos, torch.Tensor] = {}
@@ -232,76 +231,108 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
     def is_invalid(self, term: TTermPos) -> bool:
         return term in self.invalid_terms
     
-    def get_invalid_semantics(self, term: TTermPos, denormalize: bool = True) -> Optional[torch.Tensor]:
+    def get_invalid_semantics(self, term: TTermPos) -> Optional[torch.Tensor]:
         vector = self.invalid_terms.get(term, None)
-        if vector is not None and denormalize:
-            vector = self.normalizer.denormalize(vector.unsqueeze(0), [term]).squeeze(0)
         return vector
 
-    def get_semantics_for_term(self, term: TTermPos, denormalize: bool = True) -> Optional[torch.Tensor]:
+    def get_semantics_for_term(self, term: TTermPos) -> Optional[torch.Tensor]:
         if term not in self.term_to_sid:
-            return self.get_invalid_semantics(term, denormalize=denormalize)
+            return self.get_invalid_semantics(term)
         sid = self.term_to_sid[term]
         vector = self.index.get_vectors(sid)
-        if denormalize:
-            vector = self.normalizer.denormalize(vector.unsqueeze(0), [term]).squeeze(0)
         return vector
     
-    def get_new_normalized(self, terms: list[TTermPos], allow_nonrepr: bool = False) -> tuple[list[Term], torch.Tensor]:
-        sids: list[int] = []
-        normalized_terms: list[TTermPos] = []
-        present_reprs = set()
-        for term in terms:
-            if term in self.term_to_sid:
-                term_sid = self.term_to_sid[term]
-                if allow_nonrepr:
-                    repr_term = term
-                else:
-                    repr_term = self.sid_to_term[term_sid]
-                # NOTE: (add ?0 1) has same semantics as (neg ?0) and as ?0. Holes are subjects to constraints 
-                #        therefore, holes should not be filtered by repr (neg ?0) can be blocked
-                if (repr_term == term) and (repr_term not in present_reprs):
-                    # NOTE: only NEW and BEST representative is returned
-                    present_reprs.add(repr_term)
-                    normalized_terms.append(repr_term)
-                    sids.append(term_sid)
-        if len(sids) > 0:
-            vectors = self.index.get_vectors(sids)
-            return normalized_terms, vectors
-        return [], None
+    # def get_new_normalized(self, terms: list[TTermPos], allow_nonrepr: bool = False) -> tuple[list[Term], torch.Tensor]:
+    #     sids: list[int] = []
+    #     normalized_terms: list[TTermPos] = []
+    #     present_reprs = set()
+    #     for term in terms:
+    #         if term in self.term_to_sid:
+    #             term_sid = self.term_to_sid[term]
+    #             if allow_nonrepr:
+    #                 repr_term = term
+    #             else:
+    #                 repr_term = self.sid_to_term[term_sid]
+    #             # NOTE: (add ?0 1) has same semantics as (neg ?0) and as ?0. Holes are subjects to constraints 
+    #             #        therefore, holes should not be filtered by repr (neg ?0) can be blocked
+    #             if (repr_term == term) and (repr_term not in present_reprs):
+    #                 # NOTE: only NEW and BEST representative is returned
+    #                 present_reprs.add(repr_term)
+    #                 normalized_terms.append(repr_term)
+    #                 sids.append(term_sid)
+    #     if len(sids) > 0:
+    #         vectors = self.index.get_vectors(sids)
+    #         return normalized_terms, vectors
+    #     return [], None
     
-    def get_term_for_semantics(self, vector: torch.Tensor) -> Optional[TTermPos]:
-        mapped_vectors, _ = self.normalizer.normalize(vector.unsqueeze(0), terms=[])
-        if len(mapped_vectors) == 0:
-            return None
-        sid, *_ = self.index.query_points(mapped_vectors)
-        if sid == -1:
-            return None
-        term = self.sid_to_term.get(sid, None)
-        return term
+    def get_terms_for_semantics(self, vectors: torch.Tensor) -> list[TTermPos | None]:
+        sids = self.index.query_points(vectors)
+        terms = [self.sid_to_term.get(sid, None) for sid in sids]
+        return terms
 
-    def insert(self, terms: list[TTermPos], vectors: torch.Tensor) -> list[TTermPos]:
-        ''' Insert new terms and their vectors into storage, outputs inserted terms '''
+    def filter_new(self, terms: list[TTermPos], vectors: torch.Tensor | None = None) -> list[TTermPos] | tuple[list[TTermPos], torch.Tensor | None]: 
+        ''' Filters terms and semantics to leave only nonpresent yet terms '''
         new_term_ids = [i for i, term in enumerate(terms) if term not in self.term_to_sid and term not in self.invalid_terms]
         if len(new_term_ids) == 0:
-            return []
-        require_cleanup = False
+            if vectors is not None:
+                return [], None
+            return []        
         if len(new_term_ids) < len(terms):
             terms = [terms[i] for i in new_term_ids]
-            vectors = vectors[new_term_ids]
-            require_cleanup = True
-        mapped_vectors, terms = self.normalizer.normalize(vectors, terms)
-        if len(mapped_vectors) == 0: # all filtered
-            return []
-        finite_all_mask = torch.isfinite(mapped_vectors)
+            if vectors is not None:
+                vectors = vectors[new_term_ids]
+        if vectors is not None:
+            return terms, vectors
+        return terms
+    
+    def find_unique(self, terms: list[Term], vectors: torch.Tensor, return_type: Literal["ids", "entries"] = "ids") -> list[int] | tuple[list[Term], torch.Tensor]:
+        unique_vectors, unique_ids = self.index.find_unique(vectors)
+        groups = {}
+        for i in range(len(terms)):
+            unique_id = unique_ids[i] 
+            prev_i = groups.get(unique_id, None)
+            if (prev_i is None) or (self.term_order(terms[i]) < self.term_order(terms[prev_i])):
+                groups[unique_id] = i
+        found_sids = self.index.query_points(unique_vectors)
+        found_reprs = [self.sid_to_term.get(sid, None) for sid in found_sids]
+        filtered_ids = []
+        for unique_id, i in groups.items():
+            found_repr = found_reprs[unique_id]
+            if (found_repr is None) or (self.term_order(terms[i]) < self.term_order(found_repr)):
+                filtered_ids.append(i)
+        if return_type == "ids":
+            return filtered_ids
+        if len(filtered_ids) == 0:
+            return [], None
+        if len(filtered_ids) < len(terms):
+            terms = [terms[i] for i in filtered_ids]
+            new_vectors = vectors[filtered_ids]
+            del vectors
+            vectors = new_vectors
+        return terms, vectors
+
+    def insert(self, terms: list[TTermPos], vectors: torch.Tensor) -> None:
+        ''' Insert terms and their vectors into storage, outputs inserted terms '''
+        # new_term_ids = [i for i, term in enumerate(terms) if term not in self.term_to_sid and term not in self.invalid_terms]
+        # if len(new_term_ids) == 0:
+        #     return []
+        # require_cleanup = False
+        # if len(new_term_ids) < len(terms):
+        #     terms = [terms[i] for i in new_term_ids]
+        #     vectors = vectors[new_term_ids]
+        #     require_cleanup = True
+        # mapped_vectors, terms = self.normalizer.normalize(vectors, terms)
+        if len(terms) == 0: # all filtered
+            return
+        finite_all_mask = torch.isfinite(vectors)
         finite_mask = torch.all(finite_all_mask, dim=1)
         invalid_ids, = torch.where(~finite_mask)
         for iid in invalid_ids.tolist():
             self.invalid_terms[terms[iid]] = vectors[iid].clone()
         finite_ids, = torch.where(finite_mask)
         finite_terms = [terms[i] for i in finite_ids.tolist()]
-        finite_mapped_vectors = mapped_vectors[finite_ids]
-        del mapped_vectors, finite_all_mask, finite_mask, finite_ids, invalid_ids
+        finite_mapped_vectors = vectors[finite_ids]
+        del finite_all_mask, finite_mask, finite_ids, invalid_ids
         ids = self.index.insert(finite_mapped_vectors)
         del finite_mapped_vectors
         for term, sid in zip(finite_terms, ids):
@@ -310,9 +341,7 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
             elif self.term_order(term) < self.term_order(self.sid_to_term[sid]):
                 self.sid_to_term[sid] = term
             self.term_to_sid[term] = sid
-        if require_cleanup:
-            del vectors
-        return terms
+        return
     
     def get_repr_terms(self) -> list[TTermPos]:
         repr_terms = [term for term in self.sid_to_term.values()]

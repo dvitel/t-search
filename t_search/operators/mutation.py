@@ -1,4 +1,5 @@
 ''' Base interface for mutation operators. '''
+from math import inf
 from typing import Callable, Generator, Optional, Sequence
 
 import numpy as np
@@ -15,7 +16,7 @@ class TermMutation(Operator):
                  syntax: Syntax,
                  rnd: np.random.Generator, 
                  add_metrics: Callable,
-                 rate : float = 1.0,
+                 rate : float | None = 1.0,
                  debug: bool = False):
         self.rate: float = rate
         self.cur_parents: Sequence[Term] = []
@@ -24,16 +25,17 @@ class TermMutation(Operator):
         self.syntax = syntax
         self.debug = debug
 
-    def mutate_term(self, term: Term) -> Term | None:
+    def mutate_term(self, term: Term) -> Term | None | list[Term]:
         ''' Abstract. Mutates one term in the context of parents and already generated children ''' 
         pass # to be implemented in subclasses
 
     def select_terms(self, population: Sequence[Term]) -> Generator[Term, None, None]:
-        ''' Produces the order of terms to try. Default: random shuffle '''
-        size = len(population)
-        permuted_term_ids = self.rnd.permutation(size) 
-        for term_id in permuted_term_ids:
-            yield population[term_id]
+        ''' Produces the order of terms to try. Default: sequential order. '''
+        # permuted_term_ids = self.rnd.permutation(len(population)) 
+        # for term_id in permuted_term_ids:
+        #     yield population[term_id]
+        for term in population:
+            yield term
 
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]: 
         ''' 
@@ -48,7 +50,7 @@ class TermMutation(Operator):
         repr_cnt = 0    
 
         size = len(population)
-        mutated_size = int(self.rate * size)
+        mutated_size = inf if self.rate is None else int(self.rate * size)
         children = [] 
 
         for term in self.select_terms(population):
@@ -57,7 +59,11 @@ class TermMutation(Operator):
                 repr_cnt += 1
             else: 
                 child = self.mutate_term(term)
-                if child is not None:
+                if isinstance(child, list):
+                    success += 1 
+                    children.extend(child)
+                    mutated_size -= len(child)
+                elif child is not None:
                     success += 1
                     children.append(child)
                     mutated_size -= 1
@@ -87,7 +93,7 @@ class PositionMutation(TermMutation):
         ''' Abstract. Mutates term at the given position. '''
         pass # to be implemented in subclasses    
 
-    def mutate_term(self, term: Term) -> Term | None:
+    def mutate_term(self, term: Term) -> Term | None | list[Term]:
         ''' Mutates one term in the context of parents and already generated children ''' 
         
         positions = self.select_positions(term)

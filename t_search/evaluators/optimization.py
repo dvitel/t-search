@@ -16,9 +16,11 @@ class LRAdjust(Exception):
 
 @dataclass(frozen=False)
 class OptimResult:
+    # start_loss: torch.Tensor
     loss: torch.Tensor # one loss per one test and one start (num_starts, num_tests)
     binding: dict[OptimPoint, torch.Tensor] # per pos of interest, binding (num_starts, num_tests)
     additional_binding: dict[tuple[Term, int], torch.Tensor] = field(default_factory=dict)
+    # is_improved: torch.Tensor | None = None
     def agg_loss(self):
         return self.loss.mean(dim=-1)  # (num_starts,) or (1,)
 
@@ -40,7 +42,7 @@ def optimize(
     tolerance_grad: float = 1e-3,
     torch_gen: torch.Generator | None = None,
     # debug: bool = False
-    # loss_threshold: float = 0.1,
+    improve_threshold: float = 1e-3,
 ) -> OptimResult:
     # global optim_id
     
@@ -104,6 +106,7 @@ def optimize(
     )
 
     best_loss = None # torch.full((num_starts, start_range.shape[0]), torch.inf, dtype=start_range.dtype, device=start_range.device)
+    # start_loss = None
     best_binding = {k:v.detach().clone() for k, v in binding.items()}
     best_additional_binding = {k: None for k in additional_binding}
 
@@ -139,6 +142,8 @@ def optimize(
         # if not torch.all(torch.isfinite(fixed_loss)):
         #     raise LRAdjust(None)
 
+        # if start_loss is None:
+        #     start_loss = fixed_loss[0:1].detach().clone()
         if best_loss is None:
             best_loss = torch.full_like(fixed_loss, torch.inf)
         where_better = fixed_loss < best_loss
@@ -178,6 +183,26 @@ def optimize(
         del p.grad
         del p
 
+    # loss_diff = start_loss - best_loss
+
+    # is_improved = torch.all(loss_diff >= 0, dim=-1) & torch.any(loss_diff > improve_threshold, dim=-1)
+
+    # if not torch.any(is_improved): # no improvement for any start
+    #     del best_loss, best_binding, best_additional_binding
+    #     return None
+    
+    # improved_count = is_improved.sum().item()
+    # if improved_count < num_starts:
+    #     improved_best_loss = best_loss[is_improved]
+    #     improved_best_binding = {k: v[is_improved] for k, v in best_binding.items()}
+    #     improved_best_additional_binding = {k: v[is_improved] for k, v in best_additional_binding.items()}
+    #     del best_loss, best_binding, best_additional_binding
+    # else:
+    #     improved_best_loss = best_loss
+    #     improved_best_binding = best_binding
+    #     improved_best_additional_binding = best_additional_binding
+
+    # res = OptimResult(start_loss, improved_best_loss, improved_best_binding, improved_best_additional_binding)
     res = OptimResult(best_loss, best_binding, best_additional_binding)
 
     return res
@@ -185,7 +210,7 @@ def optimize(
 def optimize_consts(
     optim_term: Term,
     const_range: torch.Tensor,
-    start_binding: dict[OptimPoint, torch.Tensor],
+    start_binding: dict[OptimPoint, list[torch.Tensor]],
     loss_fn_builder: Callable,
     *,
     num_starts: int = 10,
@@ -200,20 +225,21 @@ def optimize_consts(
 
     params = []
     binding = {}
-    for optim_point, optim_value in start_binding.items():
+    for optim_point, optim_values in start_binding.items():
         value = torch.zeros(
             (num_starts, 1), 
-            dtype=optim_value.dtype, device=optim_value.device
+            dtype=const_range.dtype, device=const_range.device
         )
-        value[0] = optim_value
+        for i, optim_value in enumerate(optim_values):
+            value[i] = optim_value
 
-        if num_starts > 1:
+        if num_starts > len(optim_values):
             rand_points = get_rand_interval_points(
-                num_starts-1, const_range,
+                num_starts-len(optim_values), const_range,
                 rand_deltas=True, generator=torch_gen,
                 transpose=True, pick_rand_grid_points=False
-            ) # (1, num_starts-1)
-            value[1:, 0] = rand_points[0]
+            ) # (1, num_starts-len(optim_values))
+            value[len(optim_values):, 0] = rand_points[0]
                 
         value.requires_grad_(True)
         binding[optim_point] = value
@@ -236,11 +262,12 @@ def optimize_consts(
         # max_eval = 1.5 * num_steps,
         tolerance_change=tolerance_change,
         tolerance_grad=tolerance_grad,
-        # history_size=100,
+        history_size=100,
         line_search_fn="strong_wolfe",
     )
 
     best_loss = None # torch.full((num_starts, start_range.shape[0]), torch.inf, dtype=start_range.dtype, device=start_range.device)
+    # start_loss = None
     best_binding = {k:v.detach().clone() for k, v in binding.items()}
 
     # iter_loss = []
@@ -278,6 +305,8 @@ def optimize_consts(
 
         if best_loss is None:
             best_loss = torch.full_like(mean_loss, torch.inf)
+        # if start_loss is None:
+        #     start_loss = mean_loss[0:1].detach().clone()
         where_better = mean_loss < best_loss
         best_loss.data[where_better] = mean_loss[where_better]
         for k, v in binding.items():
@@ -307,6 +336,7 @@ def optimize_consts(
         del p.grad
         del p
 
+    # res = OptimResult(start_loss, best_loss, best_binding)
     res = OptimResult(best_loss, best_binding)
 
     return res
@@ -322,6 +352,7 @@ def gather_optim_pos(optim_result: OptimResult, pos: torch.Tensor) -> OptimResul
     ''' pos has shape (k, num_tests) - specicify what loss and binding to collect 
         k is frequently 1
     '''
+    # start_loss = optim_result.start_loss.clone()
     best_loss = torch.gather(optim_result.loss, dim=0, index=pos) # (k, num_tests)
     best_binding = {}    
     for k, v in optim_result.binding.items():
@@ -455,6 +486,16 @@ def threshold_optim_result_(optim_result: OptimResult,
     '''
     mask = optim_result.loss >= loss_threshold
     optim_result.loss[mask] = torch.inf
+    return optim_result
+
+def total_threshold_optim_result_(optim_result: OptimResult,
+                           loss_threshold: float = 1e-3) -> OptimResult:
+    '''
+    Sets loss above threshold to torch.inf in optim_result in-place
+    '''
+    loss_per_start = optim_result.loss.mean(dim=-1)
+    mask = loss_per_start >= loss_threshold
+    optim_result.loss[mask, :] = torch.inf
     return optim_result
 
 def get_slowest_funs(optim_result: OptimResult, 
