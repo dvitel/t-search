@@ -15,7 +15,7 @@ from t_search.syntax.str import parse_const_skeleton_to_term, parse_term
 from t_search.syntax.term import Op, OptimPoint, Term, TermPos, Value, Variable
 from t_search.syntax.traverse import postorder_map
 from t_search.syntax.unification import UnifyBindings, match_root
-from t_search.syntax.validation import get_counts, get_pos_constraints, get_pos_sibling_counts, is_valid
+from t_search.syntax.validation import get_counts, get_pos_constraints, get_pos_sibling_counts, validate_term_tree
 from t_search.utils import GLOBAL_RNG
 
 
@@ -405,8 +405,9 @@ class Syntax(ServiceBase):
         # eval_valid = not self.invalid_terms.is_invalid(term)
         # if not eval_valid:
         #     return False
-        term_is_valid = is_valid(term, builders=self.builders, counts_cache=self.counts_cache)
-        if not term_is_valid:
+        term_is_valid = validate_term_tree(term, builders=self.builders, counts_cache=self.counts_cache,
+                                            context_cache=self.pos_context_cache.setdefault(term, {}))                                            
+        if term_is_valid is None:
             return False
         pattern_valid = self._validate_patterns(term)
         return pattern_valid

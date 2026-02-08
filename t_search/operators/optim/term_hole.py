@@ -40,7 +40,7 @@ class HoleFilling:
         return self.__str__()
     
     def __str__(self):
-        return f"HF[{self.id:04d}](loss={self.priority:.3f}←{self.start_loss:4.3f} l2={self.l2:.2f}\n\t\t{self.term}\n\t\t{self.hole_root}@({self.hole_pos.term}, {self.hole_pos.occur}) with {self.found_term})"
+        return f"HF[{self.id:04d}](loss={self.priority:.7f}←{self.start_loss:8.7f} l2={self.l2:.2f}\n\t\t{self.term}\n\t\t{self.hole_root}@({self.hole_pos.term}, {self.hole_pos.occur}) with {self.found_term})"
 
 class TermHolePairs(EvalListener, ServiceBase):
     ''' For new terms search for sketches, for new sketches search for terms.  '''

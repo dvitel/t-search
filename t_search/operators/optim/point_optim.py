@@ -53,6 +53,7 @@ class PointOptim(PositionMutation, ServiceBase):
                  evaluator: Evaluator,
                  torch_gen: torch.Generator,
                  get_cur_gen: Callable,
+                 remap_provider: Any, 
                  position_strategy: Literal["rand_position_order", "shallow_to_deep_position_order", "best_grad_position_order"] = "rand_position_order",
                  num_starts: int = 10,
                  range_delta: float = 0.1,
@@ -103,6 +104,7 @@ class PointOptim(PositionMutation, ServiceBase):
         self.optim_point = OptimPoint(0)
         self.lineage: dict[Term, HoleFilling] = {} # child to parent map for backtracking
         self.term_positions: dict[Term, list[PrioritizedTermPos]] = {} # cached position priorities for terms
+        self.remap_provider = remap_provider
 
         #TODO
         # 1. Metrics - DONE
@@ -382,9 +384,14 @@ class PointOptim(PositionMutation, ServiceBase):
             yield optim_state
             # heappush(self.pos_queue, hole_pos)
 
-        if term in self.lineage: # we finished with term positions, backtrack to parent 
-            parent_filling = self.lineage[term]
-            yield from self.select_positions(parent_filling.hole_root)
+        if term in self.remap_provider.remap:
+            term_key = self.remap_provider.remap[term]
+        else:
+            term_key = term
+        if term_key in self.lineage: # we finished with term positions, backtrack to parent 
+            parent_filling = self.lineage[term_key]
+            if parent_filling.hole_root != term:
+                yield from self.select_positions(parent_filling.hole_root)
 
         # self.added_terms.add(term)
         return
@@ -415,7 +422,7 @@ class PointOptim(PositionMutation, ServiceBase):
         
         return fillings 
     
-    def __call__(self, population):
+    def __call__(self, population):        
         delayed_fillings = self.term_hole_pairs.register_delayed_terms()
         new_fillings = super().__call__(population)
         new_fillings = [f for f in new_fillings if isinstance(f, HoleFilling)]

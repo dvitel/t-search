@@ -120,23 +120,27 @@ def get_pos_constraints(pos: TermPos, builders: Builders, counts_cache: dict[Ter
 
     return res_context
 
-def is_valid(root: Term, *, builders: Builders, counts_cache: dict[Term, np.ndarray],                        
-                        root_context: TermGenContext | None = None) -> bool:
+def is_valid_at_pos(term: Term, *, builders: Builders, counts_cache: dict[Term, np.ndarray],                        
+                        pos_context: TermGenContext) -> bool:
+    ''' Checks local validity only according to the specified root_context. 
+        Note: to check validity of whole term, you may call this recoursivelly, however,
+        better option is use-case dependant, for one point mutation, faster is to check the replacement term in the context of pos 
+    '''
     
-    if root_context is None:
-        root_context = builders.default_gen_context
+    # if pos_context is None:
+    #     pos_context = builders.default_gen_context
                 
-    if root_context.arg_limits is not None:
+    if pos_context.arg_limits is not None:
         child_count = builders.zero.copy()
-        builder = builders.get_term_builder(root)
+        builder = builders.get_term_builder(term)
         if builder is not None:
             child_count[builder.id] += 1
         
-        if np.any(child_count > root_context.arg_limits):
+        if np.any(child_count > pos_context.arg_limits):
             return False
         
-    counts = get_counts(root, builders, counts_cache)
-    if np.any(counts > root_context.max_counts) or np.any(counts < root_context.min_counts):
+    counts = get_counts(term, builders, counts_cache)
+    if np.any(counts > pos_context.max_counts) or np.any(counts < pos_context.min_counts):
         return False
 
     return True

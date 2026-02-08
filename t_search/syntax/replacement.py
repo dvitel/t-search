@@ -3,7 +3,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from .validation import get_pos_constraints, is_valid
+from .validation import get_pos_constraints, is_valid_at_pos
 
 from .stats import get_depth
 from .generation import Builders, TermGenContext
@@ -92,9 +92,9 @@ def replace_pos_protected(pos: TermPos, with_term: Term, builders: Builders,
 
     pos_context = get_pos_constraints(pos, builders, counts_cache, pos_context_cache)
 
-    if not is_valid(with_term, builders=builders, 
+    if not is_valid_at_pos(with_term, builders=builders, 
                             counts_cache=counts_cache,
-                            root_context=pos_context):
+                            pos_context=pos_context):
         return None
 
     new_term = replace_pos(pos, with_term, builders)

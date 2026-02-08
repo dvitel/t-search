@@ -13,10 +13,13 @@ class SReduce(TermMutation):
     def __init__(self, *, 
                     semantics: Semantics,
                     evaluator: Evaluator,
+                    store_remap: bool = False,
                     **kwargs):
         super().__init__(**kwargs)
         self.semantics = semantics
         self.evaluator = evaluator
+        self.store_remap = store_remap
+        self.remap = {}
 
     def mutate_term(self, term) -> Term | None:
         def replace_with_repr(term: Term, *_):
@@ -37,7 +40,16 @@ class SReduce(TermMutation):
             self.evaluator.eval(to_reeval)
         # if self.debug:
         #     print("SReduce validation")                    
-        filtered = [t for t in new_pop if self.syntax.is_valid(t)]
+        filtered = []
+        for t, old_t in zip(new_pop, population):
+            if t != old_t: # reduced, check validity 
+                if self.syntax.is_valid(t):
+                    filtered.append(t)
+                    if self.store_remap:
+                        self.remap[t] = old_t                
+                    continue
+            filtered.append(old_t)
+            
         # if self.debug:
         #     print("SReduce end")        
         return filtered
