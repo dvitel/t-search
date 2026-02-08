@@ -24,20 +24,20 @@ class SReduce(TermMutation):
             if repr_term is not None and repr_term != term:
                 return repr_term
         simplified = self.syntax.replace_fn(term, replace_with_repr)
-        if self.debug and simplified != term:
-            print(f"SRed:\n\t{term} --->\n\t{simplified}")
+        # if self.debug and simplified != term:
+        #     print(f"SRed:\n\t{term} --->\n\t{simplified}")
         return simplified
     
     def __call__(self, population):
-        if self.debug:
-            print("SReduce start")
+        # if self.debug:
+        #     print("SReduce start")
         new_pop = super().__call__(population)
         to_reeval = [ t for t in new_pop if self.semantics.get_binding(t) is None ]
         if len(to_reeval) > 0:
             self.evaluator.eval(to_reeval)
-        if self.debug:
-            print("SReduce validation")                    
+        # if self.debug:
+        #     print("SReduce validation")                    
         filtered = [t for t in new_pop if self.syntax.is_valid(t)]
-        if self.debug:
-            print("SReduce end")        
+        # if self.debug:
+        #     print("SReduce end")        
         return filtered

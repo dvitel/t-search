@@ -128,9 +128,8 @@ class PointOptim(PositionMutation, ServiceBase):
 
     def best_grad_position_order(self, term: Term, positions: list[TermPos]) -> list[Any]:
         grads = get_all_grads(term, var_bindings=self.var_bindings, 
-                      get_loss_fn=self.evaluator.get_loss_fn,
-                      dtype=self.target.dtype, device=self.target.device)
-        priorities = [ (-grads[(pos.term, pos.occur)].item(), age, ) for age, pos in enumerate(positions)]
+                      get_loss_fn=self.evaluator.get_loss_fn)
+        priorities = [ (-grads[(pos.term, pos.occur)], self.syntax.get_depth(pos.term)) for pos in positions]
         return priorities
     
     def optim_term_for_consts(self, term: Term) -> tuple[Term, dict[OptimPoint, torch.Tensor]]:
@@ -274,8 +273,8 @@ class PointOptim(PositionMutation, ServiceBase):
         #                   for p in optim_state.path 
         #                   if p.tabu_marker not in self.tried_optim_terms and not self.is_lincomb(p.optim_term_pos)]
         
-        if self.debug: 
-            print(f"Optim: {optim_state.optim_term}")
+        # if self.debug: 
+        #     print(f"Optim: {optim_state.optim_term}")
         
         optim_result: OptimResult = optimize(optim_state.optim_term, 
                                 self.ranges, 

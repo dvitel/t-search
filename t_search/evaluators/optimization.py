@@ -262,7 +262,7 @@ def optimize_consts(
         # max_eval = 1.5 * num_steps,
         tolerance_change=tolerance_change,
         tolerance_grad=tolerance_grad,
-        history_size=100,
+        # history_size=100,
         line_search_fn="strong_wolfe",
     )
 
@@ -589,18 +589,17 @@ def set_local_minimas_(optim_result: OptimResult,
 
 def get_all_grads(term: Term,
                   var_bindings: dict[str, torch.Tensor],
-                  get_loss_fn: Callable,
-                  dtype: torch.dtype = torch.float32,
-                  device: Literal["cpu", "cuda"] = "cpu") -> dict[tuple[Term, int], torch.Tensor]:
+                  get_loss_fn: Callable) -> dict[tuple[Term, int], torch.Tensor]:
     ''' Collecting gradients of loss w.r.t each position in Term '''
     collected_term_pos: dict[tuple[Term, int], torch.Tensor] = {}
     occurs: dict[Term, int] = {}
     def get_binding(root: Term, term: Term) -> Optional[torch.Tensor]:
+        outputs = None
         if isinstance(term, Value):
-            outputs = torch.tensor(term.value, dtype=dtype, device=device, requires_grad=True)
+            outputs = term.value.clone().detach()
+            outputs.requires_grad_(True)
         elif isinstance(term, Variable):
             outputs = var_bindings[term.var_id].clone().detach()
-            outputs = outputs.to(dtype=dtype, device=device)
             outputs.requires_grad_(True)
         if outputs is not None:
             cur_occur = occurs.setdefault(term, 0)
@@ -611,19 +610,24 @@ def get_all_grads(term: Term,
         cur_occur = occurs.setdefault(term, 0)
         collected_term_pos[(term, cur_occur)] = value
         value.requires_grad_(True)
+        value.retain_grad()
         occurs[term] = cur_occur + 1        
     
     loss_fn = get_loss_fn(get_binding=get_binding, set_binding=set_binding, no_cache=True)
 
-    loss = loss_fn(term)
+    loss = loss_fn(term).mean()
     loss.backward()
 
     grads: dict[tuple[Term, int], torch.Tensor] = {}
     for (t, occ), binding in collected_term_pos.items():
+        if t == term: 
+            continue # skip root term, we are interested in subterms only
         if binding.grad is not None:
-            grads[(t, occ)] = binding.grad.clone()
+            grads[(t, occ)] = binding.grad.norm().item()
         else:
             raise ValueError(f"Gradient for term {t} occur {occ} is None")
+        
+    del loss
         
     return grads
 

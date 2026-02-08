@@ -37,7 +37,7 @@
                 "--config", "configs/point_optim.json",
                 "--output", "data/dbg.jsonlist",
                 "--device", "cuda",
-                "--dtype", "float64",
+                "--dtype", "float32",
                 "--seed", "42",
                 "--debug"
             ],
