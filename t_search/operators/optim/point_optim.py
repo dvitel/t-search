@@ -1,5 +1,6 @@
 from collections import deque
 from dataclasses import dataclass, field
+from heapq import heappop, heappush
 from typing import Any, Callable, Generator, Literal
 
 import numpy as np
@@ -10,7 +11,9 @@ from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.fitness import Fitness
 from t_search.evaluators.optimization import OptimResult, clean_optim_result, get_all_grads, set_local_minimas_, get_slowest_funs, optimize, threshold_optim_result_, total_threshold_optim_result_
 from t_search.evaluators.semantics import Semantics
+from t_search.operators.initialization import Initialization
 from t_search.operators.mutation import PositionMutation
+from t_search.operators.operator import Operator
 from t_search.operators.optim.term_hole import HoleFilling, TermHolePairs
 
 from t_search.syntax import Term, TermPos
@@ -22,17 +25,23 @@ class PrioritizedTermPos:
     priority: Any 
     pos: TermPos = field(compare=False)
 
-@dataclass(frozen=False)
+@dataclass(order=True)
 class OptimState:
-    optim_term: Term # term with OptimPoint
+    priority: Any = field(compare=True)
+    optim_term: Term = field(compare=False) # term with OptimPoint
     # optim_position: TermPos
-    term: Term 
-    position: TermPos
+    term: Term = field(compare=False) # original term
+    position: TermPos = field(compare=False)
     # path: list[PathNode] # maps new pos to old pos, these points are also collected in optimization
     # tabu_markers: set[Term] # set of skeletons that represent the optimization path
-    binding: dict[OptimPoint, torch.Tensor]
+    # binding: dict[OptimPoint, torch.Tensor]
     # ranges: torch.Tensor
     # const_binding: dict[OptimPoint, torch.Tensor] = field(default_factory=dict)
+
+@dataclass(order=True)
+class PrioritizedOptimStateGens:
+    optim_state: OptimState = field(compare=True)
+    optim_state_gen: Generator[OptimState, None, None] = field(compare=False)
 
 @dataclass(frozen=True)
 class Hole:    
@@ -41,7 +50,7 @@ class Hole:
     position: TermPos # where is the hole
     bindings: list[torch.Tensor] # possible bindings for the hole
             
-class PointOptim(PositionMutation, ServiceBase):
+class PointOptim(Operator, ServiceBase):
     ''' Position Optimization, adjust selected position with optimizer ''' 
     
     def __init__(self, *, 
@@ -49,11 +58,14 @@ class PointOptim(PositionMutation, ServiceBase):
                  term_hole_pairs: TermHolePairs,
                  target: torch.Tensor,
                  fitness: Fitness,
+                 syntax: Syntax,
                  semantics: Semantics,
                  evaluator: Evaluator,
                  torch_gen: torch.Generator,
                  get_cur_gen: Callable,
-                 remap_provider: Any, 
+                 add_metrics: Callable,
+                 remap_provider: Any,        
+                 target_variance: float = 1.0,          
                  position_strategy: Literal["rand_position_order", "shallow_to_deep_position_order", "best_grad_position_order"] = "rand_position_order",
                  num_starts: int = 10,
                  range_delta: float = 0.1,
@@ -61,16 +73,18 @@ class PointOptim(PositionMutation, ServiceBase):
                  lr:float = 0.1,
                  tolerance_change: float = 1e-6,
                  tolerance_grad: float = 1e-3,
-                 min_loss_rtol: float = 1e-1,
                  with_tabu: bool = True,
                  max_hole_bindings: int = 1, # one hole can have multiple good bindings
                  num_children: int = 1000,
+                 loss_threshold: float = 0.01,
+                 debug: bool = False,
                  **kwargs):
-        super().__init__(**kwargs, rate=None)
+        super().__init__(**kwargs)
         self.term_hole_pairs = term_hole_pairs
         self.target = target
         self.evaluator = evaluator
         self.fitness = fitness
+        self.syntax = syntax
         self.semantics = semantics
         self.var_bindings = var_bindings
         self.with_tabu = with_tabu
@@ -79,6 +93,7 @@ class PointOptim(PositionMutation, ServiceBase):
         # self.term_position_orders: dict[Term, deque] = {}
         # self.tabu_positions: dict[Term, set[TermPos]] = {} # any position below the tabu position should be ignored
         self.tabu_set: set[Term] = set()
+        self.add_metrics = add_metrics
 
         self.torch_gen = torch_gen
         self.num_starts = num_starts
@@ -89,9 +104,9 @@ class PointOptim(PositionMutation, ServiceBase):
         self.max_evals = max_evals
         self.tolerance_change = tolerance_change
         self.tolerance_grad = tolerance_grad
-        self.min_loss_rtol = min_loss_rtol
         self.default_loss_fn = evaluator.get_loss_fn()
         self.max_hole_bindings = max_hole_bindings
+        self.loss_threshold = loss_threshold
 
         # self.pos_queue: list[HolePos] = [] # hole priority queue
         # self.added_terms = set() # terms with added positions
@@ -106,6 +121,8 @@ class PointOptim(PositionMutation, ServiceBase):
         self.term_positions: dict[Term, list[PrioritizedTermPos]] = {} # cached position priorities for terms
         self.remap_provider = remap_provider
 
+        # self.pool = 
+
         #TODO
         # 1. Metrics - DONE
         # 2. num_holes for one term - not just 1 - DONE
@@ -118,6 +135,7 @@ class PointOptim(PositionMutation, ServiceBase):
         self.num_total_fills = 0
         self.num_holes_created = 0
         self.num_terms_optimized = 0
+        self.debug = debug
 
     def rand_position_order(self, term: Term, positions: list[TermPos]) -> list[Any]:
         ''' Returns list of priorities for positions - (rand,) '''
@@ -190,7 +208,7 @@ class PointOptim(PositionMutation, ServiceBase):
     #           DONE
     # TODO X12: bringing delayed fillings in the overrided __call__ in addtion to super().__call__
     # TODO X13; __call__ pick only n best HoleFillings out of produced.
-    def _get_optim_state(self, term: Term, position: TermPos) -> OptimState | None:
+    def _get_optim_state(self, term: Term, position: TermPos, priority: Any) -> OptimState | None:
         ''' None is returned if term,position is already optimized '''
 
         while self.is_lincomb(position):
@@ -210,9 +228,9 @@ class PointOptim(PositionMutation, ServiceBase):
             return None
         self.tried_optim_terms.add(optim_term)
 
-        pos_outputs = self.semantics.get_outputs(position.term)
+        # pos_outputs = self.semantics.get_outputs(position.term)
 
-        binding = { self.optim_point: pos_outputs }
+        # binding = { self.optim_point: pos_outputs }
 
         # range_mins = torch.minimum(pos_outputs, self.target)
         # range_maxs = torch.maximum(pos_outputs, self.target)
@@ -245,7 +263,7 @@ class PointOptim(PositionMutation, ServiceBase):
         #             path_node.tabu_marker = tabu_marker
         #         tabu_markers.update(parent_optim_terms)
 
-        optim_state = OptimState(optim_term, term, position, binding)
+        optim_state = OptimState(priority, optim_term, term, position)
 
         return optim_state
     
@@ -275,12 +293,12 @@ class PointOptim(PositionMutation, ServiceBase):
         #                   for p in optim_state.path 
         #                   if p.tabu_marker not in self.tried_optim_terms and not self.is_lincomb(p.optim_term_pos)]
         
-        # if self.debug: 
-        #     print(f"Optim: {optim_state.optim_term}")
+        if self.debug: 
+            print(f"Optim: {optim_state.optim_term}")
         
-        optim_result: OptimResult = optimize(optim_state.optim_term, 
+        optim_result: OptimResult | None = optimize(optim_state.optim_term, 
                                 self.ranges, 
-                                optim_state.binding,
+                                {self.optim_point: self.semantics.get_outputs(optim_state.position.term)},
                                 loss_fn_builder=self.evaluator.get_loss_fn,
                                 # pos_to_collect=pos_to_collect,
                                 num_starts=self.num_starts,
@@ -288,7 +306,8 @@ class PointOptim(PositionMutation, ServiceBase):
                                 max_evals=self.max_evals,
                                 tolerance_change=self.tolerance_change,
                                 tolerance_grad=self.tolerance_grad,
-                                torch_gen=self.torch_gen)
+                                torch_gen=self.torch_gen,
+                                loss_threshold=self.loss_threshold)
         
         # if self.debug:
         #     best_optim_result = get_best_optim_result(optim_result)
@@ -307,15 +326,17 @@ class PointOptim(PositionMutation, ServiceBase):
         self.num_terms_optimized += 1
 
         start_loss = self.fitness.get_fitness(optim_state.term).item()
+        # loss_threshold = self.loss_threshold
+        # if self.fitness.best_term_fitness is not None and self.fitness.best_term_fitness < loss_threshold:
+        #     loss_threshold = self.fitness.best_term_fitness.item()
 
         # if optim_result is None:
         #     self.add_to_tabu(optim_state)
-        #     return None
-                    
+        #     return None                    
 
-        total_threshold_optim_result_(optim_result, start_loss)
+        # total_threshold_optim_result_(optim_result, loss_threshold)
 
-        if torch.any(torch.all(torch.isinf(optim_result.loss), dim=0)): # no minimas found
+        if optim_result is None: # no minimas found
             self.add_to_tabu(optim_state)
             return None
 
@@ -375,8 +396,8 @@ class PointOptim(PositionMutation, ServiceBase):
         ppositions = self.term_positions[term]
 
         while len(ppositions) > 0:
-            pos = ppositions.pop().pos
-            optim_state = self._get_optim_state(term, pos)
+            ppos = ppositions.pop()
+            optim_state = self._get_optim_state(term, ppos.pos, ppos.priority)
             if optim_state is None: # already optimized 
                 continue
 
@@ -395,8 +416,24 @@ class PointOptim(PositionMutation, ServiceBase):
 
         # self.added_terms.add(term)
         return
+    
+    def select_position(self, terms: list[Term]) -> Generator[OptimState, None, None]:
+        ''' Builds one generator for optim states ordered by priority '''
+        optim_state_cache = []
+        for term in terms:
+            term_gen = self.select_positions(term)
+            cur_term = next(term_gen, None)
+            if cur_term is not None:
+                heappush(optim_state_cache, PrioritizedOptimStateGens(cur_term, term_gen))
+        while len(optim_state_cache) > 0:
+            cur = heappop(optim_state_cache)
+            yield cur.optim_state
+            next_optim_state = next(cur.optim_state_gen, None)
+            if next_optim_state is not None:
+                heappush(optim_state_cache, PrioritizedOptimStateGens(next_optim_state, cur.optim_state_gen))
+        pass            
 
-    def mutate_position(self, term: Term, optim_state: OptimState) -> list[HoleFilling]:
+    def mutate_position(self, optim_state: OptimState) -> list[HoleFilling]:
         
         bound_hole = self.optimize_state(optim_state)
 
@@ -411,29 +448,41 @@ class PointOptim(PositionMutation, ServiceBase):
         
             self.num_holes_created += len(holes)
         
-        hole_position_tensor = torch.stack(hole_bindings)
-        fillings = self.term_hole_pairs.register_holes(holes, hole_position_tensor)
-        del hole_position_tensor
+        self.term_hole_pairs.insert_holes(holes, hole_bindings)
         for hb in hole_bindings:
             del hb 
 
-        if len(fillings) == 0: # try next position
-            return None
-        
+        fillings = self.term_hole_pairs.find_terms_for_holes(holes, use_global_threshold=True)
+
+        for f in fillings:
+            f.optim_point_priority = optim_state.priority
+
         return fillings 
     
     def __call__(self, population):        
-        delayed_fillings = self.term_hole_pairs.register_delayed_terms()
-        new_fillings = super().__call__(population)
-        new_fillings = [f for f in new_fillings if isinstance(f, HoleFilling)]
-        children_fillings = new_fillings + delayed_fillings
-        children_fillings.sort(key=lambda f: f.priority)
-        if len(children_fillings) > self.num_children:
+        # delayed_fillings = self.term_hole_pairs.register_delayed_terms()
+        all_fillings = []
+        position_gen = self.select_position(population)
+        count = len(population) # n per term 
+        for optim_state in position_gen:
+            new_fillings = self.mutate_position(optim_state)
+            all_fillings.extend(new_fillings)
+            if len(all_fillings) >= count:
+                break
+
+        # selected_terms = set(f.found_term for f in all_fillings)
+        default_terms = self.term_hole_pairs.get_indexed_terms() 
+        # default_terms = [t for t in default_terms if t not in selected_terms]
+        # now for each term we would like to take the hole 
+        term_fillings = self.term_hole_pairs.find_holes_for_terms(default_terms, use_global_threshold=True)
+        all_fillings.extend(term_fillings)
+        all_fillings.sort(key=lambda f: f.priority)
+        if len(all_fillings) > self.num_children:
             # pick best num_children fillings
-            children_fillings = children_fillings[:self.num_children]
+            all_fillings = all_fillings[:self.num_children]
             pass            
         children = []
-        for f in children_fillings:
+        for f in all_fillings:
             if f.term in self.lineage:
                 prev_filling = self.lineage[f.term]
                 if prev_filling.priority > f.priority:

@@ -35,12 +35,14 @@ class ConstOptimizer(Optimizer):
                     lr:float = 0.1,
                     tolerance_change: float = 1e-6,
                     tolerance_grad: float = 1e-3,
-                    debug: bool = False
+                    debug: bool = False,
+                    loss_threshold: float = 0.01,
                  ):
         self.num_starts = num_starts
         self.max_evals = max_evals
         self.tolerance_change = tolerance_change
         self.tolerance_grad = tolerance_grad
+        self.loss_threshold = loss_threshold
         self.lr = lr
         # self.evaluator = evaluator
         self.syntax = syntax
@@ -122,15 +124,16 @@ class ConstOptimizer(Optimizer):
             tolerance_change=self.tolerance_change,
             tolerance_grad=self.tolerance_grad,
             torch_gen=self.torch_gen,
+            loss_threshold=self.loss_threshold
         )
 
-        best_loss_id = torch.argmin(optim_result.loss)
+        # best_loss_id = torch.argmin(optim_result.loss)
 
         const_vals = []
 
         def bind_optim_points(term, *_):
             if isinstance(term, OptimPoint):
-                const_val = self.syntax.get_const(value=optim_result.binding[term][best_loss_id].item())
+                const_val = self.syntax.get_const(value=optim_result.binding[term].item())
                 const_vals.append(const_val)
                 # if const_val is None:
                 #     print(f"Cannot create const term for value {best_binding[term]}")
@@ -142,7 +145,7 @@ class ConstOptimizer(Optimizer):
         # except ValueError as e:                
         #     return term
 
-        best_loss = optim_result.loss[best_loss_id].item()
+        best_loss = optim_result.loss.item()
         # start_loss = optim_result.start_loss.item()
         optimized = Optimized(best_term, best_loss)
 

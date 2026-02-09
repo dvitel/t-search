@@ -1,6 +1,6 @@
 ''' Adds syntax to plain vector storage '''
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Generic, Literal, Optional, Protocol, Sequence
 from pyparsing import TypeVar
 import torch
@@ -10,7 +10,22 @@ from t_search.spatial.base import VectorStorage
 from t_search.syntax.term import Term, TermPos
 from t_search.utils import rank
 
+@dataclass(frozen=False)
+class QueryClosestParams:
+    delta: float = 1e-5
+    multiplier: float = 10
+    num_steps: int = 3
+    num_closest: int = 3
+    exclude_ids: set[int] = field(default_factory=set)
+
 TTermPos = TypeVar('TTermPos')
+
+@dataclass(frozen=True)
+class QueryClosestResult:
+    l2: list[float] = field(default_factory=list)
+    found_ids: list[int] = field(default_factory=list)
+    terms: list[TTermPos] = field(default_factory=list)
+    final_delta: float = 0.0
 
 class Normalizer(Protocol, Generic[TTermPos]):
     def normalize(self, vectors: torch.Tensor, terms: list[TTermPos]) -> tuple[torch.Tensor, list[TTermPos]]:
@@ -364,41 +379,40 @@ class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
     def num_terms(self) -> int:
         return len(self.term_to_sid)
 
-    def query_closest(self, queries: Sequence[torch.Tensor],
-                            start_delta: float = 1e-5,
-                            multiplier: float = 10,
-                            num_steps: int = 3,
-                            num_closest: int = 3) -> list[list[tuple[float, TTermPos]]]:
+    def query_closest(self, query: torch.Tensor, params: QueryClosestParams) -> QueryClosestResult:
         ''' Returns map: query id to found ids in index (list) '''
         
-        res = []
-        for q in queries:
-            delta = start_delta
-            q_res = None
-            left_num_steps = num_steps
-            while left_num_steps > 0:
-                range = torch.stack([q - delta, q + delta], dim=0)
-                found_ids = self.index.query_range(range)
-                if len(found_ids) > 0:
-                    vectors = self.index.get_vectors(found_ids)
-                    l2 = torch.sum((vectors - q.unsqueeze(0)) ** 2, dim=1)
-                    # l2_denorm = 
-                    if num_closest == 1:
-                        min_l2_id = torch.argmin(l2)
-                        q_res = [(l2[min_l2_id].item(), self.sid_to_term[found_ids[min_l2_id.item()]])]
-                        del l2, vectors, found_ids
-                        break
-                    l2_sort_order = torch.argsort(l2)
-                    min_l2_ids = l2_sort_order[:num_closest]
-                    q_res = [(l2[fid].item(), self.sid_to_term[found_ids[fid]]) for fid in min_l2_ids.tolist()]
-                    del l2, vectors, found_ids
-                    break
-                delta *= multiplier    
-                left_num_steps -= 1      
-            if q_res is not None:                  
-                res.append(q_res)
-            else:
-                res.append([])
+        delta = params.delta
+        found_ids = []
+        while params.num_steps > 0: # gradually increase the query range to capture specified number of points
+            query_range = torch.stack([query - delta, query + delta], dim=0)
+            existing_ids = self.index.query_range(query_range)
+            found_ids = [fid for fid in existing_ids if fid not in params.exclude_ids]
+            if len(found_ids) >= params.num_closest:
+                break
+            delta *= params.multiplier
+            params.num_steps -= 1 
+        if len(found_ids) == 0:
+            return QueryClosestResult([], [], [], delta)
+        vectors = self.index.get_vectors(found_ids)
+        l2 = torch.sum((vectors - query.unsqueeze(0)) ** 2, dim=1)
+        if params.num_closest == 1:
+            min_l2_id = torch.argmin(l2)
+            min_l2 = l2[min_l2_id].item()
+            min_found_id = found_ids[min_l2_id.item()]
+            # min_vector = vectors[min_l2_id].clone()
+            min_term = self.sid_to_term[min_found_id]
+            # query_res = [(l2[min_l2_id].item(), self.sid_to_term[found_ids[min_l2_id.item()]])]
+            res =  QueryClosestResult([min_l2], [min_found_id], [min_term], delta)
+            del l2, vectors
+            return res 
+        l2_sort_order = torch.argsort(l2)
+        min_l2_ids = l2_sort_order[:params.num_closest]
+        min_l2 = l2[min_l2_ids].tolist()
+        min_found_ids = [found_ids[fid] for fid in min_l2_ids.tolist()]
+        min_found_terms = [self.sid_to_term[fid] for fid in min_found_ids]
+        res = QueryClosestResult(min_l2, min_found_ids, min_found_terms, delta)
+        del l2, vectors, found_ids
         return res
     
     def closest_or_self(self, queries: torch.Tensor,

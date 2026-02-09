@@ -3,13 +3,14 @@ from typing import Callable
 
 import torch
 from t_search.base import ServiceBase
-from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.semantics import Semantics
 from t_search.evaluators.term_spatial import TermVectorStorage
 from t_search.operators.classic.up2d import Up2D
 from t_search.operators.competent.utils import DesiredSemantics, InversionCache, get_desired_semantics
+from t_search.operators.initialization import Initialization
 from t_search.syntax import Term
 from t_search.syntax.syntax import Syntax
+from t_search.utils import stack_rows
 from ..listeners import EvalListener
 
 class CompetentListener(ServiceBase, EvalListener):
@@ -19,44 +20,47 @@ class CompetentListener(ServiceBase, EvalListener):
     '''
 
     def __init__(self, *,
-                    evaluator: Evaluator,
                     syntax: Syntax,
                     semantics: Semantics,
                     target: torch.Tensor, 
+                    init_op: Initialization, 
                     term_vector_storage: TermVectorStorage,
-                    index_init_depth: int | None = None, 
+                    # index_init_depth: int | None = None, 
                     dynamic_index: bool = False,
                     index_max_size: int = 1e10,
                  ):
-        self.evaluator = evaluator
         self.syntax = syntax
         self.semantics = semantics
         self.index = term_vector_storage # used as library of semantics 
-        self.index_init_depth = index_init_depth # if None, dynamic library - uses any available term. 
+        # self.index_init_depth = index_init_depth # if None, dynamic library - uses any available term. 
         self.dynamic_index = dynamic_index
         self.index_max_size = index_max_size
         self.inv_cache = InversionCache()
         self.desired_target: DesiredSemantics | None = None
         self.target: torch.Tensor = target
         self.desired_target = get_desired_semantics(target)
-        self.init_op = Up2D(syntax = self.syntax, depth = self.index_init_depth)
+        self.init_op = init_op #Up2D(syntax = self.syntax, depth = self.index_init_depth)
+        self.inited: bool = False
 
-    def init(self):
-        if self.index_init_depth is not None and self.index.num_sem() == 0:             
+    def init(self, *, evaluator, **services):
+        if not self.inited:
             lib_terms = self.init_op()
-            self.evaluator.eval(lib_terms)
+            evaluator.eval(lib_terms)
             if self.term_vector_storage is self.semantics.storage:
                 return
-            semantics = self.semantics.get_outputs(lib_terms, return_type="tensor")
-            self.index.insert(lib_terms, semantics) 
+            valid_terms = [t for t in lib_terms if self.semantics.is_valid(t)]
+            semantics = self.semantics.get_outputs(valid_terms, return_type="tensor")
+            self.index.insert(valid_terms, semantics) 
             del semantics
+        self.inited = True
 
-    def on_eval(self, terms: list[Term], semantics: torch.Tensor):
+    def on_eval(self, terms: list[Term], semantics: list[torch.Tensor]):
         if self.term_vector_storage is self.semantics.storage:
             return
-        if self.dynamic_index and self.index.num_terms() < self.index_max_size:
-            semantics = self.semantics.get_outputs(terms, return_type="tensor")
-            self.index.insert(terms, semantics)
+        if self.inited and self.dynamic_index and self.index.num_terms() < self.index_max_size:
+            vectors = stack_rows(semantics, self.semantics.dims)
+            self.index.insert(terms, vectors)
+            del vectors
     
     def get_desired_semantics(self, term: Term, semantics: torch.Tensor) -> DesiredSemantics:
         if term not in self.inv_cache.term_semantics:

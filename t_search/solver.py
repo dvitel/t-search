@@ -324,7 +324,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         for service in self.services.values():
             if isinstance(service, ServiceBase):
-                service.init()
+                service.init(**self.services)
 
         self.gen_listeners = []
         for service in self.services.values():
@@ -400,14 +400,14 @@ class GPSolver(BaseEstimator, RegressorMixin):
                     self.fitness.set_fitness([const_term], const_output.unsqueeze(0))
                     pass
             # self.evaluator.eval(self.syntax.get_vars())
-            for var in self.syntax.get_vars():
-                var_binding = self.var_bindings[var.var_id]
-                if self.debug:
-                    for x_name, x_val in self.var_bindings.items():
-                        print(f"{x_name}: {x_val}")
+            if self.debug:
+                for x_name, x_val in self.var_bindings.items():
+                    print(f"{x_name}: {x_val}")
+            # for var in self.syntax.get_vars():
+                # var_binding = self.var_bindings[var.var_id]
                 # self.fitness.set_fitness([var], var_binding.unsqueeze(0))
-                self.evaluator.add_initial_terms([var], var_binding.unsqueeze(0))
-                pass
+                # self.evaluator.add_initial_terms([var], var_binding.unsqueeze(0))
+            pass
         except EvSearchTermination as e:
             del const_output            
             if e.status == "SOLVED" and not raise_on_solution:

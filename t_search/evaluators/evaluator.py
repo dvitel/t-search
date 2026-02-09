@@ -39,9 +39,9 @@ class Evaluator(Operator):
         children = [t for t, _ in res]
         return children
     
-    def add_initial_terms(self, terms: list[Term], semantics: torch.Tensor):
-        ''' Add initial terms and their semantics to evaluator storage '''
-        pass
+    # def add_initial_terms(self, terms: list[Term], semantics: torch.Tensor):
+    #     ''' Add initial terms and their semantics to evaluator storage '''
+    #     pass
 
     def add_listeners(self, listeners: list[EvalListener]):
         ''' Add evaluation listeners '''
@@ -114,12 +114,19 @@ class DefaultEvaluator(Evaluator, ServiceBase):
     def add_listeners(self, listeners: list[EvalListener]):
         self.listeners.extend(listeners)
 
-    def add_initial_terms(self, terms: list[Term], semantics: torch.Tensor):
-        ''' Add initial terms and their semantics to evaluator storage '''
-        self.semantics.set_binding(terms, semantics)
-        self.fitness.set_fitness(terms, semantics)
-        for l in self.listeners:
-            l.on_eval(terms, semantics)        
+    # def add_initial_terms(self, terms: list[Term], semantics: torch.Tensor):
+    #     ''' Add initial terms and their semantics to evaluator storage '''
+    #     self.semantics.set_binding(terms, semantics)
+    #     self.fitness.set_fitness(terms, semantics)
+    #     valid_terms = []
+    #     valid_semantic_list = []
+    #     for term, sem in zip(terms, semantics):
+    #         if self.semantics.is_valid(term):
+    #             valid_terms.append(term)
+    #             valid_semantic_list.append(sem)
+    #     if len(valid_terms) > 0:
+    #         for l in self.listeners:
+    #             l.on_eval(valid_terms, valid_semantic_list)
 
     def get_finalizer(self):
         ''' Called on the end of solver search'''
@@ -217,8 +224,15 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             semantics = stack_rows(new_outputs, self.dims)
             self.semantics.set_binding(new_terms, semantics)
             self.fitness.set_fitness(new_terms, semantics)
-            for l in self.listeners:
-                l.on_eval(new_terms, semantics)
+            valid_terms = []
+            valid_semantic_list = []
+            for term, sem in zip(new_terms, semantics):
+                if self.semantics.is_valid(term):
+                    valid_terms.append(term)
+                    valid_semantic_list.append(sem)
+            if len(valid_terms) > 0:    
+                for l in self.listeners:
+                    l.on_eval(valid_terms, valid_semantic_list)
             del semantics
 
         if return_tensor:

@@ -30,7 +30,7 @@ class SemanticGeometricMutation(TermMutation, ServiceBase):
         self.syntax = syntax
         self.evaluator = evaluator
 
-    def init(self):
+    def init(self, **kwargs):
         assert self.syntax.has_op("add"), "SGX requires 'add' operator in the syntax."
         assert self.syntax.has_op("mul"), "SGX requires 'mul' operator in the syntax."
         self.minus_one = self.syntax.get_const(value = -1.0)   

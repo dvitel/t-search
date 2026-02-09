@@ -9,15 +9,20 @@ class Up2D(Initialization):
                  
                  syntax: Syntax,
                  # from config params
+                 with_free_vars: bool = False,
                  depth = 2, 
                  max_consts: int = 0,
                 ):
         self.syntax = syntax
         self.depth = depth
         self.max_consts = max_consts
+        self.with_free_vars = with_free_vars
 
     def __call__(self) -> list[Term]:
         population = self.syntax.get_all_terms(up2depth=self.depth, max_consts=self.max_consts)
+        if self.with_free_vars:
+            vars = self.syntax.get_vars()
+            population.extend(vars)
         # tt = self.syntax.get_op("add", self.syntax.get_var("x0"), self.syntax.get_const(1.0))
         # population.append(tt)
         return population

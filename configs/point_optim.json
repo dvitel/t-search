@@ -68,7 +68,12 @@
             "params": { 
                 "index": {"!ref": "vector_storage"}
             } 
-        },          
+        },  
+        "init_op": {
+            "type": "Up2D", 
+            "module": "t_search.operators.classic",
+            "params": { "depth": 1, "with_free_vars": true } 
+        },       
         "init": {
             "type": "Up2D", 
             "module": "t_search.operators.classic",
@@ -134,12 +139,13 @@
                 "hole_index": {"!ref": "hole_index"},
                 "const_optimizer": {"!ref": "const_optimizer"},
                 "normalizer": {"!ref": "normalizer"},
+                "init_op": {"!ref": "init_op"},
                 "term_filter_strategy": "term_filter_accept_all",
                 "hole_filter_strategy": "hole_filter_accept_all",
-                "start_delta": 10,
+                "start_delta": 1,
                 "multiplier": 10,
                 "num_steps": 3,
-                "num_closest": 3,
+                "num_closest": 1,
                 "good_filling_loss": 0.001,
                 "max_filling_queue_size": 100,
                 "small_value": 1e-2,
@@ -167,16 +173,16 @@
                 "evaluator": {"!ref": "evaluator"},
                 "remap_provider": {"!ref": "sreduce"},
                 "position_strategy": "best_grad_position_order",
-                "num_starts": 30,
+                "num_starts": 5,
                 "range_delta": 0.1,
-                "max_evals": 30,
+                "max_evals": 20,
                 "lr": 1,
                 "tolerance_change": 0.0000001,
                 "tolerance_grad": 0.000001,
-                "min_loss_rtol": 0.95,
                 "with_tabu": true,
                 "max_hole_bindings": 1,
-                "num_children": 100
+                "num_children": 100,
+                "loss_threshold": 0.001
             }
         },
         "const_optimizer": {
@@ -185,11 +191,12 @@
             "params": {
                 "syntax": {"!ref": "syntax"},
                 "evaluator": {"!ref": "evaluator"},
-                "num_starts": 1000,
-                "max_evals": 30,
+                "num_starts": 5,
+                "max_evals": 20,
                 "lr": 0.1,
                 "tolerance_change": 0.0000000001,
-                "tolerance_grad": 0.000000001
+                "tolerance_grad": 0.000000001,
+                "loss_threshold": 0.00001
             }
         },
         "const_optim": {
