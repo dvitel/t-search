@@ -34,6 +34,7 @@ class HoleFilling:
     found_term: Term 
     hole_root: Term 
     hole_pos: TermPos
+    const_optim_term: Term
     # term_semantics: torch.Tensor
     # hole_semantics: torch.Tensor
     # skeletons: list[Term]
@@ -43,6 +44,14 @@ class HoleFilling:
     
     def __str__(self):
         return f"HF[{self.id:04d}](loss={self.priority:.7f}←{self.start_loss:8.7f} l2={self.l2:.2f} opp={self.optim_point_priority}\n\t\t{self.term}\n\t\t{self.hole_root}@({self.hole_pos.term}, {self.hole_pos.occur}) with {self.found_term})"
+    
+@dataclass(frozen=False)    
+class HoleFillingLog:
+    filling: HoleFilling | None = None 
+    status: str = "active"
+    hole: tuple[Term, TermPos] | None = None
+    term: Term | None = None 
+
 
 class TermHolePairs(EvalListener, ServiceBase):
     ''' For new terms search for sketches, for new sketches search for terms.  '''
@@ -281,28 +290,35 @@ class TermHolePairs(EvalListener, ServiceBase):
                                               num_steps=self.num_steps, 
                                               num_closest=self.num_closest,
                                               exclude_ids=exclude_ids)   
-            while query_params.num_closest > 0:
-                query_res = self.hole_index.query_closest(term_vector, query_params)
-                if len(query_res.found_ids) == 0:
-                    break
-                query_params.delta = query_res.final_delta * self.multiplier
-                query_params.exclude_ids.update(query_res.found_ids)
-                for (l2, hole) in zip(query_res.l2, query_res.terms):
-                    new_filling = self.fill_holes(term, hole[0], hole[1], l2, use_global_threshold=use_global_threshold)        
-                    if new_filling is not None:
-                        query_params.num_closest -= 1
-                        result_fillings.append(new_filling)      
-
+            # while query_params.num_closest > 0:
+            query_res = self.hole_index.query_closest(term_vector, query_params)
+            if len(query_res.found_ids) == 0:
+                # break
+                continue
+            # query_params.delta = query_res.final_delta * self.multiplier
+            query_params.exclude_ids.update(query_res.found_ids)
+            for (l2, hole) in zip(query_res.l2, query_res.terms):
+                new_filling = self.fill_holes(term, hole[0], hole[1], l2, use_global_threshold=use_global_threshold)        
+                if new_filling is not None:
+                    query_params.num_closest -= 1
+                    result_fillings.append(new_filling)      
         return result_fillings
 
-    def find_terms_for_holes(self, holes: list[tuple[Term, TermPos]], use_global_threshold: bool = False) -> list[HoleFilling]:
+    def find_terms_for_holes(self, holes: list[tuple[Term, TermPos]], use_global_threshold: bool = False,
+                                # return_logs: bool = False
+                                ) -> list[HoleFilling] | tuple[list[HoleFilling], list[HoleFillingLog]]:
         result_fillings = []
-        for hole in holes:
+        # logs = []
+        for hole in holes:            
             if hole in self.const_hole_fillings:
                 result_fillings.append(self.const_hole_fillings[hole])
+                # log = HoleFillingLog(hole=hole, status = "constant")
+                # logs.append(log)
                 continue
             hole_vector = self.hole_index.get_semantics_for_term(hole)
             if hole_vector is None:
+                # log = HoleFillingLog(hole=hole, status = "no_vector")
+                # logs.append(log)
                 continue
             hole_id = self.hole_index.term_to_sid[hole]
             query_params = QueryClosestParams(delta=self.start_delta, 
@@ -313,16 +329,25 @@ class TermHolePairs(EvalListener, ServiceBase):
                 query_res = self.term_index.query_closest(hole_vector, query_params)
                 if len(query_res.found_ids) == 0:
                     break
+                # if self.debug: 
+                #     print(f"\t\t{query_params.num_closest} {query_params.num_steps}")
                 query_params.delta = query_res.final_delta * self.multiplier
                 query_params.exclude_ids.update(query_res.found_ids)
                 for (l2, term) in zip(query_res.l2, query_res.terms):
                     exclude_ids = self.term_tried_ids.setdefault(term, set())  
                     exclude_ids.add(hole_id)
-                    new_filling = self.fill_holes(term, hole[0], hole[1], l2, use_global_threshold=use_global_threshold)        
+                    # log = HoleFillingLog(hole=hole, term=term)
+                    # logs.append(log)
+                    new_filling = self.fill_holes(term, hole[0], hole[1], l2, use_global_threshold=use_global_threshold,
+                                                    # status_setter=lambda s: setattr(log, "status", s))
+                                                    )        
+                    # log.filling = new_filling
                     if new_filling is not None:
                         query_params.num_closest -= 1
-                        result_fillings.append(new_filling)      
-
+                        result_fillings.append(new_filling)  
+                break # TODO execute once      
+        # if return_logs:
+        #     return result_fillings, logs                  
         return result_fillings
 
 
@@ -470,7 +495,9 @@ class TermHolePairs(EvalListener, ServiceBase):
 
     def fill_holes(self, term: Term, hole_root: Term, hole_pos: TermPos, l2: float,
                         optim_point_priority: Any = None,
-                        use_global_threshold: bool = False) -> Optional[HoleFilling]:
+                        use_global_threshold: bool = False,
+                        # status_setter: Callable = lambda _: None
+                        ) -> Optional[HoleFilling]:
 
         # if self.debug:
         #     print(f"Proposed term: {term} for l2={l2:.2f}, {hole_root}@({hole_pos.term}, {hole_pos.occur})")
@@ -503,6 +530,7 @@ class TermHolePairs(EvalListener, ServiceBase):
         if new_term is None:
             # if self.debug:
             #     print(f"\tDiscarded: {fit_term} --> {hole_root}@({hole_pos.term}, {hole_pos.occur})")
+            # status_setter("invalid_term")
             return None
         
         # reducing consstants before optimization 
@@ -510,12 +538,14 @@ class TermHolePairs(EvalListener, ServiceBase):
 
         optimized = self.const_optimizer.optimize(new_term, with_loss=True)
 
+        start_loss = self.fitness.get_fitness(hole_root).item()
         if use_global_threshold and self.fitness.best_term_fitness is not None:
             original_loss = self.fitness.best_term_fitness.item()
         else:
-            original_loss = 0.9 * self.fitness.get_fitness(hole_root).item()
+            original_loss = 0.9 * start_loss
 
         if optimized.loss >= original_loss:
+            # status_setter("no_loss_improvement")
             return None
         
         # assert optimized.term is not None, "Const optimizer must return valid term"
@@ -527,13 +557,13 @@ class TermHolePairs(EvalListener, ServiceBase):
         new_filling_id = self.filling_id
         self.filling_id += 1
         hole_filling = HoleFilling(optimized.loss, 
-                                    original_loss,
+                                    start_loss,
                                     l2, 
                                     new_filling_id,
                                     optim_point_priority,
                                     optimized.term,
                                 #    optimized_reduced_term,
-                            term, hole_root, hole_pos,
+                            term, hole_root, hole_pos, const_optim_term=optimized.optim_term
                             ) # no skeletons here as we optimized constants
 
         # if self.debug: 

@@ -14,6 +14,7 @@ from t_search.syntax.term import Op, OptimPoint, Term, Value
 class Optimized:
     term: Term
     loss: float | None
+    optim_term: Term | None = None
     # start_loss: float | None = None
     
 class ConstOptimizer(Optimizer):
@@ -147,7 +148,7 @@ class ConstOptimizer(Optimizer):
 
         best_loss = optim_result.loss.item()
         # start_loss = optim_result.start_loss.item()
-        optimized = Optimized(best_term, best_loss)
+        optimized = Optimized(best_term, best_loss, optim_term)
 
         self.best_terms_cache[optim_term] = optimized
 

@@ -14,15 +14,17 @@ from t_search.evaluators.semantics import Semantics
 from t_search.operators.initialization import Initialization
 from t_search.operators.mutation import PositionMutation
 from t_search.operators.operator import Operator
-from t_search.operators.optim.term_hole import HoleFilling, TermHolePairs
+from t_search.operators.optim.term_hole import HoleFilling, HoleFillingLog, TermHolePairs
 
 from t_search.syntax import Term, TermPos
 from t_search.syntax.syntax import Syntax
 from t_search.syntax.term import Op, OptimPoint, Value
+from t_search.utils import GLOBAL_RNG
 
 @dataclass(order=True)
 class PrioritizedTermPos:
     priority: Any 
+    optim_term: Term = field(compare=False)
     pos: TermPos = field(compare=False)
 
 @dataclass(order=True)
@@ -32,6 +34,8 @@ class OptimState:
     # optim_position: TermPos
     term: Term = field(compare=False) # original term
     position: TermPos = field(compare=False)
+    id: int = 0 
+    cnt: int = 0
     # path: list[PathNode] # maps new pos to old pos, these points are also collected in optimization
     # tabu_markers: set[Term] # set of skeletons that represent the optimization path
     # binding: dict[OptimPoint, torch.Tensor]
@@ -49,6 +53,15 @@ class Hole:
     term: Term # parent 
     position: TermPos # where is the hole
     bindings: list[torch.Tensor] # possible bindings for the hole
+
+@dataclass(frozen=False)
+class LogEntry: 
+    status: str = "active"
+    optim_term: Term | None = None 
+    optim_state: OptimState | None = None
+    optim_result: OptimResult | None = None
+    hole: Hole | None = None
+    fill_logs: list[HoleFillingLog] | None = None
             
 class PointOptim(Operator, ServiceBase):
     ''' Position Optimization, adjust selected position with optimizer ''' 
@@ -78,6 +91,7 @@ class PointOptim(Operator, ServiceBase):
                  num_children: int = 1000,
                  loss_threshold: float = 0.01,
                  debug: bool = False,
+                 rnd: np.random.Generator = GLOBAL_RNG,
                  **kwargs):
         super().__init__(**kwargs)
         self.term_hole_pairs = term_hole_pairs
@@ -107,6 +121,7 @@ class PointOptim(Operator, ServiceBase):
         self.default_loss_fn = evaluator.get_loss_fn()
         self.max_hole_bindings = max_hole_bindings
         self.loss_threshold = loss_threshold
+        self.rnd=rnd
 
         # self.pos_queue: list[HolePos] = [] # hole priority queue
         # self.added_terms = set() # terms with added positions
@@ -120,6 +135,7 @@ class PointOptim(Operator, ServiceBase):
         self.lineage: dict[Term, HoleFilling] = {} # child to parent map for backtracking
         self.term_positions: dict[Term, list[PrioritizedTermPos]] = {} # cached position priorities for terms
         self.remap_provider = remap_provider
+        # self.log: dict[Term, list[LogEntry]] = {} # stores current pop optimization log: wwhat positions tried, when and why they are failed
 
         # self.pool = 
 
@@ -143,7 +159,7 @@ class PointOptim(Operator, ServiceBase):
         return priorities
 
     def shallow_to_deep_position_order(self, term: Term, positions: list[TermPos]) -> list[Any]:
-        priorities = [(self.get_cur_gen(), p.at_depth, self.rnd.random(), ) for  p in positions]
+        priorities = [(p.at_depth, self.rnd.random(), ) for  p in positions]
         return priorities
 
     def best_grad_position_order(self, term: Term, positions: list[TermPos]) -> list[Any]:
@@ -208,21 +224,22 @@ class PointOptim(Operator, ServiceBase):
     #           DONE
     # TODO X12: bringing delayed fillings in the overrided __call__ in addtion to super().__call__
     # TODO X13; __call__ pick only n best HoleFillings out of produced.
-    def _get_optim_state(self, term: Term, position: TermPos, priority: Any) -> OptimState | None:
+    def _get_optim_state(self, term: Term, position: TermPos, optim_term: Term, priority: Any, id: int, cnt: int) -> OptimState | None:
         ''' None is returned if term,position is already optimized '''
 
-        while self.is_lincomb(position):
-            position = position.parent
+        # while self.is_lincomb(position):
+        #     position = position.parent
 
-        if position.parent is None:
-            return None # cannot optimize root
+        # if position.parent is None:
+        #     return None # cannot optimize root
         
-        optim_term = self.syntax.replace_position(term, position, self.optim_point, with_validation=False)
+        # optim_term = self.syntax.replace_position(term, position, self.optim_point, with_validation=False)
 
         # optim_term, const_binding = self.optim_term_for_consts(orig_optim_term)
 
         if optim_term in self.tried_optim_terms:
             self.tried_optim_terms_hit += 1
+            # self.log[term][-1].status = "skipped_tried"
             # if self.debug:
             #     print(f"Skipped tried: {optim_term} for {term}@({position.term},{position.occur})")            
             return None
@@ -249,6 +266,7 @@ class PointOptim(Operator, ServiceBase):
             parent_optim_terms.pop() # remove root OptimPoint
 
         if self.is_in_tabu(optim_term, parent_optim_terms):
+            # self.log[term][-1].status = "tabu"
             if self.debug:
                 print(f"Skipped tabu: {optim_term} for {term}@({position.term},{position.occur})")
             return None
@@ -263,8 +281,8 @@ class PointOptim(Operator, ServiceBase):
         #             path_node.tabu_marker = tabu_marker
         #         tabu_markers.update(parent_optim_terms)
 
-        optim_state = OptimState(priority, optim_term, term, position)
-
+        optim_state = OptimState(priority, optim_term, term, position, id, cnt)
+        # self.log[term][-1].optim_state = optim_state
         return optim_state
     
     def is_in_tabu(self, optim_term: Term, parent_optim_terms) -> bool:
@@ -293,8 +311,8 @@ class PointOptim(Operator, ServiceBase):
         #                   for p in optim_state.path 
         #                   if p.tabu_marker not in self.tried_optim_terms and not self.is_lincomb(p.optim_term_pos)]
         
-        if self.debug: 
-            print(f"Optim: {optim_state.optim_term}")
+        # if self.debug: 
+        #     print(f"\tOptim: {optim_state.optim_term}")
         
         optim_result: OptimResult | None = optimize(optim_state.optim_term, 
                                 self.ranges, 
@@ -322,6 +340,9 @@ class PointOptim(Operator, ServiceBase):
         #     #     print(f"{x:4}: {x_trace}")
         #     # target_trace = ' '.join([f'{f:.1e}' for f in self.target.tolist()])
         #     # print(f"Trgt: {target_trace}")
+
+        # self.log[optim_state.term][-1].status = "optimized" if optim_result is not None else "no_minima"
+        # self.log[optim_state.term][-1].optim_result = optim_result
 
         self.num_terms_optimized += 1
 
@@ -368,6 +389,7 @@ class PointOptim(Operator, ServiceBase):
         #         holes.append(new_hole)
 
         clean_optim_result(slowest_traces)
+        # self.log[optim_state.term][-1].hole = hole
 
         # if self.debug:
         #     for i, hole in enumerate(holes):
@@ -387,7 +409,17 @@ class PointOptim(Operator, ServiceBase):
         if term not in self.term_positions:
             positions = self.syntax.get_positions(term)
             priorities = self.position_strategy(term, positions) # should be cached if necessary
-            ppositions = [PrioritizedTermPos(p, pos) for p, pos in zip(priorities, positions) if p is not None]
+            ppositions = []
+            for p, pos in zip(priorities, positions):
+                if p is not None:
+                    while self.is_lincomb(pos):
+                        pos = pos.parent
+                    if pos.parent is None:
+                        # return None # cannot optimize root                    
+                        continue
+                    optim_term = self.syntax.replace_position(term, pos, self.optim_point, with_validation=False)
+                    ppos = PrioritizedTermPos(p, optim_term, pos) 
+                    ppositions.append(ppos)
             ppositions.sort(key=lambda x: x.priority, reverse=True)
             self.term_positions[term] = ppositions
             
@@ -395,9 +427,14 @@ class PointOptim(Operator, ServiceBase):
             
         ppositions = self.term_positions[term]
 
+        pos_id = 0
+        num_pos = len(ppositions)
         while len(ppositions) > 0:
             ppos = ppositions.pop()
-            optim_state = self._get_optim_state(term, ppos.pos, ppos.priority)
+            # log_entry = LogEntry(optim_term=ppos.optim_term)
+            # self.log[term].append(log_entry)
+            optim_state = self._get_optim_state(term, ppos.pos, ppos.optim_term, ppos.priority, pos_id, num_pos)            
+            pos_id += 1
             if optim_state is None: # already optimized 
                 continue
 
@@ -421,6 +458,8 @@ class PointOptim(Operator, ServiceBase):
         ''' Builds one generator for optim states ordered by priority '''
         optim_state_cache = []
         for term in terms:
+            # self.log.setdefault(term, [])
+
             term_gen = self.select_positions(term)
             cur_term = next(term_gen, None)
             if cur_term is not None:
@@ -450,39 +489,55 @@ class PointOptim(Operator, ServiceBase):
         
         self.term_hole_pairs.insert_holes(holes, hole_bindings)
         for hb in hole_bindings:
-            del hb 
+            del hb          
 
-        fillings = self.term_hole_pairs.find_terms_for_holes(holes, use_global_threshold=True)
+        # if self.debug: 
+        #     print(f"\tFillings: {optim_state.optim_term}")           
+        fillings = self.term_hole_pairs.find_terms_for_holes(holes, use_global_threshold=False)
+
+        # self.log[optim_state.term][-1].status = "active" if len(fillings) > 0 else "no_fillings"
+        # self.log[optim_state.term][-1].fill_logs = logs
 
         for f in fillings:
             f.optim_point_priority = optim_state.priority
+
+        # if self.debug: 
+        #     print(f"\tDone: {optim_state.optim_term}")               
 
         return fillings 
     
     def __call__(self, population):        
         # delayed_fillings = self.term_hole_pairs.register_delayed_terms()
         all_fillings = []
+        # self.log.clear()
         position_gen = self.select_position(population)
-        count = len(population) # n per term 
+        count = 2*self.num_children # n per term 
         for optim_state in position_gen:
             new_fillings = self.mutate_position(optim_state)
             all_fillings.extend(new_fillings)
             if len(all_fillings) >= count:
                 break
 
-        # selected_terms = set(f.found_term for f in all_fillings)
-        default_terms = self.term_hole_pairs.get_indexed_terms() 
-        # default_terms = [t for t in default_terms if t not in selected_terms]
-        # now for each term we would like to take the hole 
-        term_fillings = self.term_hole_pairs.find_holes_for_terms(default_terms, use_global_threshold=True)
-        all_fillings.extend(term_fillings)
+        # # selected_terms = set(f.found_term for f in all_fillings)
+        # default_terms = self.term_hole_pairs.get_indexed_terms() 
+        # # default_terms = [t for t in default_terms if t not in selected_terms]
+        # # now for each term we would like to take the hole 
+        # term_fillings = self.term_hole_pairs.find_holes_for_terms(default_terms, use_global_threshold=False)
+        # all_fillings.extend(term_fillings)
         all_fillings.sort(key=lambda f: f.priority)
-        if len(all_fillings) > self.num_children:
+        selected_fillings = []
+        present_terms = set()
+        for filling in all_fillings:
+            if filling.const_optim_term in present_terms:
+                continue
             # pick best num_children fillings
-            all_fillings = all_fillings[:self.num_children]
+            present_terms.add(filling.const_optim_term)
+            selected_fillings.append(filling)
+            if len(selected_fillings) >= self.num_children:
+                break
             pass            
         children = []
-        for f in all_fillings:
+        for f in selected_fillings:
             if f.term in self.lineage:
                 prev_filling = self.lineage[f.term]
                 if prev_filling.priority > f.priority:
