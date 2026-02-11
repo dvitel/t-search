@@ -35,7 +35,7 @@ class Normalizer(Protocol, Generic[TTermPos]):
         pass
 
 class IdentityNormalizer(Normalizer):
-    def __init__(self, target: torch.Tensor):
+    def __init__(self, target: torch.Tensor, **_):
         self.target = target
 
     def normalize(self, vectors: torch.Tensor) -> torch.Tensor:

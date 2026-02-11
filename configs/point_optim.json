@@ -74,7 +74,7 @@
         "init_op": {
             "type": "Up2D", 
             "module": "t_search.operators.classic",
-            "params": { "depth": 1, "with_free_vars": true } 
+            "params": { "depth": 2, "with_free_vars": true } 
         },       
         "init": {
             "type": "Up2D", 
@@ -165,11 +165,13 @@
                 "tolerance_grad": 0.000001,
                 "with_tabu": true,
                 "num_minimas": 10,
-                "num_lib_terms": 1,
-                "loss_threshold": 0.0001,
-                "loss_koef": 0.9,
+                "num_lib_terms": 3,
+                "loss_threshold": 0.1,
+                "loss_koef": 1.0,
                 "log_file": "./data/point_optim_log.jsonl",
-                "best_by_metric": "l2"
+                "best_by_metric": "l2",
+                "allow_no_better": false,
+                "backtrack_lineage": true
             }
         },
         "const_optimizer": {

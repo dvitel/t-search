@@ -1,10 +1,6 @@
 {
     "!base": "./base.json",
     "service_definitions": {
-        "identity": {
-            "type": "IdentityNormalizer",
-            "params": {}
-        },
         "fitness": { 
             "type": "Fitness", 
             "params": {
