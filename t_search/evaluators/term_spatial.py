@@ -28,198 +28,82 @@ class QueryClosestResult:
     final_delta: float = 0.0
 
 class Normalizer(Protocol, Generic[TTermPos]):
-    def normalize(self, vectors: torch.Tensor, terms: list[TTermPos]) -> tuple[torch.Tensor, list[TTermPos]]:
+    def normalize(self, vectors: torch.Tensor) -> torch.Tensor:
         ''' Normalizes term vectors and removes bad terms'''
         pass 
-
-    def denormalize(self, normalized_vectors: torch.Tensor, terms: list[TTermPos]) -> torch.Tensor:
-        pass 
-
-    def get_params(self, term: TTermPos) -> Any:
-        return None
+    def get_normalized_target(self) -> torch.Tensor:
+        pass
 
 class IdentityNormalizer(Normalizer):
-    def normalize(self, vectors: torch.Tensor, terms: list[Any]) -> tuple[torch.Tensor, list[Any]]:
-        ''' Normalizes term vectors and removes bad terms'''
-        return vectors, terms
+    def __init__(self, target: torch.Tensor):
+        self.target = target
 
-    def denormalize(self, normalized_vectors: torch.Tensor, terms: list[Any]) -> torch.Tensor:
-        return normalized_vectors
+    def normalize(self, vectors: torch.Tensor) -> torch.Tensor:
+        ''' Normalizes term vectors and removes bad terms'''
+        return vectors.clone()
+    def get_normalized_target(self) -> torch.Tensor:
+        return self.target
     
-@dataclass 
-class ZScoreParams:
-    mean: torch.Tensor
-    std: torch.Tensor
-    flip: torch.Tensor
-    
-class ZScoreNormalizer(Normalizer, ServiceBase, Generic[TTermPos]):
+class ZScoreNormalizer(Normalizer):
     """Z-score normalization (mean=0, std=1)."""
     
-    def __init__(self, zero, one, 
-                 target: torch.Tensor,
-                 small_std: float = 1e-5):
-        self.zero = zero
-        self.one = one
-        self.small_std = small_std
-        self.target = target # we ensure positive Pearson correlation - flipping normalized vectors 
-        self.target_normalized = (target - torch.mean(target)) / torch.std(target)
-        self.params: dict[TTermPos, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+    def __init__(self, target: torch.Tensor,
+                 epsilon: float = 1e-7):
+        self.epsilon = epsilon
+        self.target = target
+        self.target_normalized = None 
+        self.target_normalized = self.normalize(target.unsqueeze(0))
+        pass
+
+    def get_normalized_target(self) -> torch.Tensor:
+        return self.target_normalized.squeeze(0)
     
-    def normalize(self, vectors: torch.Tensor, keys: list[TTermPos]) -> tuple[torch.Tensor, list[TTermPos]]:
+    def normalize(self, vectors: torch.Tensor) -> torch.Tensor:
         ''' Normalizes term vectors and removes constant terms'''
         means = torch.mean(vectors, dim=1, keepdim=True)
         stds = torch.std(vectors, dim=1, keepdim=True)
-        zero_mask = torch.all(torch.isclose(stds, self.zero, atol=self.small_std, rtol=0), dim=1)
-        not_const_mask = ~zero_mask
-        where_not_constant = torch.where(not_const_mask)[0]
-        should_cleanup = False
-        if len(where_not_constant) < len(keys):
-            keys = [keys[i] for i in where_not_constant.tolist()] if len(keys) > 0 else []
-            filtered_vectors = vectors[where_not_constant]
-            filtered_means = means[where_not_constant]
-            filtered_stds = stds[where_not_constant]
-            should_cleanup = True
-        else:
-            filtered_vectors = vectors
-            filtered_means = means
-            filtered_stds = stds
-        normalized = (filtered_vectors - filtered_means) / filtered_stds
-        # for normalized vectors 
-        # compute pearson correlation with target 
-        correlations = torch.sum(normalized * self.target_normalized.unsqueeze(0), dim=1)
+        stds[stds < self.epsilon] = self.epsilon
+        normalized = (vectors - means) / stds
+        if self.target_normalized is None:
+            return normalized
+        correlations = torch.sum(normalized * self.target_normalized, dim=1)
         neg_corr_mask = correlations < 0
         normalized[neg_corr_mask] *= -1.0
-        pass
-        
-        # Store normalization params per key
-        for key, mean, std, flip in zip(keys, filtered_means.squeeze(-1), filtered_stds.squeeze(-1), neg_corr_mask):
-            self.params[key] = (mean.clone(), std.clone(), flip.clone())
-        
-        del filtered_means, filtered_stds, stds, means, zero_mask, not_const_mask, where_not_constant, correlations, neg_corr_mask
-        if should_cleanup:
-            del filtered_vectors
-        return (normalized, keys)
+        return normalized
     
-    def denormalize(self, vectors: torch.Tensor, keys: list[TTermPos]) -> torch.Tensor:
-        """Denormalize using stored params."""
-        result = torch.empty_like(vectors)
-        means, stds, flips = zip(*[self.params[key] if key in self.params else (self.zero, self.one, self.zero.bool()) for key in keys])
-        mean_tensor = torch.stack(means)
-        std_tensor = torch.stack(stds)
-        flip_mask = torch.stack(flips).bool()
-        result = torch.where(std_tensor > 0, vectors * std_tensor + mean_tensor, mean_tensor)
-        result[flip_mask] *= -1.0
-        return result
-    
-    def get_params(self, term: TTermPos) -> ZScoreParams:
-        mean, std, flip = self.params.get(term, (None, None, None))
-        if mean is None: 
-            return {}
-        return ZScoreParams(mean, std, flip)
-    
-    def get_finalizer(self) -> Callable[[], None]:
-        def cleanup():
-            for mean, std, flip in self.params.values():
-                del mean, std, flip
-            self.params.clear()
-        return cleanup
-    
-class ZRankNormalizer(Normalizer, Generic[TTermPos]):
+class ZRankNormalizer(ZScoreNormalizer):
     """Z-score on ranks. See ZScoreNormalizer. ZScore produces l2 ordering w.r.t. some y that correspond to Pearson correlation.
        Z-Rank considers ordering based by monotonicity (close by l2 are close by monotonicity, high Spearman correlation)
     """
     
-    def __init__(self, zero, one, 
-                 target: torch.Tensor,
-                 small_std: float = 1e-5):
-        self.zero = zero
-        self.one = one
-        self.small_std = small_std
-        self.target = target # we ensure positive Pearson correlation - flipping normalized vectors 
-        self.target_ranks = rank(target.unsqueeze(0))
-        self.target_normalized = (self.target_ranks - torch.mean(self.target_ranks, dim=1, keepdim=True)) / torch.std(self.target_ranks, dim=1, keepdim=True)
-        pass
-        # self.params: dict[TTermPos, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
-        
-    def normalize(self, vectors: torch.Tensor, keys: list[TTermPos]) -> tuple[torch.Tensor, list[TTermPos]]:
+    def normalize(self, vectors: torch.Tensor) -> torch.Tensor:
         ''' Normalizes term vectors and removes constant terms'''
         ranks = rank(vectors)  # get ranks
-        means = torch.mean(ranks, dim=1, keepdim=True)
-        stds = torch.std(ranks, dim=1, keepdim=True)
-        zero_mask = torch.all(torch.isclose(stds, self.zero, atol=self.small_std, rtol=0), dim=1)
-        not_const_mask = ~zero_mask
-        where_not_constant = torch.where(not_const_mask)[0]
-        should_cleanup = False
-        if len(where_not_constant) < len(keys):
-            keys = [keys[i] for i in where_not_constant.tolist()] if len(keys) > 0 else []
-            filtered_vectors = ranks[where_not_constant]
-            filtered_means = means[where_not_constant]
-            filtered_stds = stds[where_not_constant]
-            should_cleanup = True
-        else:
-            filtered_vectors = ranks
-            filtered_means = means
-            filtered_stds = stds
-        normalized = (filtered_vectors - filtered_means) / filtered_stds
-        correlations = torch.sum(normalized * self.target_normalized, dim=1)
-        neg_corr_mask = correlations < 0
-        normalized[neg_corr_mask] *= -1.0
-        pass
-        
-        # Store normalization params per key
-        # for key, mean, std, flip in zip(keys, filtered_means.squeeze(-1), filtered_stds.squeeze(-1), neg_corr_mask):
-        #     self.params[key] = (mean.clone(), std.clone(), flip.clone())
-        
-        del filtered_means, filtered_stds, stds, means, zero_mask, not_const_mask, where_not_constant, correlations, neg_corr_mask
-        if should_cleanup:
-            del filtered_vectors
-        return (normalized, keys)
-    
-    def denormalize(self, vectors: torch.Tensor, keys: list[TTermPos]) -> torch.Tensor:
-        """Denormalize is not supported for ZRankNormalizer."""
-        raise NotImplementedError("Denormalize is not supported for ZRankNormalizer.")
+        normalized = super().normalize(ranks) 
+        return normalized
 
-class GaussRankNormalizer(Normalizer, Generic[TTermPos]):
+class GaussRankNormalizer(ZRankNormalizer):
     """ A.k.a Van der Waerden transformation. Applies inv(Φ) (Probit) on top of ranks / (n+1).
         Even better than ZRan w.r.t. outliers in traces.
     """
+
+    sqrt2 = 2.0 ** 0.5
     
-    def __init__(self, zero, one, 
-                 target: torch.Tensor,
-                 small_std: float = 1e-5):
-        self.zero = zero
-        self.one = one
-        self.small_std = small_std
-        self.target = target # we ensure positive Pearson correlation - flipping normalized vectors 
-        self.sqrt2 = 2.0 ** 0.5
-        self.target_normalized = self.transform_fn(target.unsqueeze(0))
-        pass
-        # self.params: dict[TTermPos, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
-
-    def transform_fn(self, x: torch.Tensor):
-        x_ranks = rank(x)
-        x_scaled_ranks = (x_ranks + 1.0) / (x.shape[1] + 1.0)
-        normalized = torch.erfinv(2.0 * x_scaled_ranks - 1.0) * self.sqrt2
-        return normalized
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         
-    def normalize(self, vectors: torch.Tensor, keys: list[TTermPos]) -> tuple[torch.Tensor, list[TTermPos]]:
+    def normalize(self, vectors: torch.Tensor) -> torch.Tensor:
         ''' Normalizes term vectors and removes constant terms'''
-        # note: we assume that we do not get constants!!
-        # TODO: asserttion
-        normalized = self.transform_fn(vectors)
+        x_ranks = rank(vectors)
+        x_scaled_ranks = (x_ranks + 1.0) / (vectors.shape[1] + 1.0)
+        normalized = torch.erfinv(2.0 * x_scaled_ranks - 1.0) * self.sqrt2
 
+        if self.target_normalized is None:
+            return normalized
         correlations = torch.sum(normalized * self.target_normalized, dim=1)
         neg_corr_mask = correlations < 0
         normalized[neg_corr_mask] *= -1.0
-        pass
-        
-        del correlations, neg_corr_mask
-        return (normalized, keys)
-    
-    def denormalize(self, vectors: torch.Tensor, keys: list[TTermPos]) -> torch.Tensor:
-        """Denormalize is not supported for GaussRankNormalizer."""
-        raise NotImplementedError("Denormalize is not supported for GaussRankNormalizer.")
-
+        return normalized
 
 class BaseVectorStorage(ServiceBase, Generic[TTermPos]):
 

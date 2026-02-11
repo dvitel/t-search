@@ -22,7 +22,7 @@ from t_search.solver_utils import get_method_params, read_config, register_servi
 from t_search.syntax.syntax import Syntax
 from t_search.syntax.term import Value, Variable
 
-from .utils import GLOBAL_RNG, EvSearchTermination, GPSolverStatus, add_metrics, timed
+from .utils import GLOBAL_RNG, EvSearchTermination, GPSolverStatus, add_metrics, metrics_serializer, timed
 from .operators import Operator
 from sklearn.base import BaseEstimator, RegressorMixin
 
@@ -68,7 +68,7 @@ default_alg_ops = {
     "neg": lambda a: -a,
     "inv": lambda a: 1 / a,
     "exp": lambda a: torch.exp(a),
-    "log": lambda a: torch.log(a),
+    "log": lambda a: torch.log(torch.abs(a)),
     "sin": lambda a: torch.sin(a),
     "cos": lambda a: torch.cos(a),
 }
@@ -537,13 +537,6 @@ class GPSolver(BaseEstimator, RegressorMixin):
 def save_metrics_to_json(metrics: dict, filepath: str):
     """Saves metrics to a JSON list file."""
     import json
-
-    def metrics_serializer(obj):
-        if isinstance(obj, torch.Tensor):
-            return obj.cpu().numpy().tolist()
-        if isinstance(obj, Term):
-            return str(obj)
-        raise TypeError(f"Type {type(obj)} not serializable")
 
     with open(filepath, "a") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)

@@ -25,7 +25,7 @@ class TermMutation(Operator):
         self.syntax = syntax
         self.debug = debug
 
-    def mutate_term(self, term: Term) -> Term | None | list[Term]:
+    def mutate_term(self, term: Term) -> Term | None:
         ''' Abstract. Mutates one term in the context of parents and already generated children ''' 
         pass # to be implemented in subclasses
 
@@ -59,11 +59,7 @@ class TermMutation(Operator):
                 repr_cnt += 1
             else: 
                 child = self.mutate_term(term)
-                if isinstance(child, list):
-                    success += 1 
-                    children.extend(child)
-                    mutated_size -= len(child)
-                elif child is not None:
+                if child is not None:
                     success += 1
                     children.append(child)
                     mutated_size -= 1

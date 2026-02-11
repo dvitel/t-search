@@ -23,6 +23,4 @@ class Up2D(Initialization):
         if self.with_free_vars:
             vars = self.syntax.get_vars()
             population.extend(vars)
-        # tt = self.syntax.get_op("add", self.syntax.get_var("x0"), self.syntax.get_const(1.0))
-        # population.append(tt)
         return population

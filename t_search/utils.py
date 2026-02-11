@@ -4,6 +4,8 @@ from typing import Callable, Sequence, Literal
 import numpy as np
 import torch
 
+from t_search.syntax.term import Term, TermPos
+
 GLOBAL_RNG = np.random.default_rng() 
 
 def add_metrics(metrics: dict, **kwargs):
@@ -108,3 +110,13 @@ def rank(x: torch.Tensor):
 #                           [5.1, 4.1, 3.1, 1.1]])
 
 # rank(test_rank)  # Expected ranks with ties handled appropriately
+
+
+def metrics_serializer(obj):
+    if isinstance(obj, torch.Tensor):
+        return obj.cpu().numpy().tolist()
+    if isinstance(obj, Term):
+        return str(obj)
+    if isinstance(obj, TermPos):
+        return f"{obj.term}@{obj.occur}"
+    raise TypeError(f"Type {type(obj)} not serializable")

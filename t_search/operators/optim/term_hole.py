@@ -81,12 +81,9 @@ class TermHolePairs(EvalListener, ServiceBase):
                     index_max_size: int = 1e10,
                     ):
 
-        self.target = target
-        self.zero = torch.zeros((1,), dtype = target.dtype, device = target.device)
-        self.one = torch.ones((1,), dtype = target.dtype, device = target.device)    
+        self.target = target 
 
-        self.term_index: TermVectorStorage = term_index
-        
+        self.term_index: TermVectorStorage = term_index        
         self.hole_index: HoleVectorStorage = hole_index
 
         # assert hole_index.normalizer is term_index.normalizer, "Both indexes must share normalizer"
@@ -120,19 +117,8 @@ class TermHolePairs(EvalListener, ServiceBase):
 
         pass 
 
-    # def init(self):
-    #     # NOTE: we have to add to term index at least one constant to discover constant terms for holes
-    #     if self.syntax.max_consts > 0:
-    #         zero_term = self.syntax.get_const(value=0.0)
-    #         # WARNINING: next fake eval works outsied evaluator object - hack that would avoid circular dependencies 
-    #         # Instead, Value(0) term may have different semantics for different evaluators 
-    #         fake_eval = torch.zeros_like(self.target) # NOTE: for now we assume it is ok 
-    #         self.register_terms([zero_term], fake_eval.unsqueeze(0))
-    #         del fake_eval
-    #         pass 
-    #     pass      
-    # 
-    def init(self, evaluator, **services):
+
+    def init(self, evaluator, **_):
 
         # testing 
         # term = self.syntax.parse_term_str("(mul (add (mul (mul (add (mul (mul x0 x0) 1.0174) -2.0177) x0) x0) 1.0117) x0)")
@@ -140,7 +126,6 @@ class TermHolePairs(EvalListener, ServiceBase):
         # print(res)
 
         # end testing
-
 
         lib_terms = self.init_op() # these terms will be used for sketches
         terms = list(set(lib_terms))
@@ -304,9 +289,55 @@ class TermHolePairs(EvalListener, ServiceBase):
                     result_fillings.append(new_filling)      
         return result_fillings
 
+    # def find_terms_for_holes(self, holes: list[tuple[Term, TermPos]], use_global_threshold: bool = False,
+    #                             # return_logs: bool = False
+    #                             ) -> list[HoleFilling]:
+    #     result_fillings = []
+    #     # logs = []
+    #     for hole in holes:            
+    #         if hole in self.const_hole_fillings:
+    #             result_fillings.append(self.const_hole_fillings[hole])
+    #             # log = HoleFillingLog(hole=hole, status = "constant")
+    #             # logs.append(log)
+    #             continue
+    #         hole_vector = self.hole_index.get_semantics_for_term(hole)
+    #         if hole_vector is None:
+    #             # log = HoleFillingLog(hole=hole, status = "no_vector")
+    #             # logs.append(log)
+    #             continue
+    #         hole_id = self.hole_index.term_to_sid[hole]
+    #         query_params = QueryClosestParams(delta=self.start_delta, 
+    #                                           multiplier=self.multiplier, 
+    #                                           num_steps=self.num_steps, 
+    #                                           num_closest=self.num_closest)   
+    #         while query_params.num_closest > 0:
+    #             query_res = self.term_index.query_closest(hole_vector, query_params)
+    #             if len(query_res.found_ids) == 0:
+    #                 break
+    #             # if self.debug: 
+    #             #     print(f"\t\t{query_params.num_closest} {query_params.num_steps}")
+    #             query_params.delta = query_res.final_delta * self.multiplier
+    #             query_params.exclude_ids.update(query_res.found_ids)
+    #             for (l2, term) in zip(query_res.l2, query_res.terms):
+    #                 exclude_ids = self.term_tried_ids.setdefault(term, set())  
+    #                 exclude_ids.add(hole_id)
+    #                 # log = HoleFillingLog(hole=hole, term=term)
+    #                 # logs.append(log)
+    #                 new_filling = self.fill_holes(term, hole[0], hole[1], l2, use_global_threshold=use_global_threshold,
+    #                                                 # status_setter=lambda s: setattr(log, "status", s))
+    #                                                 )        
+    #                 # log.filling = new_filling
+    #                 if new_filling is not None:
+    #                     query_params.num_closest -= 1
+    #                     result_fillings.append(new_filling)  
+    #             break # TODO execute once      
+    #     # if return_logs:
+    #     #     return result_fillings, logs                  
+    #     return result_fillings
+
     def find_terms_for_holes(self, holes: list[tuple[Term, TermPos]], use_global_threshold: bool = False,
                                 # return_logs: bool = False
-                                ) -> list[HoleFilling] | tuple[list[HoleFilling], list[HoleFillingLog]]:
+                                ) -> list[HoleFilling]:
         result_fillings = []
         # logs = []
         for hole in holes:            

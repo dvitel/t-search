@@ -23,12 +23,9 @@ class OptimResult:
     # is_improved: torch.Tensor | None = None
     def agg_loss(self):
         return self.loss.mean(dim=-1)  # (num_starts,) or (1,)
+    
 
-# NOTE: we cannot optimize constants and point at same time 
-#       the problem is than how to recreate the trace
-#       previously, points are selected to minimize variance 
-#       if we optimize both, consts and pointsm we create context specific vectors- starts are dependent from consts
-def optimize(
+def optimize_par(
     optim_term: Term,
     start_range: torch.Tensor,
     start_binding: dict[OptimPoint, torch.Tensor],
@@ -42,8 +39,154 @@ def optimize(
     tolerance_grad: float = 1e-3,
     torch_gen: torch.Generator | None = None,
     # debug: bool = False
-    loss_threshold: float = 1e-7,
-) -> OptimResult | None:
+) -> OptimResult:
+    # global optim_id
+    
+    # assert optim_state.loss_fn is not None, "Optimization loss function is not set"
+        
+    # if debug:
+    #     optim_id += 1
+
+    #     print(f">>> [{optim_id}] {optim_term}")
+
+    params = []
+    binding = {}
+    for optim_point, optim_value in start_binding.items():
+        value = torch.zeros(
+            (num_starts, start_range.shape[0]), 
+            dtype=optim_value.dtype, device=optim_value.device
+        )
+        value[0] = optim_value
+
+        if num_starts > 1:
+            rand_points = get_rand_interval_points(
+                num_starts-1, start_range,
+                rand_deltas=True, generator=torch_gen
+            )
+            for rp_id, rp in enumerate(rand_points):
+                value[rp_id+1:] = rp
+                
+        value.requires_grad_(True)
+        binding[optim_point] = value
+        params.append(value)
+
+    # print(f"\t === {optim_state.max_tries} {cur_lr}")
+
+    def get_binding(root: Term, term: Term):
+        if isinstance(term, OptimPoint):
+            return binding[term]
+        # NOTE: we still allow evaluator _get_binding to speedup computations
+
+    additional_binding = {}
+    occurs = {}
+    def set_binding(root: Term, term: Term, value: torch.Tensor):
+        ''' NOTE: only path to OptimPoint should be set here '''
+        cur_occur = occurs.setdefault(term, 0)
+        if (term, cur_occur) in pos_to_collect:
+            additional_binding[(term, cur_occur)] = value.detach().clone()
+            occurs[term] = cur_occur + 1
+        return
+
+    loss_fn = loss_fn_builder(get_binding=get_binding, set_binding=set_binding)
+
+    optimizer = torch.optim.LBFGS(
+        params,
+        lr=lr,
+        max_iter=max_evals,
+        max_eval=max_evals,
+        # max_eval = 1.5 * num_steps,
+        tolerance_change=tolerance_change,
+        tolerance_grad=tolerance_grad,
+        # history_size=100,
+        line_search_fn="strong_wolfe",
+    )
+
+    best_loss = None # torch.full((num_starts, start_range.shape[0]), torch.inf, dtype=start_range.dtype, device=start_range.device)
+    # start_loss = None
+    best_binding = {k:v.detach().clone() for k, v in binding.items()}
+    best_additional_binding = {k: None for k in additional_binding}
+
+    num_root_evals = 0
+
+    def closure_builder(optimizer: torch.optim.Optimizer):
+        nonlocal best_loss, max_evals, num_root_evals
+
+        # cur_lr = optimizer.param_groups[0]['lr']
+        # print(f"LR: {cur_lr}")        
+        if num_root_evals >= max_evals:
+            raise LRAdjust(None)
+        optimizer.zero_grad()
+
+        occurs.clear()
+        loss: torch.Tensor = loss_fn(optim_term)
+        num_root_evals += 1
+        fixed_loss = loss.nan_to_num_(torch.inf)
+        # finite_loss_mask = torch.isfinite(loss)
+
+        # if not torch.all(torch.isfinite(fixed_loss)):
+        #     raise LRAdjust(None)
+
+        # if start_loss is None:
+        #     start_loss = fixed_loss[0:1].detach().clone()
+        if best_loss is None:
+            best_loss = torch.full_like(fixed_loss, torch.inf)
+        where_better = fixed_loss < best_loss
+        best_loss.data[where_better] = fixed_loss[where_better]
+        for k, v in binding.items():
+            bb = best_binding[k]
+            bb.data[where_better] = v[where_better]
+        for k, v in additional_binding.items():
+            if k in best_additional_binding:
+                best_additional_binding[k].data[where_better] = additional_binding[k][where_better]                
+            else:
+                best_additional_binding[k] = additional_binding[k].clone()
+        for v in additional_binding.values():
+            del v
+        
+        total_loss = fixed_loss.mean() # use all losses including inf
+        total_loss.backward()
+
+        return total_loss
+
+    closure = partial(closure_builder, optimizer)
+
+    try:
+        first_loss = optimizer.step(closure)
+    except ZeroDivisionError as e:
+        # print(f"LBFGS optimization failed with ZeroDivisionError")
+        pass  # just use last loss
+    except LRAdjust as e:
+        pass
+        # if e.args[0] is None:
+        #     break
+        # cur_lr *= e.args[0]
+        # lr_try -= 1
+        # continue
+
+    for p in params:
+        del p.grad
+        del p
+
+    res = OptimResult(best_loss, best_binding, best_additional_binding)
+
+    return res    
+
+def optimize_seq(
+    optim_term: Term,
+    start_range: torch.Tensor,
+    start_binding: dict[OptimPoint, torch.Tensor],
+    loss_fn_builder: Callable,
+    *,
+    pos_to_collect: list[tuple[Term, int]] = [],
+    num_starts: int = 10,
+    lr: float = 1.0,
+    max_evals: int = 10,
+    tolerance_change: float = 1e-6,
+    tolerance_grad: float = 1e-3,
+    torch_gen: torch.Generator | None = None,
+    # debug: bool = False
+    # loss_threshold: float = 1e-7,
+) -> OptimResult:
     # global optim_id
     
     # assert optim_state.loss_fn is not None, "Optimization loss function is not set"
@@ -179,8 +322,8 @@ def optimize(
 
         new_res = OptimResult(best_loss, best_binding, best_additional_binding)
 
-        if best_loss_mean < loss_threshold:
-            ress.append(new_res)
+        # if best_loss_mean < loss_threshold:
+        ress.append(new_res)
         #     should_skip = any(all(torch.allclose(new_res.binding[k], prev_res.binding[k], rtol=1e-7, atol=1e-9) 
         #                           for k in prev_res.binding.keys()) 
         #                         for prev_res in ress)            
@@ -190,8 +333,6 @@ def optimize(
 
     if rand_starts is not None:
         del rand_starts
-    if len(ress) == 0:
-        return None
     losses = torch.stack([res.loss for res in ress], dim=0) # (num_starts, num_tests)
     bindings = { k: torch.stack([res.binding[k] for res in ress], dim=0) for k in ress[0].binding.keys()} # dict of (num_starts, num_tests)
     additional_bindings = {k: torch.stack([res.additional_binding[k] for res in ress], dim=0) for k in ress[0].additional_binding.keys()} # dict of (num_starts, num_tests)
@@ -498,20 +639,20 @@ def threshold_optim_result_(optim_result: OptimResult,
     optim_result.loss[mask] = torch.inf
     return optim_result
 
-def total_threshold_optim_result_(optim_result: OptimResult,
-                           loss_threshold: float = 1e-3) -> OptimResult:
-    '''
-    Sets loss above threshold to torch.inf in optim_result in-place
-    '''
-    loss_per_start = optim_result.loss.mean(dim=-1)
-    mask = loss_per_start >= loss_threshold
-    optim_result.loss[mask, :] = torch.inf
-    return optim_result
+# def total_threshold_optim_result_(optim_result: OptimResult,
+#                            loss_threshold: float = 1e-3) -> OptimResult:
+#     '''
+#     Sets loss above threshold to torch.inf in optim_result in-place
+#     '''
+#     loss_per_start = optim_result.loss.mean(dim=-1)
+#     mask = loss_per_start >= loss_threshold
+#     optim_result.loss[mask, :] = torch.inf
+#     return optim_result
 
 def get_slowest_funs(optim_result: OptimResult, 
                      max_num_funs: int = 1,
                      high_num_funs: int = 1024, # we may attempt to generate this num of funcs and then pick max_num_funs
-                     ) -> OptimResult | None:
+                     set_num_minimas: Callable = lambda n: None) -> OptimResult | None:
     '''
     For given combinatorial semantics in optim_result.binding,
     finds slowest functions which fits the loss requirement optim_result.loss < loss_threshold
@@ -525,14 +666,17 @@ def get_slowest_funs(optim_result: OptimResult,
     fit_mask = torch.isfinite(optim_result.loss) # (num_starts, num_tests)
     num_fit = torch.sum(fit_mask, dim=0)
     if torch.any(num_fit == 0):
+        set_num_minimas(0)
         return None # some tests cannot be fitted 
     if torch.all(num_fit == 1): # exactly one function 
+        set_num_minimas(1)
         pos = torch.argmax(fit_mask.long(), dim=0, keepdim=True) # (1, num_tests)
         res = gather_optim_pos(optim_result, pos)
         return res 
     # there could be combinations - we check distances to neighbours
     fit_ids = [torch.where(fit_mask[:, test_i])[0] for test_i in range(num_tests)]
     num_funcs = prod(len(l) for l in fit_ids)
+    set_num_minimas(num_funcs)
     if num_funcs <= max_num_funs: # return all possible binding combinations 
         pos = torch.cartesian_prod(*fit_ids) #(num_funcs, num_tests)
         res = gather_optim_pos(optim_result, pos)
