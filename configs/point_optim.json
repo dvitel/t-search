@@ -76,15 +76,20 @@
             "module": "t_search.operators.classic",
             "params": { "depth": 1, "with_free_vars": true } 
         },       
-        "init": {
+        "up2d": {
             "type": "Up2D", 
             "module": "t_search.operators.classic",
             "params": { "depth": 2 } 
         },
+        "init": {
+            "type": "RHH", 
+            "module": "t_search.operators.classic",
+            "params": { "size": 100 } 
+        },        
         "selection": { 
             "type": "TS", 
             "module": "t_search.operators.classic",
-            "params": { "selection_size": 10, "tournament_size": 7 } 
+            "params": { "selection_size": 100, "tournament_size": 7 } 
         },
         "mutation": { 
             "type": "RPM", 
@@ -157,9 +162,8 @@
                 "position_strategy": "rand_position_order",
                 "num_starts": 10,
                 "range_delta": 0.1,
-                "max_evals": 30,
+                "max_evals": 20,
                 "num_pos_per_term": 1,
-                "children_limit": 100,
                 "lr": 1,
                 "tolerance_change": 0.0000001,
                 "tolerance_grad": 0.000001,
@@ -174,7 +178,10 @@
                 "allow_no_better": false,
                 "backtrack_lineage": true,
                 "with_pop_terms": false,
-                "max_pos_tries": 2
+                "identity_atol": 0.001,
+                "identity_rtol": 0.001,
+                "max_pos_tries": 1,
+                "rate": 1.0
             }
         },
         "const_optimizer": {
@@ -200,7 +207,8 @@
         }
     },
     "init_service_name": "init",
-    "operator_service_names": [        
+    "operator_service_names": [     
+        "selection",
         "point_optim",
         "evaluator",
         "survivor_selection"
@@ -211,6 +219,6 @@
     "fitness_service_name": "fitness",
     "semantics_service_name": "semantics",   
     "final_reducer_service_name": "sreduce",
-    "max_gen": 1000,
+    "max_gen": 100,
     "max_dim_size": 1000    
 }
