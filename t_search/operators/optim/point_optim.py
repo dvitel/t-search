@@ -7,7 +7,7 @@ from typing import Any, Callable, Generator, Literal
 import torch
 
 from t_search.base import ServiceBase
-from t_search.evaluators.const_optimizer import ConstOptimizer
+from t_search.evaluators.const_optimizer import ConstOptimizer, Optimized
 from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.fitness import Fitness
 from t_search.evaluators.optimization import OptimResult, clean_optim_result, get_all_grads, optimize_par, set_local_minimas_, get_slowest_funs, optimize_seq
@@ -44,6 +44,22 @@ class TermMutationContext:
     final_term: Term | None = None
     filling: Term | None = None
     status: str = "active"
+
+
+@dataclass(frozen=True)
+class LossBasedContinuation:
+    filling: Term
+    final_term: Term
+    final_loss: float
+
+@dataclass(frozen=True)
+class L2BasedContinuation:
+    filling: Term
+
+# @dataclass(frozen=True)
+# class TermMutationContextOrder: 
+#     main_context: TermMutationContext
+#     continuation: deque[LossBasedContinuation | L2BasedContinuation]
 
 # @dataclass(order=True)
 # class PrioritizedTermPos:
@@ -119,6 +135,7 @@ class PointOptim(PositionMutation, ServiceBase):
                  log_file: str | None = None,
                  num_pos_per_term: int = 1,
                  children_limit: int = 10000,
+                 loss_koef: float = 1.0,
                  best_by_metric: Literal["l2", "loss"] = "l2",
                 #  debug: bool = False,
                 #  rnd: np.random.Generator = GLOBAL_RNG,
@@ -151,6 +168,7 @@ class PointOptim(PositionMutation, ServiceBase):
         self.num_minimas = num_minimas
         self.num_lib_terms = num_lib_terms
         self.loss_threshold = loss_threshold
+        self.loss_koef = loss_koef
         self.init_op = init_op
         self.const_optimizer = const_optimizer
         self.num_pos_per_term = num_pos_per_term
@@ -168,7 +186,8 @@ class PointOptim(PositionMutation, ServiceBase):
         self.ranges[:, 1] = max_y
         self.optim_point = OptimPoint(0)
         self.lineage: dict[Term, Term] = {} # child to parent map for backtracking
-        self.term_contexts: dict[Term, list[TermMutationContext]] = {} # cached position priorities for terms
+        self.term_contexts: dict[Term, deque[TermMutationContext]] = {} # cached position priorities for terms
+        self.term_context_continuations: dict[tuple[Term, TermPos], deque[LossBasedContinuation | L2BasedContinuation]] = {} # current position order for term
         self.remap_provider = remap_provider
         # self.log: dict[Term, list[LogEntry]] = {} # stores current pop optimization log: wwhat positions tried, when and why they are failed
 
@@ -284,6 +303,9 @@ class PointOptim(PositionMutation, ServiceBase):
 
     def _get_optim_state(self, context: TermMutationContext) -> None:
         ''' None is returned if term,position is already optimized '''
+
+        if context.optim_term is not None:
+            return # already computed for this context
 
         # while self.is_lincomb(position):
         #     position = position.parent
@@ -410,11 +432,112 @@ class PointOptim(PositionMutation, ServiceBase):
         new_term = self.syntax.get_op(term.op_id, *non_const_terms)
         return new_term
     
+    def optimize_consts(self, context: TermMutationContext, term: Term) -> Optimized | None:
+        if isinstance(term, Value):
+            fit_term = term
+        else:
+            k_value = self.syntax.one_value
+            b_value = self.syntax.zero_value
+            fit_subterm1 = self.syntax.get_op("mul", k_value, term)
+            fit_term = self.syntax.get_op("add", fit_subterm1, b_value)
+        # NOTE: change hole pos to remove (mul ? c) and (add ? c).
+        # TODO: check that next loop can be removed???
+        # while hole_pos.parent is not None:   
+        #     parent = hole_pos.parent             
+        #     if isinstance(parent.term, Op) and \
+        #         ((parent.term.op_id == "mul") or (parent.term.op_id == "add")) and \
+        #         all(isinstance(a, Value) for arg_pos, a in enumerate(parent.term.get_args()) if arg_pos != hole_pos.pos):
+        #         hole_pos = parent
+        #         continue
+        #     break                       
+
+        # TODO: NOTE: here we do not handle const overflow 
+        #             more precise handling woul try the term itself instead of linear combination
+        #             when we above the const limit - for n ow it is intended. Just increase const limit in config (+2)
+        new_term = self.syntax.replace_position(context.term, context.pos, fit_term)
+        if new_term is None:
+            # if self.debug:
+            #     print(f"\tDiscarded: {fit_term} --> {hole_root}@({hole_pos.term}, {hole_pos.occur})")
+            # status_setter("invalid_term")
+            # final_terms.append(None)
+            # continue
+            return None
+    
+        # reducing consstants before optimization 
+        new_term = self.reduce_consts(new_term)
+
+        optimized = self.const_optimizer.optimize(new_term, with_loss=True)    
+        return optimized    
+    
+    def add_context_continuation(self, context: TermMutationContext) -> None:
+
+        context_key = (context.term, context.pos)
+        if context_key not in self.term_context_continuations:
+            return 
+        conts = self.term_context_continuations[context_key]
+        if len(conts) == 0:
+            del self.term_context_continuations[context_key]
+            return
+
+        next_context = TermMutationContext(
+            gen = context.gen,
+            term = context.term,
+            pos = context.pos,
+            pos_priority = context.pos_priority,
+            pos_id = context.pos_id,
+            num_pos = context.num_pos,
+            optim_term = context.optim_term,
+            tabu_markers = context.tabu_markers,
+            start_loss = context.start_loss,
+            optim_loss = context.optim_loss,
+            num_minimas = context.num_minimas,
+            num_optim_vectors = context.num_optim_vectors,
+            found_const = context.found_const,
+            lib_term_dists = context.lib_term_dists,
+            lib_term_order = context.lib_term_order,
+            # --- 
+            final_losses = [],
+            final_loss = float('inf'),
+            final_term = None,
+            filling = None,
+            status = "active"            
+        )
+
+        self.term_contexts[context.term].appendleft(next_context)
+    
     def mutate_one_position(self, term: Term, context: TermMutationContext) -> None:
         ''' Applies optimization to the term position '''
         
         # if self.debug: 
         #     print(f"\tOptim: {optim_state.optim_term}")
+
+        context_key = (context.term, context.pos)
+        if context_key in self.term_context_continuations: # it is continuation of optimization - we may reuse info from original optimization
+            conts = self.term_context_continuations[context_key]
+            assert len(conts) > 0
+            next_cont = conts.popleft()
+            if isinstance(next_cont, LossBasedContinuation):
+                context.filling = next_cont.filling
+                context.final_term = next_cont.final_term
+                context.final_loss = next_cont.final_loss
+            elif isinstance(next_cont, L2BasedContinuation):
+                context.filling = next_cont.filling
+                optimized = self.optimize_consts(context, context.filling)
+                if optimized is not None:
+                    context.final_term = optimized.term
+                    context.final_loss = optimized.loss
+
+            self.add_context_continuation(context)
+
+            if context.final_term is None:
+                context.status = "invalid_term"
+
+            if context.final_loss < self.loss_koef * context.start_loss:
+                self.num_better_fills += 1
+            else:
+                context.status = "no_better"
+
+            return            
         
         optim_result: OptimResult = optimize_par(context.optim_term, 
                                 self.ranges, 
@@ -475,7 +598,7 @@ class PointOptim(PositionMutation, ServiceBase):
             # this vector does not make sense as it recursive search for target 
             self.add_to_tabu(context.optim_term)
             context.status = "recursive"
-            return None
+            return
 
         clean_optim_result(slowest_traces)
 
@@ -504,69 +627,69 @@ class PointOptim(PositionMutation, ServiceBase):
                 context.lib_term_dists = context.lib_term_dists[:self.num_lib_terms]
                 context.lib_term_order = ordered_terms
 
-        final_losses = torch.full((len(ordered_terms),), torch.inf, dtype=self.target.dtype, device=self.target.device)    
-        final_terms = []
-        for i, term in enumerate(ordered_terms): 
+        if self.best_by_metric == "loss": # run all optimizations of ordered terms abd pick best 
+            final_losses = torch.full((len(ordered_terms),), torch.inf, dtype=self.target.dtype, device=self.target.device)    
+            final_terms = []
+            for i, term in enumerate(ordered_terms): 
 
-            if isinstance(term, Value):
-                fit_term = term
-            else:
-                k_value = self.syntax.one_value
-                b_value = self.syntax.zero_value
-                fit_subterm1 = self.syntax.get_op("mul", k_value, term)
-                fit_term = self.syntax.get_op("add", fit_subterm1, b_value)
-            # NOTE: change hole pos to remove (mul ? c) and (add ? c).
-            # TODO: check that next loop can be removed???
-            # while hole_pos.parent is not None:   
-            #     parent = hole_pos.parent             
-            #     if isinstance(parent.term, Op) and \
-            #         ((parent.term.op_id == "mul") or (parent.term.op_id == "add")) and \
-            #         all(isinstance(a, Value) for arg_pos, a in enumerate(parent.term.get_args()) if arg_pos != hole_pos.pos):
-            #         hole_pos = parent
-            #         continue
-            #     break                       
+                optimized = self.optimize_consts(context, term)
 
-            # TODO: NOTE: here we do not handle const overflow 
-            #             more precise handling woul try the term itself instead of linear combination
-            #             when we above the const limit - for n ow it is intended. Just increase const limit in config (+2)
-            new_term = self.syntax.replace_position(context.term, context.pos, fit_term)
-            if new_term is None:
-                # if self.debug:
-                #     print(f"\tDiscarded: {fit_term} --> {hole_root}@({hole_pos.term}, {hole_pos.occur})")
-                # status_setter("invalid_term")
-                final_terms.append(None)
-                continue
-        
-            # reducing consstants before optimization 
-            new_term = self.reduce_consts(new_term)
+                if optimized is None:
+                    final_terms.append(None)
+                    continue
 
-            optimized = self.const_optimizer.optimize(new_term, with_loss=True)
+                final_losses[i] = optimized.loss
 
-            final_losses[i] = optimized.loss
-
-            final_terms.append(optimized.term)
-            self.num_total_fills += 1
- 
-        context.final_losses = final_losses.tolist()
-        if self.best_by_metric == "loss":
-            best_loss_id = torch.argmin(final_losses).item()
+                final_terms.append(optimized.term)
+                self.num_total_fills += 1
+    
+            sort_ids = torch.argsort(final_losses)
+            context.final_losses = final_losses.tolist()
+            best_loss_id = sort_ids[0].item()
             context.final_loss = final_losses[best_loss_id].item()
             context.final_term = final_terms[best_loss_id]     
             context.filling = ordered_terms[best_loss_id]   
+
+            conts = []
+            for i in range(1, len(sort_ids)):
+                term_id = sort_ids[i].item()
+                filling = ordered_terms[term_id]
+                loss = final_losses[term_id].item()
+                final_term = final_terms[term_id]
+                cont = LossBasedContinuation(filling=filling, final_term=final_term, final_loss=loss)
+                conts.append(cont)
+
+            if len(conts) > 0:
+                self.term_context_continuations[context_key] = deque(conts)                
+
         else: # best_by_metric == "l2"
-            context.final_loss = final_losses[0].item() 
-            context.final_term = final_terms[0]
-            context.filling = ordered_terms[0]
+            term = ordered_terms[0]
+            context.filling = term
+            optimized = self.optimize_consts(context, term)
+            if optimized is None:
+                context.final_loss = float('inf')
+                context.final_term = None
+            else:
+                context.final_loss = optimized.loss
+                context.final_term = optimized.term
+            context.final_losses = [context.final_loss]
+
+            conts = [L2BasedContinuation(ordered_terms[i]) for i in range(1, len(ordered_terms))]
+            if len(conts) > 0:
+                self.term_context_continuations[context_key] = deque(conts)
+
+        self.add_context_continuation(context)
+
         if context.final_term is None:
             context.status = "invalid_term"
 
-        if context.final_loss < context.start_loss:
+        if context.final_loss < self.loss_koef * context.start_loss:
             self.num_better_fills += 1
         else:
             context.status = "no_better"
 
         # self.mutation_log.append(context)
-        pass
+        return
 
         # return res_term
     
@@ -585,18 +708,16 @@ class PointOptim(PositionMutation, ServiceBase):
        
     def select_positions(self, term: Term) -> Generator[list[TermMutationContext], None, None]:   
 
-        if not self.semantics.is_valid(term): # do not optimize invalid terms
-            return
-        
-
         if term not in self.term_contexts:
+            if not self.semantics.is_valid(term): # do not optimize invalid terms
+                return
             cur_gen = self.get_cur_gen()
             positions = self.syntax.get_positions(term)
             priorities = self.position_strategy(term, positions) # should be cached if necessary
             start_loss = self.fitness.get_fitness(term).item()
             contexts = [TermMutationContext(cur_gen, term, pos, pos_priority=priority, start_loss=start_loss) 
                         for priority, pos in zip(priorities, positions) ]
-            contexts.sort(key=lambda x: x.pos_priority, reverse=True)
+            contexts.sort(key=lambda x: x.pos_priority)
             # ppositions: list[TermMutationContext] = []
             # for p, pos in zip(priorities, positions):
             #     # while self.is_lincomb(pos):
@@ -608,7 +729,7 @@ class PointOptim(PositionMutation, ServiceBase):
             #     ppos = PrioritizedTermPos(p, optim_term, pos) 
             #     ppositions.append(ppos)
             # ppositions.sort(key=lambda x: x.priority, reverse=True)
-            self.term_contexts[term] = contexts
+            self.term_contexts[term] = deque(contexts)
             
             # sorted_positions = [p for _, p in sorted(zip(priorities, positions), key=lambda x: x[0])]
             
@@ -618,28 +739,46 @@ class PointOptim(PositionMutation, ServiceBase):
         num_pos = len(contexts)
         next_contexts = []
         while len(contexts) > 0:
-            context = contexts.pop()
-            context.pos_id = pos_id
-            context.num_pos = num_pos
-            pos_id += 1
-            # log_entry = LogEntry(optim_term=ppos.optim_term)
-            # self.log[term].append(log_entry)
-            self._get_optim_state(context)            
-            if context.status != "active":
-                self.mutation_log.append(context)
-                continue
+            while len(contexts) > 0:
+                context = contexts.popleft()
+                context.pos_id = pos_id
+                context.num_pos = num_pos
+                pos_id += 1
+                # log_entry = LogEntry(optim_term=ppos.optim_term)
+                # self.log[term].append(log_entry)
+                self._get_optim_state(context)            
+                if context.status != "active":
+                    self.mutation_log.append(context)
+                    continue
 
-            # hole_pos = HolePos(priority, term, pos)
-            # yield context
-            next_contexts.append(context)
-            if len(next_contexts) >= self.num_pos_per_term:
+                # hole_pos = HolePos(priority, term, pos)
+                # yield context
+                next_contexts.append(context)
+                if len(next_contexts) >= self.num_pos_per_term:
+                    yield next_contexts
+                    next_contexts = []
+                # heappush(self.pos_queue, hole_pos)
+
+            if len(next_contexts) > 0:
                 yield next_contexts
                 next_contexts = []
-            # heappush(self.pos_queue, hole_pos)
 
-        if len(next_contexts) > 0:
-            yield next_contexts
-            next_contexts = []
+        visited = set()
+        cur_term = term
+        while len(self.term_contexts[cur_term]) == 0:
+            if cur_term in visited:
+                break
+            visited.add(cur_term) 
+            if cur_term in self.remap_provider.remap:
+                term_key = self.remap_provider.remap[cur_term]
+            else:
+                term_key = cur_term   
+            if term_key in self.lineage:                 
+                cur_term = self.lineage[term_key]
+            else:
+                break
+        if len(self.term_contexts[cur_term]) > 0:
+            yield from self.select_positions(cur_term)         
 
         # if term in self.remap_provider.remap:
         #     term_key = self.remap_provider.remap[term]
@@ -725,20 +864,24 @@ class PointOptim(PositionMutation, ServiceBase):
         selected_contexts = []
         fixed_mutations = []
         for context in mutations:
-            if isinstance(context, Term):
-                cur_term = context
-                while len(self.term_contexts[cur_term]) == 0:
-                    if cur_term in self.remap_provider.remap:
-                        term_key = self.remap_provider.remap[cur_term]
-                    else:
-                        term_key = cur_term   
-                    if term_key in self.lineage:                 
-                        cur_term = self.lineage[term_key]
-                    else:
-                        break
-                if len(self.term_contexts[cur_term]) > 0:
-                    new_children.append(cur_term)
-            else:
+            if not isinstance(context, Term):
+            #     cur_term = context
+            #     visited = set()
+            #     while len(self.term_contexts[cur_term]) == 0:
+            #         if cur_term in visited:
+            #             break
+            #         visited.add(cur_term) 
+            #         if cur_term in self.remap_provider.remap:
+            #             term_key = self.remap_provider.remap[cur_term]
+            #         else:
+            #             term_key = cur_term   
+            #         if term_key in self.lineage:                 
+            #             cur_term = self.lineage[term_key]
+            #         else:
+            #             break
+            #     if len(self.term_contexts[cur_term]) > 0:
+            #         new_children.append(cur_term)
+            # else:
                 fixed_mutations.append(context)
         should_exit = False
         for i in range(self.num_pos_per_term):
@@ -765,7 +908,7 @@ class PointOptim(PositionMutation, ServiceBase):
         if self.debug:
             selected_contexts.sort(key=lambda c: c.final_loss)
             for context in selected_contexts:
-                print(f"{context.final_loss:8.7f} ← {context.start_loss:8.7f} | {context.final_term} from {context.term}@({context.pos.term},{context.pos.occur}) with {context.filling}")
+                print(f"{context.final_loss:8.7f} ← {context.start_loss:8.7f} |\n\t\t{context.final_term} from\n\t\t{context.term}@({context.pos.term},{context.pos.occur}) with {context.filling}")
         # new_children = [ch for ch, p in zip(children, parents) if ch != p]
         # unique_children = sorted(set(new_children), key=lambda t: self.syntax._get_term_priority(t))
         return new_children

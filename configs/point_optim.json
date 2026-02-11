@@ -45,11 +45,11 @@
                     "cos": [0, 10]
                 },
                 "inner_ops_max_counts": {
-                    "exp": {"exp": 0},
-                    "log": {"log": 0},
+                    "exp": {"exp": 0, "sin": 0, "cos": 0},
+                    "log": {"log": 0, "cos": 0, "sin": 0},
                     "pow": {"pow": 0},
-                    "sin": {"sin": 0, "cos": 0},
-                    "cos": {"cos": 0, "sin": 0}
+                    "sin": {"sin": 0, "cos": 0, "log": 0, "exp": 0},
+                    "cos": {"cos": 0, "sin": 0, "log": 0, "exp": 0}
                 },
                 "immediate_arg_limits": {
                     "inv": {
@@ -154,7 +154,7 @@
                 "init_op": {"!ref": "init_op"},
                 "normalizer": {"!ref": "normalizer"},
                 "const_optimizer": {"!ref": "const_optimizer"},
-                "position_strategy": "shallow_to_deep_position_order",
+                "position_strategy": "rand_position_order",
                 "num_starts": 10,
                 "range_delta": 0.1,
                 "max_evals": 30,
@@ -165,8 +165,9 @@
                 "tolerance_grad": 0.000001,
                 "with_tabu": true,
                 "num_minimas": 10,
-                "num_lib_terms": 5,
-                "loss_threshold": 0.001,
+                "num_lib_terms": 1,
+                "loss_threshold": 0.0001,
+                "loss_koef": 0.9,
                 "log_file": "./data/point_optim_log.jsonl",
                 "best_by_metric": "l2"
             }
@@ -197,7 +198,6 @@
     "operator_service_names": [        
         "point_optim",
         "evaluator",
-        "sreduce",
         "survivor_selection"
     ],
     "ops": ["add", "mul", "neg", "inv", "exp", "log", "sin", "cos"],
