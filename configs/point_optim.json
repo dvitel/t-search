@@ -74,12 +74,12 @@
         "init_op": {
             "type": "Up2D", 
             "module": "t_search.operators.classic",
-            "params": { "depth": 2, "with_free_vars": true } 
+            "params": { "depth": 1, "with_free_vars": true } 
         },       
         "init": {
             "type": "Up2D", 
             "module": "t_search.operators.classic",
-            "params": { "depth": 1 } 
+            "params": { "depth": 2 } 
         },
         "selection": { 
             "type": "TS", 
@@ -159,19 +159,22 @@
                 "range_delta": 0.1,
                 "max_evals": 30,
                 "num_pos_per_term": 1,
-                "children_limit": 10,
+                "children_limit": 100,
                 "lr": 1,
                 "tolerance_change": 0.0000001,
                 "tolerance_grad": 0.000001,
                 "with_tabu": true,
                 "num_minimas": 10,
-                "num_lib_terms": 3,
-                "loss_threshold": 0.1,
-                "loss_koef": 1.0,
+                "num_lib_terms": 2,
+                "loss_threshold": 0.001,
+                "loss_koef": 0.9,
                 "log_file": "./data/point_optim_log.jsonl",
-                "best_by_metric": "l2",
+                "best_by_metric": "dist",
+                "dist_measure": "l2",
                 "allow_no_better": false,
-                "backtrack_lineage": true
+                "backtrack_lineage": true,
+                "with_pop_terms": false,
+                "max_pos_tries": 2
             }
         },
         "const_optimizer": {

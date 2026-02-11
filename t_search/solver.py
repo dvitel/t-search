@@ -432,9 +432,9 @@ class GPSolver(BaseEstimator, RegressorMixin):
                         self.evaluator.eval([best_term])
                     except EvSearchTermination as e:
                         pass 
-            if self.debug:
-                print(f"Solution: {best_term}")
             best_fitness = self.fitness.get_fitness(best_term)
+            if self.debug:
+                print(f"Solution: {best_fitness.item():.6e} {best_term}")
             best_term_depth = self.syntax.get_depth(best_term) if best_term is not None else None
             best_term_size = self.syntax.get_size(best_term) if best_term is not None else None
         
