@@ -1,5 +1,6 @@
 from collections import deque
 from dataclasses import dataclass, field
+from functools import partial
 import json
 from math import prod
 from typing import Any, Callable, Generator, Literal
@@ -30,12 +31,13 @@ class TermMutationContext:
     pos_id: int = 0 
     num_pos: int = 0
     optim_term: Term | None = None 
-    tabu_markers: list[Term] = field(default_factory=list)
+    # tabu_markers: list[Term] = field(default_factory=list)
     start_loss: float = 0.0
     optim_loss: float = 0.0
     num_minimas: int = 0
     # optim_vectors: list[torch.Tensor] = field(default_factory=list)
     num_optim_vectors: int = 0
+    cont_id: int = 0
     found_const: float | None = None
     lib_term_dists: list[float] = field(default_factory=list)
     lib_term_order: list[Term] = field(default_factory=list)
@@ -62,53 +64,6 @@ class DistBasedContinuation:
 
     def get_priority(self):
         return (self.filling_l2,)
-
-# @dataclass(frozen=True)
-# class TermMutationContextOrder: 
-#     main_context: TermMutationContext
-#     continuation: deque[LossBasedContinuation | L2BasedContinuation]
-
-# @dataclass(order=True)
-# class PrioritizedTermPos:
-#     priority: Any 
-#     optim_term: Term = field(compare=False)
-#     pos: TermPos = field(compare=False)
-
-# @dataclass(order=True)
-# class OptimState:
-#     priority: Any = field(compare=True)
-#     optim_term: Term = field(compare=False) # term with OptimPoint
-#     # optim_position: TermPos
-#     term: Term = field(compare=False) # original term
-#     position: TermPos = field(compare=False)
-#     id: int = 0 
-#     cnt: int = 0
-#     # path: list[PathNode] # maps new pos to old pos, these points are also collected in optimization
-#     # tabu_markers: set[Term] # set of skeletons that represent the optimization path
-#     # binding: dict[OptimPoint, torch.Tensor]
-#     # ranges: torch.Tensor
-#     # const_binding: dict[OptimPoint, torch.Tensor] = field(default_factory=dict)
-
-# @dataclass(order=True)
-# class PrioritizedOptimStateGens:
-#     optim_state: OptimState = field(compare=True)
-#     optim_state_gen: Generator[OptimState, None, None] = field(compare=False)
-
-# @dataclass(frozen=True)
-# class Hole:    
-#     start_loss: float # of parent term
-#     term: Term # parent 
-#     position: TermPos # where is the hole
-#     bindings: list[torch.Tensor] # possible bindings for the hole
-
-# @dataclass(frozen=False)
-# class LogEntry: 
-#     status: str = "active"
-#     optim_term: Term | None = None 
-#     optim_state: OptimState | None = None
-#     optim_result: OptimResult | None = None
-#     hole: Hole | None = None
-#     fill_logs: list[HoleFillingLog] | None = None
             
 class PointOptim(PositionMutation, ServiceBase):
     ''' Position Optimization, adjust selected position with optimizer ''' 
@@ -176,7 +131,6 @@ class PointOptim(PositionMutation, ServiceBase):
         self.max_evals = max_evals
         self.tolerance_change = tolerance_change
         self.tolerance_grad = tolerance_grad
-        self.default_loss_fn = evaluator.get_loss_fn()
         self.num_minimas = num_minimas
         self.num_lib_terms = num_lib_terms
         self.loss_threshold = loss_threshold
@@ -206,7 +160,7 @@ class PointOptim(PositionMutation, ServiceBase):
         self.term_context_continuations: dict[tuple[Term, TermPos], deque[LossBasedContinuation | DistBasedContinuation]] = {} # current position order for term
         self.allow_no_better = allow_no_better
         self.backtrack_lineage = backtrack_lineage
-        self.term_failed_contexts: list[TermMutationContext] = []
+        # self.term_failed_contexts: list[TermMutationContext] = []
         # self.log: dict[Term, list[LogEntry]] = {} # stores current pop optimization log: wwhat positions tried, when and why they are failed
 
         # self.pool = 
@@ -303,7 +257,7 @@ class PointOptim(PositionMutation, ServiceBase):
 
     def best_grad_position_order(self, term: Term, positions: list[TermPos]) -> list[Any]:
         grads = get_all_grads(term, var_bindings=self.var_bindings, 
-                      get_loss_fn=self.evaluator.get_loss_fn)
+                      get_loss_fn=partial(self.evaluator.get_loss_fn, with_mean_loss_logging=False))
         priorities = [ (-grads[(pos.term, pos.occur)], self.syntax.get_depth(pos.term)) for pos in positions]
         return priorities
     
@@ -386,7 +340,7 @@ class PointOptim(PositionMutation, ServiceBase):
         if len(parent_optim_terms) > 0:
             parent_optim_terms.pop() # remove root OptimPoint
 
-        context.tabu_markers = parent_optim_terms
+        # context.tabu_markers = parent_optim_terms
 
         if self.is_in_tabu(optim_term, parent_optim_terms):
             # self.log[term][-1].status = "tabu"
@@ -726,9 +680,10 @@ class PointOptim(PositionMutation, ServiceBase):
             pos = context.pos,
             pos_priority = context.pos_priority,
             pos_id = context.pos_id,
+            cont_id = context.cont_id + 1,
             num_pos = context.num_pos,
             optim_term = context.optim_term,
-            tabu_markers = context.tabu_markers,
+            # tabu_markers = context.tabu_markers,
             start_loss = context.start_loss,
             optim_loss = context.optim_loss,
             num_minimas = context.num_minimas,
@@ -751,7 +706,8 @@ class PointOptim(PositionMutation, ServiceBase):
         self.query_vectors = self.lib_vectors
         if not self.with_pop_terms:
             return
-        pop_terms = set()
+        present_pop_terms = set()
+        pop_terms = []
         # pop_term_depth = self.syntax.max_term_depth - context.pos.at_depth
         for parent_term in population:
             parent_pos = self.syntax.get_positions(parent_term)
@@ -759,7 +715,9 @@ class PointOptim(PositionMutation, ServiceBase):
                 if self.syntax.get_depth(pos.term) <= max_term_depth:
                     if isinstance(pos.term, Value) or pos.term in self.query_terms:
                         continue
-                    pop_terms.add(pos.term)
+                    if pos.term not in present_pop_terms:                        
+                        present_pop_terms.add(pos.term)
+                        pop_terms.append(pos.term)
         pass
         if len(pop_terms) == 0:
             return
@@ -830,7 +788,7 @@ class PointOptim(PositionMutation, ServiceBase):
         optim_result: OptimResult = optimize_par(context.optim_term, 
                                 self.ranges, 
                                 {self.optim_point: self.semantics.get_outputs(context.pos.term)},
-                                loss_fn_builder=self.evaluator.get_loss_fn,
+                                loss_fn_builder=partial(self.evaluator.get_loss_fn, with_mean_loss_logging=False),
                                 # pos_to_collect=pos_to_collect,
                                 num_starts=self.num_starts,
                                 lr=self.lr,
@@ -989,7 +947,7 @@ class PointOptim(PositionMutation, ServiceBase):
                     break
             context.final_losses = [context.final_loss]
 
-            max_cont_len = min(len(ordered_terms), self.num_lib_terms)
+            max_cont_len = min(len(ordered_terms), next_i + self.num_lib_terms - 1)
 
             conts = [DistBasedContinuation(ordered_terms[i], context.lib_term_dists[i]) for i in range(next_i, max_cont_len)]
             context.lib_term_order = ordered_terms[:self.num_lib_terms]
@@ -1022,7 +980,8 @@ class PointOptim(PositionMutation, ServiceBase):
         if (context.status == "active") or (self.allow_no_better and context.status == "no_better"):
             assert context.final_term is not None
             return context
-        else:
+        else: # mutation fail - add back the context continuations
+            self.add_context_continuation(context)
             return None 
        
     def select_positions(self, term: Term) -> Generator[TermMutationContext, None, None]:   
@@ -1065,9 +1024,9 @@ class PointOptim(PositionMutation, ServiceBase):
             # heappush(self.pos_queue, hole_pos)
 
         # no more positions - all attempts failed - adding failed contexts back and try backtrack
-        for context in self.term_failed_contexts:
-            self.add_context_continuation(context)
-        self.term_failed_contexts.clear()
+        # for context in self.term_failed_contexts:
+        #     self.add_context_continuation(context)
+        # self.term_failed_contexts.clear()
 
         cur_lineage = [term]
         if self.backtrack_lineage:
@@ -1086,11 +1045,11 @@ class PointOptim(PositionMutation, ServiceBase):
     def mutate_term(self, term):
         base_fn = super().mutate_term
         def fn():
-            self.term_failed_contexts.clear()
+            # self.term_failed_contexts.clear()
             res = base_fn(term)
-            for failed_context in self.term_failed_contexts:
-                self.add_context_continuation(failed_context)
-            self.term_failed_contexts.clear()
+            # for failed_context in self.term_failed_contexts:
+            #     self.add_context_continuation(failed_context)
+            # self.term_failed_contexts.clear()
             return res        
         # if self.debug:
         #     res, time = timed(fn)()

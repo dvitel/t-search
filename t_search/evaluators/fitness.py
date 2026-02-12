@@ -94,7 +94,8 @@ class Fitness(ServiceBase):
         self.best_term_size: Optional[int] = None
         self.best_term_outputs: Optional[torch.Tensor] = None
         self.fitness_atol = fitness_atol
-        self.fitness_err = fitness_err
+        self.fitness_err = fitness_err    
+
         self.debug = debug
 
     def pick_best_around(self, target_fitness_id: int, terms: list[Term], outputs: torch.Tensor, fitness: torch.Tensor) -> int:

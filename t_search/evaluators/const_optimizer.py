@@ -1,6 +1,7 @@
 ''' Implementation of optimizer '''
 
 from dataclasses import dataclass
+from functools import partial
 import torch
 
 from t_search.evaluators.evaluator import Evaluator
@@ -53,7 +54,7 @@ class ConstOptimizer(Optimizer):
         self.dtype = dtype
         self.optim_term_cache: dict[Term, Term] = {}
         self.best_terms_cache: dict[Term, Optimized] = {} # optim term to term
-        self.default_loss_fn = evaluator.get_loss_fn()
+        # self.default_loss_fn = evaluator.get_loss_fn()
         self.const_range = const_range.unsqueeze(0)
         self.debug = debug
 
@@ -119,7 +120,7 @@ class ConstOptimizer(Optimizer):
             optim_term,
             const_range=self.const_range,
             start_binding=start_binding,
-            loss_fn_builder=self.evaluator.get_loss_fn,
+            loss_fn_builder=partial(self.evaluator.get_loss_fn, with_mean_loss_logging=True),
             num_starts=num_starts or self.num_starts,
             lr=self.lr,
             max_evals=self.max_evals,

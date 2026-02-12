@@ -89,7 +89,7 @@ class PositionMutation(TermMutation):
         ''' Abstract. Mutates term at the given position. '''
         pass # to be implemented in subclasses    
 
-    def mutate_term(self, term: Term) -> Term | None | list[Term]:
+    def mutate_term(self, term: Term) -> Term | None:
         ''' Mutates one term in the context of parents and already generated children ''' 
         
         positions = self.select_positions(term)
