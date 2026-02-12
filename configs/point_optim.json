@@ -155,7 +155,6 @@
                 "fitness": {"!ref": "fitness"},
                 "semantics": {"!ref": "semantics"},
                 "evaluator": {"!ref": "evaluator"},
-                "remap_provider": {"!ref": "sreduce"},
                 "init_op": {"!ref": "init_op"},
                 "normalizer": {"!ref": "normalizer"},
                 "const_optimizer": {"!ref": "const_optimizer"},
@@ -163,13 +162,12 @@
                 "num_starts": 10,
                 "range_delta": 0.1,
                 "max_evals": 20,
-                "num_pos_per_term": 1,
                 "lr": 1,
                 "tolerance_change": 0.0000001,
                 "tolerance_grad": 0.000001,
                 "with_tabu": true,
                 "num_minimas": 10,
-                "num_lib_terms": 2,
+                "num_lib_terms": 1,
                 "loss_threshold": 0.001,
                 "loss_koef": 0.9,
                 "log_file": "./data/point_optim_log.jsonl",
@@ -180,6 +178,7 @@
                 "with_pop_terms": false,
                 "identity_atol": 0.001,
                 "identity_rtol": 0.001,
+                "with_reduction": true,
                 "max_pos_tries": 1,
                 "rate": 1.0
             }
@@ -218,7 +217,7 @@
     "syntax_service_name": "syntax",
     "fitness_service_name": "fitness",
     "semantics_service_name": "semantics",   
-    "final_reducer_service_name": "sreduce",
+    "final_reducer_service_name": null,
     "max_gen": 100,
     "max_dim_size": 1000    
 }

@@ -101,6 +101,7 @@ class ConstOptimizer(Optimizer):
     def optimize(self,
         term: Term,
         with_loss: bool = False,
+        num_starts: int | None = None,
     ) -> Term | Optimized:
         """Searches for the term const values that would bring it closer to the target outputs.
         Restarts will reinitialize the constants.
@@ -119,7 +120,7 @@ class ConstOptimizer(Optimizer):
             const_range=self.const_range,
             start_binding=start_binding,
             loss_fn_builder=self.evaluator.get_loss_fn,
-            num_starts=self.num_starts,
+            num_starts=num_starts or self.num_starts,
             lr=self.lr,
             max_evals=self.max_evals,
             tolerance_change=self.tolerance_change,

@@ -125,8 +125,7 @@ class PointOptim(PositionMutation, ServiceBase):
                  init_op: Initialization,
                  normalizer: Normalizer,
                  const_optimizer: ConstOptimizer,
-                #  add_metrics: Callable,
-                 remap_provider: Any,        
+                #  add_metrics: Callable, 
                 #  target_variance: float = 1.0,          
                  position_strategy: Literal["rand_position_order", "shallow_to_deep_position_order", "best_grad_position_order"] = "rand_position_order",
                  num_starts: int = 10,
@@ -140,7 +139,6 @@ class PointOptim(PositionMutation, ServiceBase):
                  num_lib_terms: int = 5,
                  loss_threshold: float = 0.01,
                  log_file: str | None = None,
-                 num_pos_per_term: int = 1,
                  loss_koef: float = 1.0,
                  best_by_metric: Literal["dist", "loss"] = "dist",
                  dist_measure: Literal["l2","corr"] = "l2",
@@ -149,6 +147,7 @@ class PointOptim(PositionMutation, ServiceBase):
                  backtrack_lineage: bool = True,
                  identity_atol: float = 0.001,
                  identity_rtol: float = 0.001,
+                 with_reduction: bool = True,
                 #  debug: bool = False,
                 #  rnd: np.random.Generator = GLOBAL_RNG,
                  **kwargs):
@@ -184,11 +183,11 @@ class PointOptim(PositionMutation, ServiceBase):
         self.loss_koef = loss_koef
         self.init_op = init_op
         self.const_optimizer = const_optimizer
-        self.num_pos_per_term = num_pos_per_term
         self.best_by_metric = best_by_metric
         self.dist_measure = dist_measure
         self.identity_atol = identity_atol
         self.identity_rtol = identity_rtol
+        self.with_reduction = with_reduction
         # self.rnd=rnd
 
         # self.pos_queue: list[HolePos] = [] # hole priority queue
@@ -201,9 +200,10 @@ class PointOptim(PositionMutation, ServiceBase):
         self.ranges[:, 1] = max_y
         self.optim_point = OptimPoint(0)
         self.lineage: dict[Term, Term] = {} # child to parent map for backtracking
+        self.frontier: set[Term] = set() # current path ends
+        self.deadends: set[Term] = set() # cannot improve anymore
         self.term_contexts: dict[Term, deque[TermMutationContext]] = {} # cached position priorities for terms
         self.term_context_continuations: dict[tuple[Term, TermPos], deque[LossBasedContinuation | DistBasedContinuation]] = {} # current position order for term
-        self.remap_provider = remap_provider
         self.allow_no_better = allow_no_better
         self.backtrack_lineage = backtrack_lineage
         self.term_failed_contexts: list[TermMutationContext] = []
@@ -246,7 +246,7 @@ class PointOptim(PositionMutation, ServiceBase):
         # end testing
 
         lib_terms = self.init_op() # these terms will be used for sketches
-        terms = list(set(lib_terms))
+        terms = sorted(set(lib_terms), key=lambda t: self.syntax._get_term_priority(t))
         evaluator.eval(terms) # compute unnormalized vectors 
         valid_terms = [t for t in terms if self.semantics.is_valid(t)]
         valid_terms.sort(key=lambda t: self.syntax._get_term_priority(t))
@@ -421,12 +421,59 @@ class PointOptim(PositionMutation, ServiceBase):
             #     print(f"Tabu: {optim_term}")
             self.tabu_set.add(optim_term)
 
+    def decompose_lincomb(self, term: Term) -> tuple[Value | None, Term, Value | None]:
+        ''' Returns (k, X, b) if term is of the form k * X + b or None otherwise. k, b can be None if they are not present. '''
+        if isinstance(term, Op) and term.op_id == "add":
+            args = term.get_args()
+            if len(args) != 2:
+                return None, term, None
+            value_id = next((i for i, a in enumerate(args) if isinstance(a, Value)), None)
+            if value_id is None:
+                return None, term, None
+            other_id = 1 - value_id
+            b_value = args[value_id]
+            other = args[other_id]
+            if isinstance(other, Op) and other.op_id == "mul":
+                mul_args = other.get_args()
+                if len(mul_args) != 2:
+                    return (None, other, b_value)
+                k_id = next((i for i, a in enumerate(mul_args) if isinstance(a, Value)), None)
+                if k_id is None:
+                    return (None, other, b_value)
+                X_id = 1 - k_id
+                k_value = mul_args[k_id]
+                X = mul_args[X_id]
+                return (k_value, X, b_value)
+            return (None, other, b_value)
+        elif isinstance(term, Op) and term.op_id == "mul":
+            args = term.get_args()
+            if len(args) != 2:
+                return None, term, None
+            value_id = next((i for i, a in enumerate(args) if isinstance(a, Value)), None)
+            if value_id is None:
+                return None, term, None
+            other_id = 1 - value_id
+            k_value = args[value_id]
+            X = args[other_id]
+            return (k_value, X, None)
+        return None, term, None
+
     def reduce_lincomb(self, term: Term, 
                         ops: dict[str, Callable] = {"add": lambda vs: sum(v for v in vs), "mul": lambda vs: prod(v for v in vs)},
                         identities: dict[str, Callable] = {}
                       ) -> Term:
         ''' add/mul for binary is tansformed to one of varying arity and then all constants are combined
-            then, we return to binary ops. Top-down transfomration.
+            then, we return to binary ops. Top-down transformation.
+
+            Additional rules are applied only when self.with_reduction.
+            mul rule: (k1 * X + b1)*(k2 * X + b2) --> k3 * X^2 + k4 * X + b3 (4 to 3 consts)
+            add rule: k1 * X + k2 * X --> k3 * X (2 to 1 consts, if X is the same)
+
+            PROBLEMS: reduction leads to the following:
+                  1. Removal of potential pathes to the target through new nodes 
+                  2. Identity removal to some precision could fluctuate the loss especially when it is small enough  
+                  3. A cicle in the lineage could appear 
+            Pros: we target to reduce number of constants to optimize staying neutral (relativelly)
         '''
         if not isinstance(term, Op) or (term.op_id not in ops):
             return term
@@ -439,7 +486,11 @@ class PointOptim(PositionMutation, ServiceBase):
                     all_terms.append(a)
             else:
                 reduced_current = self.reduce_lincomb(current, ops=ops, identities=identities)
-                final_args.append(reduced_current)
+                if isinstance(reduced_current, Op) and (reduced_current.op_id == term.op_id):
+                    for a in reduced_current.get_args():                    
+                        all_terms.append(a) 
+                else:               
+                    final_args.append(reduced_current)
         const_terms, non_const_terms = [], []
         for a in final_args:
             (const_terms if isinstance(a, Value) else non_const_terms).append(a)
@@ -453,20 +504,92 @@ class PointOptim(PositionMutation, ServiceBase):
             reduce_fn = ops[term.op_id]
             new_const = reduce_fn([c.value for c in const_terms])
             final_const = new_const if isinstance(new_const, Value) else self.syntax.get_const(value=new_const)
-        if (final_const is not None) and ((len(non_const_terms) == 0) or (term.op_id not in identities) or (not identities[term.op_id](final_const.value))):
-            if term.op_id == "add": # insert const after (mul ...) when possible
+        # if (final_const is not None) and ((len(non_const_terms) == 0) or (term.op_id not in identities) or (not identities[term.op_id](final_const.value))):
+        add_identity_fn = identities.get("add", lambda _: False)
+        mul_identity_fn = identities.get("mul", lambda _: False)
+        if term.op_id == "add": # insert const after (mul ...) when possible
+
+            if self.with_reduction:
+                # rule 1: grouping ki * X in sum by X 
+                decomposed_non_const_terms = [self.decompose_lincomb(t) for t in non_const_terms]
+                groups = {}
+                for (k,X,b) in decomposed_non_const_terms:
+                    assert b is None
+                    groups.setdefault(X, []).append((k or self.syntax.one_value).value)
+
+                if len(groups) < len(decomposed_non_const_terms): # some grouped 
+                    new_non_const_terms = []
+                    for X, ks in groups.items():
+                        k = sum(ks)
+                        k_value = self.syntax.get_const(value=k)
+                        if add_identity_fn(k_value.value): #mul 0
+                            continue
+                        if mul_identity_fn(k_value.value): #mul 1
+                            new_X = X
+                        else:
+                            new_X = self.syntax.get_op("mul", k_value, X)
+                        new_non_const_terms.append(new_X)
+                    non_const_terms = new_non_const_terms
+
+            if final_const is not None and not add_identity_fn(final_const.value): #add 0
                 found_id = next((i for i, t in enumerate(non_const_terms) 
-                                 if isinstance(t, Op) and t.op_id == "mul" and \
+                                    if isinstance(t, Op) and t.op_id == "mul" and \
                                     any(isinstance(marg, Value) for marg in t.get_args())), None)
                 if found_id is None:
                     non_const_terms.append(final_const)        
                 else:    
                     # non_const_terms.insert(found_id + 1, final_const)
-                    non_const_terms = [non_const_terms[found_id], final_const, *non_const_terms[:found_id], *non_const_terms[found_id + 1:]]
-            else:
-                non_const_terms.append(final_const)        
+                    subterm = self.syntax.get_op("add", non_const_terms[found_id], final_const)
+                    non_const_terms = [subterm, *non_const_terms[:found_id], *non_const_terms[found_id + 1:]]
+            if len(non_const_terms) == 0:
+                non_const_terms.append(self.syntax.zero_value)
+        elif term.op_id == "mul": 
+            if final_const is not None and not mul_identity_fn(final_const.value): #mul 1
+                if self.with_reduction:
+                    # rule 1: try to find (k * X + b) in args to add the constant there
+                    decomposed_non_const_terms = [self.decompose_lincomb(t) for t in non_const_terms]                
+                    found_id, k, X, b = next(((i, k, X, b) for i, (k, X, b) in enumerate(decomposed_non_const_terms) 
+                                                if k is not None and b is not None), (None, None, None, None))
+                    if found_id is not None:
+                        new_k = self.syntax.get_const(value=k.value * final_const.value)
+                        new_b = self.syntax.get_const(value=b.value * final_const.value)
+                        if add_identity_fn(new_k.value): #mul 0
+                            new_term = new_b
+                        else:
+                            if add_identity_fn(new_b.value): #add 0
+                                new_b = None
+                            if mul_identity_fn(new_k.value): #mul 1
+                                new_k = None
+                            if new_k is None and new_b is None:
+                                new_term = X
+                            elif new_k is None:
+                                new_term = self.syntax.get_op("add", X, new_b)
+                            elif new_b is None:
+                                new_term = self.syntax.get_op("mul", new_k, X)
+                            else:
+                                new_term = self.syntax.get_op("add", self.syntax.get_op("mul", new_k, X), new_b)
+                        non_const_terms[found_id] = new_term
+                    else:
+                        found_id, X, b = next(((i, X, b) for i, (k, X, b) in enumerate(decomposed_non_const_terms) 
+                                                if k is None and b is not None), (None, None, None))
+                        if found_id is not None:
+                            new_k = final_const
+                            new_b = self.syntax.get_const(value=b.value * final_const.value)
+                            new_term = self.syntax.get_op("add", self.syntax.get_op("mul", new_k, X), new_b)
+                            non_const_terms[found_id] = self.reduce_lincomb(new_term, ops=ops, identities=identities)
+                        else:
+                            non_const_terms.append(final_const)
+                else:
+                    non_const_terms.append(final_const)
+            
+            if len(non_const_terms) == 0:
+                non_const_terms.append(self.syntax.one_value)                
+        else:
+            non_const_terms.append(final_const)      
+
         if len(non_const_terms) == 1:
             return non_const_terms[0]
+        non_const_terms.sort(key=lambda t: self.syntax._get_term_priority(t), reverse=True)
         new_term = self.syntax.get_op(term.op_id, *non_const_terms)
         return new_term
     
@@ -542,28 +665,48 @@ class PointOptim(PositionMutation, ServiceBase):
         # reducing consstants before optimization 
         new_term = self.reduce_lincomb(new_term)
 
-        identity_reduced = True
-        reduced_term = new_term
-        while identity_reduced:
-            optimized = self.const_optimizer.optimize(reduced_term, with_loss=True)    
+        identity_reduced = False
+        # reduced = True
+        # reduced_term = new_term
+        # reduced_cnt = 0
+        # prev_optimized = None
+        # while reduced:
+        optimized1 = self.const_optimizer.optimize(new_term, with_loss=True) 
 
-            identity_reduced = False
+        if optimized1.loss <= self.fitness.fitness_atol:
+            return optimized1
+            # if optimized.loss < self.fitness.fitness_atol:
+            #     break
+
+            # if prev_optimized is not None and ((optimized.loss - prev_optimized.loss) / prev_optimized.loss) > 0.01: # reduction led to worse loss - stop
+            #     optimized = prev_optimized
+            #     break
+            # prev_optimized = optimized
+            # reduced = False
             # reduced_term = self.reduce_identities(optimized.term, {'add': self.syntax.zero_value, 'mul': self.syntax.one_value})
-            def add_id_fn(v):
-                nonlocal identity_reduced
-                res = torch.isclose(v, self.syntax.zero_value.value, atol=self.identity_atol, rtol=self.identity_rtol)
-                if res:
-                    identity_reduced = True
-                return res
-            def mul_id_fn(v):
-                nonlocal identity_reduced
-                res = torch.isclose(v, self.syntax.one_value.value, atol=self.identity_atol, rtol=self.identity_rtol)
-                if res:
-                    identity_reduced = True
-                return res
-            reduced_term = self.reduce_lincomb(optimized.term, identities={'add': add_id_fn, 'mul': mul_id_fn})
-        pass
-        optimized.term = reduced_term
+        def add_id_fn(v):
+            nonlocal identity_reduced
+            res = torch.isclose(v, self.syntax.zero_value.value, atol=self.identity_atol, rtol=self.identity_rtol)
+            if res:
+                identity_reduced = True
+            return res
+        def mul_id_fn(v):
+            nonlocal identity_reduced
+            res = torch.isclose(v, self.syntax.one_value.value, atol=self.identity_atol, rtol=self.identity_rtol)
+            if res:
+                identity_reduced = True
+            return res
+        reduced_term = self.reduce_lincomb(optimized1.term, identities={'add': add_id_fn, 'mul': mul_id_fn})                    
+        if reduced_term != optimized1.term:
+            optimized2 = self.const_optimizer.optimize(reduced_term, with_loss=True, num_starts=1)
+            if (optimized2.loss - optimized1.loss) / optimized1.loss > 0.01:
+                optimized = optimized1
+            else:
+                optimized = optimized2
+            # else:
+            #     optimized.term = reduced_term # trusting that outputs did not change
+        else:
+            optimized = optimized1
 
         return optimized    
     
@@ -872,23 +1015,17 @@ class PointOptim(PositionMutation, ServiceBase):
 
         # return res_term
     
-    def mutate_position(self, _: Term, contexts: list[TermMutationContext]) -> list[TermMutationContext] | None:
-        self.mutation_log.extend(contexts)        
-        filtered_contexts = []
-        for context in contexts:
-            self.mutate_one_position(context)
-            if (context.status == "active") or (self.allow_no_better and context.status == "no_better"):
-                assert context.final_term is not None
-                filtered_contexts.append(context)
-            else:
-                self.term_failed_contexts.append(context)
-        if len(filtered_contexts) == 0:
-            return None
-        filtered_contexts.sort(key=lambda c: c.final_loss)
-        # returning back failed contexts continuations for later backtracking
-        return filtered_contexts
+    def mutate_position(self, _: Term, context: TermMutationContext) -> TermMutationContext | None:
+        self.mutation_log.append(context)
+        self.mutation_log_per_term.setdefault(context.term, []).append(context)
+        self.mutate_one_position(context)
+        if (context.status == "active") or (self.allow_no_better and context.status == "no_better"):
+            assert context.final_term is not None
+            return context
+        else:
+            return None 
        
-    def select_positions(self, term: Term) -> Generator[list[TermMutationContext], None, None]:   
+    def select_positions(self, term: Term) -> Generator[TermMutationContext, None, None]:   
 
         if term not in self.term_contexts:
             if not self.semantics.is_valid(term): # do not optimize invalid terms
@@ -908,9 +1045,8 @@ class PointOptim(PositionMutation, ServiceBase):
         contexts = self.term_contexts[term]
 
         pos_id = 0
-        num_pos = len(contexts)
-        next_contexts = []        
-        # while len(contexts) > 0:
+        num_pos = len(contexts) 
+
         while len(contexts) > 0:
             context = contexts.popleft()
             context.pos_id = pos_id
@@ -921,19 +1057,12 @@ class PointOptim(PositionMutation, ServiceBase):
             self._get_optim_state(context)            
             if context.status != "active":
                 self.mutation_log.append(context)
+                self.mutation_log_per_term.setdefault(context.term, []).append(context)
                 continue
 
             # hole_pos = HolePos(priority, term, pos)
-            # yield context
-            next_contexts.append(context)
-            if len(next_contexts) >= self.num_pos_per_term:
-                yield next_contexts
-                next_contexts = []
+            yield context
             # heappush(self.pos_queue, hole_pos)
-
-        if len(next_contexts) > 0:
-            yield next_contexts
-            next_contexts = []
 
         # no more positions - all attempts failed - adding failed contexts back and try backtrack
         for context in self.term_failed_contexts:
@@ -942,37 +1071,16 @@ class PointOptim(PositionMutation, ServiceBase):
 
         cur_lineage = [term]
         if self.backtrack_lineage:
-            visited = set()
             cur_term = term
-            while True: #len(self.term_contexts[cur_term]) == 0:
-                if cur_term in visited:
-                    break
-                visited.add(cur_term) 
-                if cur_term in self.remap_provider.remap:
-                    term_key = self.remap_provider.remap[cur_term]
-                else:
-                    term_key = cur_term   
-                if term_key in self.lineage:                 
-                    cur_term = self.lineage[term_key]
-                    cur_lineage.append(cur_term)
-                else:
-                    break
+            while cur_term in self.lineage: #len(self.term_contexts[cur_term]) == 0:
+                cur_term = self.lineage[cur_term]
+                cur_lineage.append(cur_term)
         filtered_lineage = [t for t in cur_lineage if t in self.term_contexts and len(self.term_contexts[t]) > 0]
         if len(filtered_lineage) > 0:
             # rand_restart_term = self.rnd.choice(filtered_lineage) # or we may pick best
             rand_restart_term = filtered_lineage[0] # parent
             yield from self.select_positions(rand_restart_term)         
 
-        # if term in self.remap_provider.remap:
-        #     term_key = self.remap_provider.remap[term]
-        # else:
-        #     term_key = term
-        # if term_key in self.lineage: # we finished with term positions, backtrack to parent 
-        #     parent_term = self.lineage[term_key]
-        #     if parent_filling.hole_root != term:
-        #         yield from self.select_positions(parent_filling.hole_root)
-
-        # self.added_terms.add(term)
         return
     
     def mutate_term(self, term):
@@ -1005,36 +1113,27 @@ class PointOptim(PositionMutation, ServiceBase):
         # selected_contexts = []
         # fixed_mutations = []
         # retry_terms = []
-        for contexts in mutations:
-            if isinstance(contexts, Term): # retry term
-                cur_term = contexts
-                visited = set()
+        for context in mutations:
+            if isinstance(context, Term): # retry term
+                cur_term = context
                 cur_lineage = [cur_term]
-                while True:
-                    if cur_term in visited:
-                        break
-                    visited.add(cur_term) 
-                    if cur_term in self.remap_provider.remap:
-                        term_key = self.remap_provider.remap[cur_term]
-                    else:
-                        term_key = cur_term   
-                    if term_key in self.lineage:                 
-                        cur_term = self.lineage[term_key]
-                        cur_lineage.append(cur_term)
-                    else:
-                        break     
+                while cur_term in self.lineage:                 
+                    cur_term = self.lineage[cur_term]
+                    cur_lineage.append(cur_term)
                 filtered_lineage = [t for t in cur_lineage if t in self.term_contexts and len(self.term_contexts[t]) > 0]
                 if len(filtered_lineage) > 0:           
                     retry_term = filtered_lineage[0] # parent, or random
                     # retry_terms.append(retry_term)
                     new_children.append(retry_term)
                 else:
-                    if self.debug:
-                        print(f"Done {cur_term}")
+                    # if self.debug:
+                    #     print(f"Done {cur_term}")
+                    pass
             else: 
-                for context in contexts:
-                    self.lineage[context.final_term] = context.term
-                    new_children.append(context.final_term)
+                self.lineage[context.final_term] = context.term
+                self.frontier.add(context.final_term)
+                self.frontier.discard(context.term)
+                new_children.append(context.final_term)
         # should_exit = False
         # for i in range(self.num_pos_per_term):
         #     num_added = 0
@@ -1070,6 +1169,11 @@ class PointOptim(PositionMutation, ServiceBase):
         #         print(f"{context.final_loss:8.7f} ← {context.start_loss:8.7f} | {context.final_term}")
         # new_children = [ch for ch, p in zip(children, parents) if ch != p]
         # unique_children = sorted(set(new_children), key=lambda t: self.syntax._get_term_priority(t))
+        if len(new_children) == 0: # deadends for parents 
+            for term in population:
+                self.deadends.add(term)
+            new_children = list(set.difference(self.frontier, self.deadends))
+            pass
         return new_children
     
     def get_finalizer(self):

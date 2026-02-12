@@ -430,17 +430,32 @@ class Syntax(ServiceBase):
         if arity == 1 and len(args) != 1:
             raise ValueError(f"Op {op_id} requires 1 argument, got {len(args)}")
             # return None
-        cur_args = args[:arity]
-        left_args = args[arity:]
-        cur_term = self.op_builders[op_id].fn(*cur_args)
-        while len(left_args) > 0:
-            new_args = [cur_term, *left_args[:arity - 1]]
-            assert len(new_args) == arity
-            cur_term = self.op_builders[op_id].fn(*new_args)
-            left_args = left_args[arity - 1:]
-        # if check_validity and new_term is not None:
-        #     if not self.is_valid(new_term):
-        #         return None
+        if op_id in self.commutative: # we try to balance the depth 
+            # split args in groups of arity at max
+            cur_args = args
+            while len(cur_args) >= arity:
+                arg_groups = [cur_args[i:i+arity] for i in range(0, len(cur_args), arity)]
+                new_args = [self.op_builders[op_id].fn(*arg_groups[i]) for i in range(len(arg_groups) - 1)]
+                if len(arg_groups[-1]) == arity:
+                    new_args.append(self.op_builders[op_id].fn(*arg_groups[-1]))
+                else:
+                    for a in arg_groups[-1]:
+                        new_args.append(a)
+                cur_args = new_args
+            assert len(cur_args) == 1
+            cur_term = cur_args[0]
+        else:
+            cur_args = args[:arity]
+            left_args = args[arity:]
+            cur_term = self.op_builders[op_id].fn(*cur_args)
+            while len(left_args) > 0:
+                new_args = [cur_term, *left_args[:arity - 1]]
+                assert len(new_args) == arity
+                cur_term = self.op_builders[op_id].fn(*new_args)
+                left_args = left_args[arity - 1:]
+            # if check_validity and new_term is not None:
+            #     if not self.is_valid(new_term):
+            #         return None
         return cur_term
     
     def get_rand_op(self, arg_builder: Callable[[int], Term]) -> Op | None:

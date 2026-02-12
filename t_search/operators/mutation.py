@@ -96,11 +96,11 @@ class PositionMutation(TermMutation):
         
         pos_try = 0
         for position in positions:
-            if pos_try >= self.max_pos_tries:
-                break
-            pos_try += 1
             mutated_term = self.mutate_position(term, position)
+            pos_try += 1
             if mutated_term is not None:       
                 return mutated_term
+            if pos_try >= self.max_pos_tries:
+                break
             
         return None 
