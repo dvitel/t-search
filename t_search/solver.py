@@ -225,6 +225,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
             "debug": self.debug,
             "zero": self.zero,
             "one": self.one,
+            "term_lineage": {} # TODO: maybe service? injected by TermMutation, dict[Term, list[Term]], tracking of term changes
         }
 
         self.services.clear()

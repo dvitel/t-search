@@ -108,6 +108,8 @@ def optimize_par(
 
     num_root_evals = 0
 
+    # prev_values = None 
+
     def closure_builder(optimizer: torch.optim.Optimizer):
         nonlocal best_loss, max_evals, num_root_evals
 
@@ -145,6 +147,17 @@ def optimize_par(
         
         total_loss = fixed_loss.mean() # use all losses including inf
         total_loss.backward()
+
+        # cur_params = [v.detach().clone() for v in params]
+        # if prev_values is None: # first time calling
+        #     prev_values = cur_params
+        # else: # compute change 
+        #     dbglosses = fixed_loss.detach().clone().mean(dim=-1)
+        #     changes = [torch.norm(cur - prev, dim=-1) for cur, prev in zip(cur_params, prev_values)]
+        #     min_changes = [torch.min(change) for change in changes]
+        #     print(f"{num_root_evals-1} Min param changes: {min_changes[0]} {dbglosses}")
+        #     prev_values = cur_params
+        #     pass
 
         return total_loss
 
@@ -432,8 +445,6 @@ def optimize_consts(
 
             # cur_lr = optimizer.param_groups[0]['lr']
             # print(f"LR: {cur_lr}")        
-            if num_root_evals >= max_evals:
-                raise LRAdjust(None)
             optimizer.zero_grad()
 
             loss: torch.Tensor = loss_fn(optim_term)
@@ -456,6 +467,8 @@ def optimize_consts(
                 #     raise LRAdjust(None)
 
             # total_loss = mean_loss.sum() # use all losses including inf
+            if num_root_evals >= max_evals:
+                raise LRAdjust(None)            
             mean_loss.backward()
 
             return mean_loss

@@ -16,6 +16,7 @@ class TermMutation(Operator):
                  syntax: Syntax,
                  rnd: np.random.Generator, 
                  add_metrics: Callable,
+                 term_lineage: dict[Term, list[Term]],
                  rate : float | None = 1.0,
                  debug: bool = False):
         self.rate: float = rate
@@ -24,6 +25,28 @@ class TermMutation(Operator):
         self.add_metrics = add_metrics
         self.syntax = syntax
         self.debug = debug
+        self.term_lineage = term_lineage
+
+    def add_to_lineage(self, parent: Term, child: Term):
+        self.term_lineage.setdefault(child, []).append(parent)
+
+    def has_lineage_loop(self, candidate: Term, parent: Term) -> bool:
+        if candidate == parent:
+            return True
+        cur_parents = self.term_lineage.get(parent, [])
+        while len(cur_parents) > 0:
+            if any(p == candidate for p in cur_parents):
+                return True 
+            cur_parents = [gp for p in cur_parents for gp in self.term_lineage.get(p, [])]
+        return False    
+    
+    def get_term_history(self, term: Term):
+        cur_terms = [term]
+        cur_lineage = [cur_terms]
+        while len(cur_terms) > 0:
+            cur_terms = [p for t in cur_terms for p in self.term_lineage.get(t, [])]
+            cur_lineage.append(cur_terms)  
+        return cur_lineage      
 
     def mutate_term(self, term: Term) -> Term | None:
         ''' Abstract. Mutates one term in the context of parents and already generated children ''' 
@@ -62,6 +85,7 @@ class TermMutation(Operator):
                 if child is not None:
                     success += 1
                     children.append(child)
+                    self.add_to_lineage(term, child)
                     mutated_size -= 1
                 else:
                     fail += 1

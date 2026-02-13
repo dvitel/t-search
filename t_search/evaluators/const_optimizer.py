@@ -105,6 +105,7 @@ class ConstOptimizer(Optimizer):
         term: Term,
         with_loss: bool = False,
         num_starts: int | None = None,
+        max_evals: int | None = None,
     ) -> Term | Optimized:
         """Searches for the term const values that would bring it closer to the target outputs.
         Restarts will reinitialize the constants.
@@ -125,7 +126,7 @@ class ConstOptimizer(Optimizer):
             loss_fn_builder=partial(self.evaluator.get_loss_fn, with_mean_loss_logging=True),
             num_starts=num_starts or self.num_starts,
             lr=self.lr,
-            max_evals=self.max_evals,
+            max_evals=max_evals or self.max_evals,
             tolerance_change=self.tolerance_change,
             tolerance_grad=self.tolerance_grad,
             torch_gen=self.torch_gen,

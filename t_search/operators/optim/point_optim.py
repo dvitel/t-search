@@ -160,7 +160,6 @@ class PointOptim(PositionMutation, ServiceBase):
         self.ranges[:, 0] = min_y
         self.ranges[:, 1] = max_y
         self.optim_point = OptimPoint(0)
-        self.lineage: dict[Term, Term] = {} # child to parent map for backtracking
         self.frontier: set[Term] = set() # current path ends
         self.deadends: set[Term] = set() # cannot improve anymore
         self.term_contexts: dict[Term, deque[TermMutationContext]] = {} # cached position priorities for terms
@@ -665,14 +664,13 @@ class PointOptim(PositionMutation, ServiceBase):
                 identity_reduced = True
             return res
         reduced_term = self.reduce_lincomb(optimized1.term, identities={'add': add_id_fn, 'mul': mul_id_fn})                    
-        if reduced_term != optimized1.term:
-            optimized2 = self.const_optimizer.optimize(reduced_term, with_loss=True, num_starts=1)
-            if optimized2.loss is None or ((optimized2.loss - optimized1.loss) / optimized1.loss > 0.01):
-                optimized = optimized1
-            else:
-                optimized = optimized2
+        if identity_reduced: # reduced_term != optimized1.term:
+            optimized2 = self.const_optimizer.optimize(reduced_term, with_loss=True, num_starts=1, max_evals=1)
+            optimized = optimized2
+            # if optimized2.loss is None or ((optimized2.loss - optimized1.loss) / optimized1.loss > 0.01):
+            #     optimized = optimized1
             # else:
-            #     optimized.term = reduced_term # trusting that outputs did not change
+            #     optimized = optimized2
         else:
             optimized = optimized1
 
@@ -770,16 +768,8 @@ class PointOptim(PositionMutation, ServiceBase):
 
         if context.final_loss < self.loss_koef * context.start_loss:
             # checking lineage for loop 
-            if self.loss_koef >= 1:
-                if context.final_term == context.term:
-                    context.status = "lineage_loop"
-                    return 
-                cur_par = self.lineage.get(context.term, None)
-                while cur_par is not None:
-                    if cur_par == context.final_term:
-                        context.status = "lineage_loop"
-                        break
-                    cur_par = self.lineage.get(cur_par, None)
+            if self.has_lineage_loop(context.final_term, context.term):
+                context.status = "lineage_loop"
             if context.status == "active":
                 self.num_better_fills += 1
         else:
@@ -1129,17 +1119,9 @@ class PointOptim(PositionMutation, ServiceBase):
         #     self.add_context_continuation(context)
         # self.term_failed_contexts.clear()
 
-        cur_lineage = [term]
-        if self.backtrack_lineage:
-            cur_term = term
-            while cur_term in self.lineage: #len(self.term_contexts[cur_term]) == 0:
-                cur_term = self.lineage[cur_term]
-                cur_lineage.append(cur_term)
-        filtered_lineage = [t for t in cur_lineage if t in self.term_contexts and len(self.term_contexts[t]) > 0]
-        if len(filtered_lineage) > 0:
-            # rand_restart_term = self.rnd.choice(filtered_lineage) # or we may pick best
-            rand_restart_term = filtered_lineage[0] # parent
-            yield from self.select_positions(rand_restart_term)         
+        backtrack_term = self.get_backtrack_term(term)
+        if backtrack_term is not None:
+            yield from self.select_positions(backtrack_term)         
 
         return
     
@@ -1159,6 +1141,24 @@ class PointOptim(PositionMutation, ServiceBase):
         res = fn()
         return res
 
+    def add_to_lineage(self, parent: Term, child: TermMutationContext):
+        if child.final_term is not None:
+            self.term_lineage.setdefault(child.final_term, []).append(parent)
+
+    def get_backtrack_term(self, term: Term) -> Term | None:
+        if not self.backtrack_lineage:
+            return None
+        cur_lineage = self.get_term_history(term)
+        filtered_lineage = [fp for cur_terms in cur_lineage 
+                                for fp in [[t for t in cur_terms 
+                                                if t in self.term_contexts and len(self.term_contexts[t]) > 0]]
+                                if len(fp) > 0]
+        if len(filtered_lineage) > 0:           
+            backtrack_terms = filtered_lineage[0] # parent, or random
+            parent_term = self.rnd.choice(backtrack_terms) # go to random parent
+            return parent_term
+        return None
+
     def __call__(self, population):        
         self.mutation_log.clear()
         # parents = sorted(set(population), key=lambda t: self.syntax._get_term_priority(t))
@@ -1175,16 +1175,9 @@ class PointOptim(PositionMutation, ServiceBase):
         # retry_terms = []
         for context in mutations:
             if isinstance(context, Term): # retry term
-                cur_term = context
-                cur_lineage = [cur_term]
-                while cur_term in self.lineage:                 
-                    cur_term = self.lineage[cur_term]
-                    cur_lineage.append(cur_term)
-                filtered_lineage = [t for t in cur_lineage if t in self.term_contexts and len(self.term_contexts[t]) > 0]
-                if len(filtered_lineage) > 0:           
-                    retry_term = filtered_lineage[0] # parent, or random
-                    # retry_terms.append(retry_term)
-                    new_children.append(retry_term)
+                backtrack_term = self.get_backtrack_term(context)
+                if backtrack_term is not None:
+                    new_children.append(backtrack_term)
                 else:
                     # if self.debug:
                     #     print(f"Done {cur_term}")
