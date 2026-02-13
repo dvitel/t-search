@@ -21,7 +21,7 @@ class SemanticTournamentSelection(TS):
 
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
         half_size = self.selection_size // 2
-        half_parents = super().select(population, half_size + (self.selection_size % 2)) 
+        half_parents = super().__call__(population, size=half_size + (self.selection_size % 2)) 
         half_parents_sems = self.semantics.get_outputs(half_parents, return_type="tensor")
         children = []
         for i in range(half_size):
@@ -34,12 +34,16 @@ class SemanticTournamentSelection(TS):
             del candidate_sem
             filter_ids, = torch.where(~mask)
             filtered_candidates = [candidiates[i] for i in filter_ids.tolist()]
-            c_fitness = self.semantics.get_outputs(filtered_candidates, return_type="tensor")
-            best_id = torch.argmin(c_fitness).item()
-            best_parent = candidiates[best_id]
-            del c_fitness
-            children.append(first_parent)
-            children.append(best_parent)
+            if len(filtered_candidates) == 0:
+                children.append(first_parent)
+                children.append(first_parent)
+            else:
+                c_fitness = self.fitness.get_fitness(filtered_candidates, return_type="tensor")
+                best_id = torch.argmin(c_fitness).item()
+                best_parent = candidiates[best_id]
+                del c_fitness
+                children.append(first_parent)
+                children.append(best_parent)
 
         del half_parents_sems
 

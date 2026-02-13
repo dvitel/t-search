@@ -95,7 +95,9 @@ class ConstOptimizer(Optimizer):
 
         # self.best_terms_cache[optim_term] = (term, None)
         if len(binding) == 0: # nothing to optimize
-            return Optimized(term, None, None)
+            res = Optimized(term, None, None)
+            self.best_terms_cache[optim_term] = res
+            return res
         
         return (optim_term, binding)
     

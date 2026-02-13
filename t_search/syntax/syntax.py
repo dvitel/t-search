@@ -76,6 +76,7 @@ class Syntax(ServiceBase):
         self.commutative = commutative # allows orering of args in cache
         self.commutative_priority = {}
         self.debug = debug
+        self.return_const_identity = False # Returns self.one_value on constant allocation (zero is too obtrusive)
 
         self.forbid_patterns = forbid_patterns
         self.match_cache: dict[tuple, UnifyBindings] = {}
@@ -174,6 +175,8 @@ class Syntax(ServiceBase):
         self.skeletons_cache: dict[Term, Term] = {}
 
     def _alloc_const(self, *, value: Optional[float | torch.Tensor] = None) -> Value:
+        if self.return_const_identity:
+            return self.one_value
         if self.const_id >= self.const_tape.shape[0]:
             delta = max(1, self.max_consts) * self.capacity
             new_tape = torch.empty(
@@ -462,7 +465,9 @@ class Syntax(ServiceBase):
         op_builder = self.rnd.choice(list(self.op_builders.values()))
         args = [arg_builder(arg_i) for arg_i in range(op_builder.arity())]
         op = op_builder.fn(*args)
-        return op
+        if self.is_valid(op):
+            return op
+        return None
     
     def get_vars(self) -> list[Variable]: 
         return self.vars
@@ -501,12 +506,15 @@ class Syntax(ServiceBase):
                         freq_skew=freq_skew)
         return new_term
     
-    def get_all_terms(self, up2depth: int = 2, max_consts: int = 0) -> list[Term]:
+    def get_all_terms(self, up2depth: int = 2, max_consts: int = 0, const_1: bool = False) -> list[Term]:
         gen_context = TermGenContext(self.builders.default_gen_context.min_counts,
                                         self.builders.default_gen_context.max_counts.copy(),
                                         self.builders.default_gen_context.arg_limits)
         gen_context.max_counts[self.const_builder.id] = max_consts  # limit constants
+        prev_return_const_identity = self.return_const_identity
+        self.return_const_identity = const_1
         terms = gen_all_terms(self.builders, depth=up2depth, start_context=gen_context)
+        self.return_const_identity = prev_return_const_identity
         return terms
                 
     def get_finalizer(self):

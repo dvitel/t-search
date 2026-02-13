@@ -23,6 +23,7 @@ class RHH(Initialization):
                  min_depth = 1, 
                  max_depth = 5, 
                  grow_proba = 0.5,
+                 syntactic_duplicate_retries: int = 1,
                  leaf_proba: Optional[float] = 0.1,
                  freq_skew: bool = False):
         self.syntax = syntax
@@ -34,6 +35,7 @@ class RHH(Initialization):
         self.leaf_proba = leaf_proba
         self.freq_skew = freq_skew
         self.size = size
+        self.syntactic_duplicate_retries = syntactic_duplicate_retries
 
     def _rhh(self) -> Term:
         depth = self.rnd.integers(self.min_depth, self.max_depth + 1)
@@ -45,11 +47,23 @@ class RHH(Initialization):
     
     def __call__(self) -> list[Term]:
         population = []
+        present_terms = set()
         for _ in range(self.size):
-            term = self._rhh()
-            # print(str(term))
-            if term is not None:
-                population.append(term)
+            last_good_term = None
+            for _ in range(self.syntactic_duplicate_retries):
+                term = self._rhh()
+                # print(str(term))
+                if term is not None:
+                    last_good_term = term
+                    if term in present_terms:
+                        continue
+                    present_terms.add(term)
+                    population.append(term)
+                    last_good_term = None
+                    break
+            if last_good_term is not None:
+                population.append(last_good_term)
+                present_terms.add(last_good_term)
         return population
 
 class RHHCached(RHH):

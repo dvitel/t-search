@@ -57,7 +57,7 @@ def sorted_by_fitness(seq: Sequence, fitness: torch.Tensor, max_num: int | None 
         selected_ids = sorted_ids[:max_num].tolist()
     return [seq[i] for i in selected_ids]
 
-GPSolverStatus = Literal["INIT", "MAX_GEN", "MAX_EVAL", "MAX_ROOT_EVAL", "SOLVED"]
+GPSolverStatus = Literal["INIT", "MAX_GEN", "MAX_EVAL", "MAX_ROOT_EVAL", "DEADEND", "SOLVED"]
 
 class EvSearchTermination(Exception):
     """Reaching maximum of evals, gens, ops etc"""
@@ -120,3 +120,37 @@ def metrics_serializer(obj):
     if isinstance(obj, TermPos):
         return f"{obj.term}@{obj.occur}"
     raise TypeError(f"Type {type(obj)} not serializable")
+
+def unique_vector_ids(vectors: torch.Tensor, atol: float = 1e-6, rtol: float = 1e-6) -> torch.Tensor:
+    duplicate_mask = torch.isclose(vectors.unsqueeze(1), vectors.unsqueeze(0), atol=atol, rtol=rtol).all(dim=-1)
+    lower_tri = torch.tril(duplicate_mask, diagonal=-1)
+    del duplicate_mask
+    has_duplicate_before = lower_tri.any(dim=1)  # (n,) - True if vector i is duplicate of some j < i
+    del lower_tri
+    unique_mask = ~has_duplicate_before  # (n,) - True for unique vectors
+    del has_duplicate_before
+    unique_indices = torch.where(unique_mask)[0]  # Indices of unique vectors
+    del unique_mask
+    return unique_indices
+
+def unique_vector_ids_batched(vectors: torch.Tensor, 
+                                batch_size: int = 1024, max_size: int | None = None,
+                                atol: float = 1e-6, rtol: float = 1e-6) -> torch.Tensor:
+    cur_indices = torch.arange(vectors.shape[0], device=vectors.device)
+    vector_id_groups = []
+    for start in range(0, cur_indices.shape[0], batch_size):
+        end = min(start + batch_size, cur_indices.shape[0])
+        vector_id_group = cur_indices[start:end]    
+        vector_id_groups.append(vector_id_group)
+    cur_vector_ids = torch.empty((0, ), dtype=vector_id_groups[0].dtype, device=vector_id_groups[0].device)
+    for vector_id_group in vector_id_groups:
+        new_vector_ids = torch.cat([cur_vector_ids, vector_id_group])
+        del vector_id_group, cur_vector_ids
+        cur_vectors = vectors[new_vector_ids]
+        unique_id_ids = unique_vector_ids(cur_vectors, atol=atol, rtol=rtol)
+        cur_vector_ids = new_vector_ids[unique_id_ids]
+        if max_size is not None and len(cur_vector_ids) >= max_size:
+            cur_vector_ids = cur_vector_ids[:max_size]
+            break
+        del cur_vectors, unique_id_ids, new_vector_ids
+    return cur_vector_ids

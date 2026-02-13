@@ -85,6 +85,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         self.root_evals: int = 0
         self.max_evals = max_evals
         self.evals: int = 0
+        self.optim_evals: int = 0 # to track spent time on optimization
         self.eval_calls: int = 0
         # self.eval_fn = eval_fn
         self.add_metrics = add_metrics
@@ -141,6 +142,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         self.add_metrics(
             evals = self.evals,
+            optim_evals = self.optim_evals,
             root_evals = self.root_evals,
             eval_calls = self.eval_calls,
             eval_cache_hits = self.eval_cache_hits,
@@ -171,8 +173,12 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         return None
     
-    def _default_set_binding(self, root: Term, term: Term, value: torch.Tensor, with_mean_loss_logging: bool = False):
+    def _default_set_binding(self, root: Term, term: Term, value: torch.Tensor, 
+                             with_mean_loss_logging: bool = False,
+                             under_optim: bool = False):
         self.evals += 1
+        if under_optim:
+            self.optim_evals += 1
         if root == term:
             self.root_evals += 1
         if with_mean_loss_logging and len(self.loss_trace) < self.measure_max_len: #self.measure_loss_each_n > 0:
@@ -271,11 +277,14 @@ class DefaultEvaluator(Evaluator, ServiceBase):
                 return self._get_binding(root, term)
         with_mean_loss_logging = with_mean_loss_logging and (self.measure_loss_each_n > 0)
         if set_binding is None:
-            new_set_binding = partial(self._default_set_binding, with_mean_loss_logging=with_mean_loss_logging)
+            def new_set_binding(root: Term, term: Term, value: torch.Tensor):
+                self._default_set_binding(root, term, value, with_mean_loss_logging=with_mean_loss_logging,
+                                            under_optim=True)
         else:
             def new_set_binding(root: Term, term: Term, value: torch.Tensor):
                 set_binding(root, term, value)
-                self._default_set_binding(root, term, value, with_mean_loss_logging=with_mean_loss_logging)
+                self._default_set_binding(root, term, value, with_mean_loss_logging=with_mean_loss_logging,
+                                            under_optim=True)
         def loss_fn(term: Term) -> torch.Tensor:
             outputs = evaluate(term, self.ops, new_get_binding, new_set_binding)
             return self.fitness.get_loss(outputs)
@@ -327,12 +336,16 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         def set_binding(*_):
             pass
 
+        if self.fitness.best_term is None:
+            raise RuntimeError("Evaluator is not fitted yet")
+
         _, output = self._eval_one(self.fitness.best_term, get_binding, set_binding, mode="test")
         return output      
 
     def get_iter_metrics(self):
         return {
             'iter_evals': [self.evals],
+            'iter_optim_evals': [self.optim_evals],
             'iter_root_evals': [self.root_evals],
             'iter_evals_simple': [self.evals_simple],
             'iter_eval_calls': [self.eval_calls],

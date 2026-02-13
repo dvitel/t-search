@@ -18,10 +18,12 @@ class SemanticallyDrivenInitialization(Initialization):
                  syntax: Syntax,
                  evaluator: Evaluator,
                  semantics: Semantics,
-                 const_range: torch.Tensor,
                  rnd: np.random.Generator,
                  torch_gen: torch.Generator,
-                 num_rand_consts: int = 0,
+                 atol: float = 1e-6,
+                 rtol: float = 1e-5,
+                 semantic_duplicate_retries: int = 1,
+                #  num_rand_consts: int = 0,
                  size: int = 1000
                  ):
         self.syntax = syntax
@@ -29,36 +31,48 @@ class SemanticallyDrivenInitialization(Initialization):
         self.semantics = semantics
         self.rnd = rnd
         self.torch_gen: torch.Generator = torch_gen
-        self.num_rand_consts = num_rand_consts
-        self.const_range = const_range
+        # self.num_rand_consts = num_rand_consts
         self.size = size
+        self.atol = atol
+        self.rtol = rtol
+        self.vectors = torch.full((self.size, self.semantics.dims), float("inf"), device=self.semantics.target.device, dtype=self.semantics.target.dtype)
+        self.population: list[Term] = []
+        self.semantic_duplicate_retries = semantic_duplicate_retries
+
+    def add_term(self, new_term: Term):
+        self.evaluator.eval(new_term)
+        outputs = self.semantics.get_outputs(new_term)
+        if self.semantics.is_const(outputs) is not None:
+            return False
+        present_outputs = self.vectors[:len(self.population)]
+        close_mask = torch.isclose(present_outputs, outputs, atol=self.atol, rtol=self.rtol).all(dim=1)
+        if not torch.any(close_mask):
+            self.vectors[len(self.population)] = outputs
+            self.population.append(new_term)             
+            # if not torch.any(torch.isclose(present_outputs, output, dim=1)):        
+            return True
+        return False
     
     def __call__(self) -> list[Term]:
-        population = self.semantics.get_repr_terms()
-        if len(population) == 0:
-            leaf_terms = list(self.syntax.get_vars())
-            if self.num_rand_consts > 0:    
-                rand_vals = torch.rand(self.num_rand_consts, generator=self.torch_gen, device=self.const_range.device, dtype=self.const_range.dtype)
-                rand_vals = self.const_range[0] + (self.const_range[1] - self.const_range[0]) * rand_vals
-                for const_value in rand_vals.tolist():
-                    const_term = self.syntax.get_const(value=const_value)
-                    leaf_terms.append(const_term)
-            self.evaluator.eval(leaf_terms)
-            population = self.semantics.get_repr_terms()
-        if len(population) >= self.size:
-            return population[:self.size]
+        # population = self.semantics.get_repr_terms()
+        if len(self.population) > 0:
+            return self.population
+        # if len(population) == 0:
+        for var in self.syntax.get_vars():
+            self.add_term(var)
+        # if self.num_rand_consts > 0:    
+        #     rand_vals = torch.rand(self.num_rand_consts, generator=self.torch_gen, device=self.const_range.device, dtype=self.const_range.dtype)
+        #     rand_vals = self.const_range[0] + (self.const_range[1] - self.const_range[0]) * rand_vals
+        #     for const_value in rand_vals.tolist():
+        #         const_term = self.syntax.get_const(value=const_value)
+        #         leaf_terms.append(const_term)        
         
-        global_try_count = 2 * (self.size - len(population))
-        while (len(population) < self.size) and (global_try_count > 0): 
-            global_try_count -= 1
-            term = self.syntax.get_rand_op(lambda _: self.rnd.choice(population))
-            if term is None:
-                continue
-            term_outputs = self.evaluator.eval(term)
-            const_value = self.semantics.is_const(term_outputs[1])
-            if const_value is not None:
-                continue
-            population = self.semantics.get_repr_terms()
-        if len(population) > self.size:
-            return population[:self.size]
-        return population
+        for _ in range(self.size):
+            for _ in range(self.semantic_duplicate_retries):
+                term = self.syntax.get_rand_op(lambda _: self.rnd.choice(self.population))
+                if term is None:
+                    continue
+                was_added = self.add_term(term)
+                if was_added:
+                    break
+        return self.population

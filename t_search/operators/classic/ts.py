@@ -16,17 +16,19 @@ class TS(Selection):
                  fitness: Fitness,
                  torch_gen: torch.Generator,
                  tournament_size: int = 7, 
+                 add_pop: bool = False,
                  **kwargs):
         super().__init__(**kwargs)
         self.tournament_size = tournament_size
         self.fitness = fitness
         self.torch_gen = torch_gen
+        self.add_pop = add_pop
 
-    def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
+    def __call__(self, population: Sequence[Term], size: int | None = None) -> Sequence[Term]:
         ''' Fitness is 1d tensor of fitness selected for tournament '''
         fitness = self.fitness.get_fitness(population, return_type="tensor")
         selected_ids = torch.randint(fitness.shape[0], 
-                                     (self.selection_size, self.tournament_size), 
+                                     (size or self.selection_size, self.tournament_size), 
                                      dtype=torch.long, device=fitness.device,
                                      generator=self.torch_gen)
         selected_fitnesses = fitness[selected_ids]
@@ -35,4 +37,10 @@ class TS(Selection):
         del selected_ids, selected_fitnesses, best_id_id
         del fitness
         children = [population[best_id] for best_id in best_ids.tolist()]
+        if self.add_pop: # guarantee that parents appear at least once
+            present_terms = set(children)
+            for parent in population:
+                if parent not in present_terms:
+                    children.append(parent)
+                    present_terms.add(parent)
         return children

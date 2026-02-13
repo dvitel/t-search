@@ -77,11 +77,6 @@
                 "measure_max_len": 200
             }
         },
-        "init_old": {
-            "type": "Up2D", 
-            "module": "t_search.operators.classic",
-            "params": { "depth": 2, "with_free_vars": true, "max_consts": 10, "const_1": true } 
-        },      
         "init": {
             "type": "RHH", 
             "module": "t_search.operators.classic",
@@ -90,34 +85,39 @@
                 "size": 1000,
                 "max_depth": 6
             } 
-        },        
+        },
         "selection": { 
             "type": "TS", 
             "module": "t_search.operators.classic",
-            "params": { "selection_size": 100, "tournament_size": 3, "add_pop": true } 
+            "params": { "selection_size": 1000, "tournament_size": 7 } 
+        },
+        "mutation": { 
+            "type": "RPM", 
+            "module": "t_search.operators.classic",
+            "params": { 
+                "max_pos_tries": 10,
+                "rate": 0.1
+            } 
+        },
+        "crossover": { 
+            "type": "RPX", 
+            "module": "t_search.operators.classic",
+            "params": { 
+                "max_pos_tries": 10,
+                "rate": 0.9 
+            } 
         },
         "survivor_selection": { 
             "type": "MuLambdaSurvivorSelection", 
             "module": "t_search.operators.classic",
             "params": { 
                 "evaluator": {"!ref": "evaluator"},
-                "mu": 100, 
+                "mu": 1000, 
                 "strict": false, 
                 "combine": false,
-                "elitism": 0
-            } 
-        },
-        "normalizer": {
-            "type": "ZScoreNormalizer",
-            "params": {
-                "epsilon": 1e-07
+                "elitism": 10
             }
-        },
-        "point_optim_init": {
-            "type": "Up2D", 
-            "module": "t_search.operators.classic",
-            "params": { "depth": 1, "with_free_vars": true, "max_consts": 10, "const_1": true } 
-        },       
+        },        
         "const_optimizer": {
             "type": "ConstOptimizer",
             "module": "t_search.evaluators.const_optimizer",
@@ -132,51 +132,22 @@
                 "loss_threshold": 0.00001
             }
         },
-        "point_optim": {
-            "type": "PointOptim",
-            "module": "t_search.operators.optim.point_optim",
+        "const_optim_mutation": {
+            "type": "ConstOptimMutation",
+            "module": "t_search.operators.optim",
             "params": {
-                "syntax": {"!ref": "syntax"},
-                "fitness": {"!ref": "fitness"},
-                "semantics": {"!ref": "semantics"},
-                "evaluator": {"!ref": "evaluator"},
-                "init_op": {"!ref": "point_optim_init"},
-                "normalizer": {"!ref": "normalizer"},
                 "const_optimizer": {"!ref": "const_optimizer"},
-                "position_strategy": "rand_position_order",
-                "num_starts": 10,
-                "range_delta": 0.1,
-                "max_evals": 20,
-                "lr": 1,
-                "tolerance_change": 0.0000001,
-                "tolerance_grad": 0.000001,
-                "with_tabu": true,
-                "num_minimas": 10,
-                "num_lib_terms": 1,
-                "pick_best_dists": true,
-                "loss_threshold": 1e-03,
-                "loss_koef": 0.95,
-                "log_file": "./data/point_optim_log.jsonl",
-                "best_by_metric": "dist",
-                "dist_measure": "pearson",
-                "allow_no_better": false,
-                "backtrack_lineage": true,
-                "with_pop_terms": false,
-                "with_subterms": true,
-                "max_query_size": 2048,
-                "max_query_depth": 3,
-                "identity_atol": 0.01,
-                "identity_rtol": 0.01,
-                "with_reduction": true,
                 "max_pos_tries": 1,
-                "rate": 1.0
+                "rate": 0
             }
         }
     },
     "init_service_name": "init",
     "operator_service_names": [
         "selection",
-        "point_optim",
+        "crossover",
+        "mutation",
+        "const_optim_mutation",
         "evaluator",
         "survivor_selection"
     ],
@@ -186,5 +157,5 @@
     "fitness_service_name": "fitness",
     "semantics_service_name": "semantics",
     "max_gen": 1000,
-    "max_dim_size": 1000    
+    "max_dim_size": 1000
 }

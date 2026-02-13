@@ -12,6 +12,6 @@ class Selection(Operator):
         self.rnd: np.random.Generator = rnd
         self.selection_size: int = selection_size
     
-    def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
-        children = self.rnd.choice(population, self.selection_size).tolist()
+    def __call__(self, population: Sequence[Term], size: int | None = None) -> Sequence[Term]:
+        children = self.rnd.choice(population, size or self.selection_size).tolist()
         return children

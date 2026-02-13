@@ -403,10 +403,11 @@ class GPSolver(BaseEstimator, RegressorMixin):
             if self.debug:
                 for x_name, x_val in self.var_bindings.items():
                     print(f"{x_name}: {x_val}")
-            # for var in self.syntax.get_vars():
-                # var_binding = self.var_bindings[var.var_id]
-                # self.fitness.set_fitness([var], var_binding.unsqueeze(0))
-                # self.evaluator.add_initial_terms([var], var_binding.unsqueeze(0))
+            for var in self.syntax.get_vars():
+                self.fitness.set_fitness([var], self.var_bindings[var.var_id].unsqueeze(0))
+            # var_binding = self.var_bindings[var.var_id]
+            # self.fitness.set_fitness([var], var_binding.unsqueeze(0))
+            # self.evaluator.add_initial_terms([var], var_binding.unsqueeze(0))
             pass
         except EvSearchTermination as e:
             del const_output            

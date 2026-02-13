@@ -13,11 +13,13 @@ class Semantics(ServiceBase):
     def __init__(self, *,
         var_bindings: dict[str, torch.Tensor],
         storage: TermVectorStorage,
+        target: torch.Tensor,
         dims: int
         ):
         self.var_bindings = var_bindings
         self.storage = storage
         self.dims = dims
+        self.target = target
 
     def get_missing(self, terms: list[Term] | Term) -> list[Term]:
         if isinstance(terms, Term):

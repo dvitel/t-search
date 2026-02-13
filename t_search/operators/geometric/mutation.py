@@ -16,12 +16,16 @@ class SemanticGeometricMutation(TermMutation, ServiceBase):
     def __init__(self, *, 
                     syntax: Syntax,
                     evaluator: Evaluator,
-                    max_grow_depth = 5, num_tries = 2, epsilon = 0.02, 
+                    min_grow_depth = 3,
+                    max_grow_depth = 5, 
+                    num_tries = 2, 
+                    epsilon = 0.02, 
                     check_validity: bool = True,
                     simplifier: Reduce | None = None,
                     **kwargs):
         super().__init__(**kwargs)
         self.num_tries = num_tries
+        self.min_grow_depth = min_grow_depth
         self.max_grow_depth = max_grow_depth
         self.epsilon = epsilon
         self.minus_one: Term | None = None
@@ -40,8 +44,10 @@ class SemanticGeometricMutation(TermMutation, ServiceBase):
         mutated_term = None
         
         for _ in range(self.num_tries):
-            t1 = self.syntax.grow(self.max_grow_depth)
-            t2 = self.syntax.grow(self.max_grow_depth)            
+            d1 = self.rnd.randint(self.min_grow_depth, self.max_grow_depth+1)
+            t1 = self.syntax.grow(d1)
+            d2 = self.rnd.randint(self.min_grow_depth, self.max_grow_depth+1)
+            t2 = self.syntax.grow(d2)
 
             mutated_term = self.syntax.get_op("add", 
                                               term, 

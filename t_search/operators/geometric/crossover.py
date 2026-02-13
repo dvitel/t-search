@@ -11,7 +11,6 @@ class SemanticGeometricCrossover(TermCrossover, ServiceBase):
     '''
     def __init__(self, *, 
                     evaluator: Evaluator,
-                    max_grow_depth = 5, 
                     num_tries = 2, 
                     epsilon = 1.0, 
                     check_validity: bool = True,
@@ -20,7 +19,6 @@ class SemanticGeometricCrossover(TermCrossover, ServiceBase):
                     **kwargs):
         super().__init__(**kwargs)
         self.num_tries = num_tries
-        self.max_grow_depth = max_grow_depth
         self.epsilon = epsilon
         self.minus_one: Term | None = None
         self.check_validity = check_validity
