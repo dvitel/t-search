@@ -76,12 +76,12 @@
                 "measure_max_len": 200
             }
         },
-        "init": {
+        "init_old": {
             "type": "Up2D", 
             "module": "t_search.operators.classic",
             "params": { "depth": 1, "with_free_vars": true, "max_consts": 10, "const_1": true } 
         },      
-        "init_old": {
+        "init": {
             "type": "RHH", 
             "module": "t_search.operators.classic",
             "params": { 
@@ -141,7 +141,7 @@
                 "evaluator": {"!ref": "evaluator"},
                 "init_op": {"!ref": "point_optim_init"},
                 "normalizer": {"!ref": "normalizer"},
-                "position_strategy": "rand_position_order",
+                "position_strategy": "best_grad_position_order",
                 "num_starts": 10,
                 "range_delta": 0.1,
                 "max_evals": 20,
@@ -150,10 +150,10 @@
                 "tolerance_grad": 1e-06,
                 "with_tabu": true,
                 "num_minimas": 10,
-                "num_lib_terms": 3,
+                "num_lib_terms": 5,
                 "pick_best_dists": false,
                 "loss_threshold": 1e-03,
-                "loss_koef": 0.95,
+                "loss_koef": 1.0,
                 "log_file": "./data/point_optim_log.jsonl",
                 "best_by_metric": "dist",
                 "dist_measure": "pearson",
@@ -178,13 +178,20 @@
                 "max_pos_tries": 1,
                 "rate": 1.0
             }
+        },
+        "reduce": {
+            "type": "Reduce",
+            "module": "t_search.operators.syntax",
+            "params": {
+                "max_pos_tries": 1,
+                "rate": 1.0
+            }
         }        
     },
     "init_service_name": "init",
     "operator_service_names": [
         "selection",
         "point_optim",
-        "const_optim_mutation",
         "evaluator",
         "survivor_selection"
     ],

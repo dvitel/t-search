@@ -25,6 +25,7 @@ class TermMutationContext:
     gen: int
     term: Term 
     pos: TermPos
+    stripped_pos_term: Term # without lincomb
     pos_priority: tuple[float] | None = None
     pos_id: int = 0 
     num_pos: int = 0
@@ -59,7 +60,7 @@ class LossBasedContinuation:
 class DistBasedContinuation:
     dist: float
     k: float 
-    fterm: Term
+    stripped_filling: Term
     b: float
 
     def get_priority(self):
@@ -622,6 +623,7 @@ class PointOptim(PositionMutation, ServiceBase):
             gen = context.gen,
             term = context.term,
             pos = context.pos,
+            stripped_pos_term= context.stripped_pos_term,
             pos_priority = context.pos_priority,
             pos_id = context.pos_id,
             cont_id = context.cont_id + 1,
@@ -716,7 +718,10 @@ class PointOptim(PositionMutation, ServiceBase):
         # reducing consstants before optimization 
         new_term = self.reduce_lincomb(new_term)
 
-        reduced_term = self.reduce_lincomb(new_term, identities={'add': self.add_id_fn, 'mul': self.mul_id_fn})                    
+        reduced_term = self.reduce_lincomb(new_term, identities={'add': self.add_id_fn, 'mul': self.mul_id_fn})   
+
+        if not self.syntax.is_valid(reduced_term):
+            return None
 
         return reduced_term    
 
@@ -730,14 +735,20 @@ class PointOptim(PositionMutation, ServiceBase):
         if context_key in self.term_context_continuations: # it is continuation of optimization - we may reuse info from original optimization
             conts = self.term_context_continuations[context_key]
             assert len(conts) > 0
-            next_cont = conts.popleft()
+            next_cont = conts[0]
             if isinstance(next_cont, LossBasedContinuation):
+                next_cont = conts.popleft()
                 context.filling = next_cont.filling
                 context.final_term = next_cont.final_term
                 context.final_loss = next_cont.final_loss
             elif isinstance(next_cont, DistBasedContinuation):
-                while True:
-                    context.filling = self.build_lincomb(next_cont.k, next_cont.fterm, next_cont.b)
+                while len(conts) > 0:
+                    next_cont = conts.popleft()
+                    if next_cont.stripped_filling == context.stripped_pos_term:
+                        continue
+                    context.filling = self.build_lincomb(next_cont.k, next_cont.stripped_filling, next_cont.b)
+                    if isinstance(context.filling, Value) and isinstance(context.pos.term, Value) and torch.isclose(context.filling.value, context.pos.term.value, atol=self.identity_atol, rtol=self.identity_rtol):
+                        continue
                     new_term = self.combine_new_term(context.term, context.pos, context.filling)
                     if new_term is not None:
                         self.evaluator.eval(new_term)
@@ -745,10 +756,6 @@ class PointOptim(PositionMutation, ServiceBase):
                         context.final_term = new_term
                         context.final_loss = loss
                         break
-                    elif len(conts) == 0:
-                        break 
-                    else:
-                        next_cont = conts.popleft()
             else:
                 raise ValueError(f"Unknown continuation type: {type(next_cont)}")
 
@@ -827,11 +834,17 @@ class PointOptim(PositionMutation, ServiceBase):
             ordered_kb = [(0.0, 0.0, self.syntax.zero_value, possible_const)]
         else: # we order lib terms by dist measure            
 
-            should_clean_query = False
+            # pos_k, pos_subterm, pos_b = self.decompose_lincomb(context.pos.term)
+
+            # if pos_b is not None: 
+            #     prohibited_term = pos_subterm # cannot use it at place
+
+            query_terms = self.query_terms
             if self.with_subterms:
                 present_terms = set(self.query_terms)
                 new_terms = []
-                pos_max_depth = min(self.syntax.max_term_depth - context.pos.at_depth, self.max_query_depth)
+                # pos_max_depth = min(self.syntax.max_term_depth - context.pos.at_depth, self.max_query_depth)
+                pos_max_depth = self.syntax.get_depth(context.pos.term) - 2 # for lincomb
                 for subpos in self.syntax.get_positions(context.term):
                     if subpos.term not in present_terms and self.syntax.get_depth(subpos.term) <= pos_max_depth:
                         present_terms.add(subpos.term)
@@ -841,37 +854,25 @@ class PointOptim(PositionMutation, ServiceBase):
                     new_term_consts = self.semantics.is_const(subterm_outputs) # to set internal const cache
                     filtered_ids = [i for i, c in enumerate(new_term_consts) if c is None]
                     new_terms = [new_terms[i] for i in filtered_ids]
-                    if len(new_terms) == 0:
-                        query_vectors = self.query_vectors
-                        query_terms = self.query_terms
-                    else:
+                    if len(new_terms) > 0:
                         query_terms = self.query_terms + new_terms
                         filtered_subterm_outputs = subterm_outputs[filtered_ids]
                         del subterm_outputs
                         subterm_outputs = filtered_subterm_outputs
-                        should_clean_query = True 
                         normalized_subterm_outputs = self.normalizer.normalize(subterm_outputs)
                         del subterm_outputs
                         query_vectors = torch.cat([self.query_vectors, normalized_subterm_outputs], dim=0)
                         del normalized_subterm_outputs  
                         uniq_ids = unique_vector_ids(query_vectors)
-                        query_vectors = query_vectors[uniq_ids]
+                        del query_vectors
                         query_terms = [query_terms[i] for i in uniq_ids.tolist()]
                         del uniq_ids
-                else:
-                    query_vectors = self.query_vectors
-                    query_terms = self.query_terms
-            else:
-                query_vectors = self.query_vectors
-                query_terms = self.query_terms
 
             ordered_kb = self.optimize_lincomb(query_terms, optim_vectors_plain)
 
             del optim_vectors
             clean_optim_result(slowest_traces)
 
-            if should_clean_query:
-                del query_vectors
             # context.lib_term_dists = list(result_dists)
             # context.lib_term_order = list(result_terms)
 
@@ -914,7 +915,7 @@ class PointOptim(PositionMutation, ServiceBase):
             # #     context.lib_term_dists = context.lib_term_dists[:self.num_lib_terms]
             # #     context.lib_term_order = ordered_terms
 
-        best_dist = ordered_kb[0][0]
+        best_dist = None #ordered_kb[0][0]
 
         if self.best_by_metric == "loss": # run all optimizations of ordered terms abd pick best 
             sz = min(self.num_lib_terms, len(ordered_kb))
@@ -922,13 +923,21 @@ class PointOptim(PositionMutation, ServiceBase):
             final_dists = []
             final_fillings = []
             for i in range(len(ordered_kb)):
-                dist, k, fterm, b = ordered_kb[i]
-                if (len(final_term) >= sz) or (self.pick_best_dists and dist > best_dist):
+                if len(final_term) >= sz:
                     break
-                filling = self.build_lincomb(k, fterm, b)
+                dist, k, stripped_filling, b = ordered_kb[i]
+                if stripped_filling == context.stripped_pos_term:
+                    continue # do not replace by the same term (even stripped)
+                filling = self.build_lincomb(k, stripped_filling, b)
+                if isinstance(filling, Value) and isinstance(context.pos.term, Value) and torch.isclose(filling.value, context.pos.term.value, atol=self.identity_atol, rtol=self.identity_rtol):
+                    continue                
                 new_term = self.combine_new_term(context.term, context.pos, filling)
                 if new_term is None:
                     continue
+                if best_dist is None:
+                    best_dist = dist
+                if (self.pick_best_dists and dist > best_dist):
+                    break
                 final_terms.append(new_term)
                 final_fillings.append(filling)
                 final_dists.append(dist)
@@ -963,12 +972,18 @@ class PointOptim(PositionMutation, ServiceBase):
             context.final_loss = float('inf')
             context.final_term = None    
             next_i = 0   
-            for kb in ordered_kb:
+            for (dist, k, stripped_filling, b) in ordered_kb:
                 next_i += 1
-                filling = self.build_lincomb(kb[1], kb[2], kb[3])
-                new_term = self.combine_new_term(context.term, context.pos, filling)
+                if stripped_filling == context.stripped_pos_term:
+                    continue # do not replace by the same term (even stripped)
+                filling = self.build_lincomb(k, stripped_filling, b)
+                if isinstance(filling, Value) and isinstance(context.pos.term, Value) and torch.isclose(filling.value, context.pos.term.value, atol=self.identity_atol, rtol=self.identity_rtol):
+                    continue
                 context.filling = filling
+                new_term = self.combine_new_term(context.term, context.pos, filling)
                 if new_term is not None:
+                    if best_dist is None:
+                        best_dist = dist
                     self.evaluator.eval(new_term)
                     loss = self.fitness.get_fitness(new_term).item()
                     context.final_loss = loss
@@ -1029,8 +1044,12 @@ class PointOptim(PositionMutation, ServiceBase):
             positions = self.syntax.get_positions(term)
             priorities = self.position_strategy(term, positions) # should be cached if necessary
             start_loss = self.fitness.get_fitness(term).item()
-            contexts = [TermMutationContext(cur_gen, term, pos, pos_priority=priority, start_loss=start_loss) 
-                        for priority, pos in zip(priorities, positions) ]
+            contexts = []            
+            for priority, pos in zip(priorities, positions):
+                _, stripped_pos_term, _ = self.decompose_lincomb(pos.term)
+                context = TermMutationContext(cur_gen, term, pos, stripped_pos_term, 
+                                              pos_priority=priority, start_loss=start_loss) 
+                contexts.append(context)
             contexts.sort(key=lambda x: x.pos_priority)
 
             self.term_contexts[term] = deque(contexts)

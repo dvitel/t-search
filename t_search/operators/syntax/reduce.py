@@ -96,6 +96,11 @@ def from_sympy(root: sp.Expr, op_mapping: dict[sp.Expr, str] = sp_alg_ops_b,
             op_res = alloc_op("div")(alloc_val(1), arg)
         return op_res
     
+    # if not use_unary and root.is_Add and any(a.is_Mul and -1 in a.args for a in root.args):
+    #     args_wo_minus = [ga for a in root.args for ga in a.args if ga != -1]
+    #     if len(args_wo_minus) == 1:
+    #         op_res = alloc_op("sub")(alloc_val(0), arg)
+    
     if root.is_Function and root.func not in op_mapping:
         args = []
         for a in root.args:
@@ -149,14 +154,14 @@ class Reduce(TermMutation):
     ''' Syntactic Simplifier based on domain axioms '''
 
     def  __init__(self, *,
-                    evaluator: Evaluator,
+                    # evaluator: Evaluator,
                     to_ops: dict = sp_alg_ops_f, from_ops: dict = sp_alg_ops_b,
                     check_validity: bool = True, **kwargs):
         super().__init__(**kwargs)
         self.to_ops = to_ops
         self.from_ops = from_ops
         self.check_validity = check_validity
-        self.evaluator = evaluator
+        # self.evaluator = evaluator
     def mutate_term(self, term: Term) -> Term | None:
         def simplify():
             new_term = sp_simplify(term, to_dict = self.to_ops, from_dict=self.from_ops,
