@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Callable, Literal, Optional
 import torch
 
@@ -8,86 +9,37 @@ from t_search.syntax.term import Term
 from t_search.utils import EvSearchTermination
 
 
-def mse_loss_builder(target):
-    return lambda output: (output - target) ** 2
+def mse(vector, target):
+    return (vector - target) ** 2
 
 
-def nmse_loss_builder(target) -> Callable[[torch.Tensor], torch.Tensor]:
-    """we follow R^2 normalization: NMSE = 1 - R^2"""
-    # norm = torch.mean(target ** 2, dim=-1) # TODO: could be different norms: std dev
-    norm = torch.var(target, dim=-1, unbiased=False)
+def nmse(vector, target, target_variance: torch.Tensor | None = None) -> torch.Tensor:
+    """we follow R^2 normalization: NMSE = 1 - R^2"""        
 
-    if norm > 0:
-    
-        def loss_fn(output: torch.Tensor) -> torch.Tensor:
-            mse = (output - target) ** 2
-            nmse = mse / norm
-            return nmse
+    res = mse(vector, target)
+    variance_mask_clamped = torch.clamp(target_variance, min=1e-08)   
+    res /= variance_mask_clamped
 
-        return loss_fn
-    
-    return mse_loss_builder(target)
-
-
-# def mse_loss_nan_v(predictions, target, *, nan_error = torch.inf):
-#     loss = torch.mean((predictions - target) ** 2, dim=-1)
-#     loss = torch.where(torch.isnan(loss), torch.tensor(nan_error, device=loss.device, dtype=loss.dtype), loss)
-#     return loss
-
-# def mse_loss_nan_vf(predictions, target, *,
-#                     nan_value_fn = lambda m,t: torch.tensor(torch.inf,
-#                                                     device = t.device, dtype=t.dtype),
-#                     nan_frac = 0.5):
-#     nan_frac_count = math.floor(target.shape[0] * nan_frac)
-#     nan_mask = torch.isnan(predictions)
-#     err_rows: torch.Tensor = nan_mask.sum(dim=-1) > nan_frac_count
-#     bad_positions = nan_mask & err_rows.unsqueeze(-1)
-#     fixed_predictions = torch.where(bad_positions,
-#                                     nan_value_fn(bad_positions, target),
-#                                     predictions)
-#     err_rows.logical_not_()
-#     fixed_positions = nan_mask & err_rows.unsqueeze(-1)
-#     fully_fixed_predictions = torch.where(fixed_positions, target, fixed_predictions)
-#     loss = torch.mean((fully_fixed_predictions - target) ** 2, dim=-1)
-#     del fully_fixed_predictions, fixed_predictions, fixed_positions, bad_positions, err_rows, nan_mask
-#     return loss
-
-
-def l1_loss_builder(target):
-    return lambda outputs: torch.abs(outputs - target)
+    return res
 
 def l2(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     el_dist = (a - b) ** 2
     el_dist.nan_to_num_(nan=torch.inf)
     return torch.sqrt(torch.sum(el_dist, dim=-1))
 
-supported_loss = {
-    'nmse': nmse_loss_builder,
-    'mse': mse_loss_builder, 
-    'l1': l1_loss_builder
-}
-
-def get_fitness_fns(name: str) -> Callable:
-    if name in supported_loss:
-        return supported_loss[name]
-    else:
-        raise ValueError(f"Loss {name} is not supported. Supported: {list(supported_loss.keys())}") 
-    
-
 class Fitness(ServiceBase): 
 
     def __init__(self, *,
                  syntax: Syntax,
-                 name: str = "nmse",
                  target: torch.Tensor,
+                 target_variance: torch.Tensor,
                  fitness_atol: float = 1e-6,
                  fitness_err: float = 1e-6,
                  debug: bool = False):
-        self.name = name
         self.target = target
+        self.target_variance = target_variance
         self.syntax = syntax
         self.fitness: dict[Term, torch.Tensor] = {}
-        self.fitness_fn = get_fitness_fns(name)(target)
         self.best_term: Optional[Term] = None
         self.best_term_fitness: Optional[torch.Tensor] = None
         self.best_term_depth: Optional[int] = None
@@ -170,7 +122,7 @@ class Fitness(ServiceBase):
         return selected_fitness
 
     def set_fitness(self, valid_terms: list[Term], valid_semantics: torch.Tensor) -> None:
-        fitness_per_test = self.fitness_fn(valid_semantics)
+        fitness_per_test = nmse(valid_semantics, target=self.target.unsqueeze(0), target_variance=self.target_variance)
         fitness_per_test.nan_to_num_(nan=torch.inf)
         fitness = torch.mean(fitness_per_test, dim=-1)
         for term, fit in zip(valid_terms, fitness):
@@ -191,9 +143,14 @@ class Fitness(ServiceBase):
             self.fitness.clear()
         return finalize
     
-    def get_loss(self, outputs: torch.Tensor) -> torch.Tensor:
+    def get_loss(self, outputs: torch.Tensor, custom_target: torch.Tensor | None = None) -> torch.Tensor:
         ''' Note: per dim loss, not averaged '''
-        return self.fitness_fn(outputs)
+        if custom_target is None: 
+            loss = nmse(outputs, target=self.target, target_variance=self.target_variance)
+        else:
+            custom_target_variance = torch.var(custom_target, dim=-1, unbiased=False) # (k,)
+            loss = nmse(outputs, target=custom_target.unsqueeze(0), target_variance=custom_target_variance.unsqueeze(-1)) # (any shape, k, dims)
+        return loss
     
     def get_iter_metrics(self):
         iter_fitness = self.best_term_fitness.item()

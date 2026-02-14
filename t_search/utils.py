@@ -154,3 +154,28 @@ def unique_vector_ids_batched(vectors: torch.Tensor,
             break
         del cur_vectors, unique_id_ids, new_vector_ids
     return cur_vector_ids
+
+
+def optimize_kb(X: torch.Tensor, Y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    ''' Searches for such k, b that minimizes MSE between Y and k*X+b  
+        X - (n, dims), y (k,dims), k, b - (n, k)
+        Assumes that X and Y have nonzero variations
+    '''
+
+    Sx = X.sum(dim=-1) #(n,)
+    Sy = Y.sum(dim=-1) #(k,)
+    Sxx = (X * X).sum(dim=-1) #(n,)
+    Sxy = (X.unsqueeze(1) * Y.unsqueeze(0)).sum(dim=-1) #(n, k)
+    dims = X.shape[-1]
+    n_Covar_xy = (dims * Sxy - Sx.unsqueeze(1) * Sy.unsqueeze(0)) #(n, k)
+    n_Var_x = (dims * Sxx - Sx * Sx) #(n,)
+    k = n_Covar_xy / n_Var_x.unsqueeze(1)
+    fix_mask = torch.isnan(k) | torch.isinf(k)
+    k[fix_mask] = 0.0
+    b = (Sy.unsqueeze(0) - k * Sx.unsqueeze(1)) / dims
+    return k, b
+
+# y = torch.tensor([[3.1, 5.2, 7.1, 9.2]])
+# x = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+# k, b = optimize_kb(x, y)
+# print(k)  # Should be close to [[2.0]]

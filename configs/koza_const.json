@@ -4,7 +4,6 @@
             "type": "Fitness", 
             "params": {
                 "syntax": {"!ref": "syntax"},
-                "fitness_name": "nmse",
                 "fitness_atol": 1e-07
             }
         },        

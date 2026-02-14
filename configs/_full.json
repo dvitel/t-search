@@ -3,7 +3,6 @@
         "fitness": { 
             "type": "Fitness", 
             "params": {
-                "fitness_name": "nmse",
                 "fitness_atol": 1e-07
             }
         },

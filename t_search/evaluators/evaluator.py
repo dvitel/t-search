@@ -98,10 +98,6 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         self.best_loss: float = float('inf')
         self.loss_trace: list[float] = []
 
-        # fitness_fn_builder = get_fitness_fns(fitness_name)
-        # self.fitness_fn_builder = fitness_fn_builder
-        # self.fitness_fn: Callable[[torch.Tensor], torch.Tensor] = fitness_fn_builder(target)
-
         self.new_term_outputs: dict[Term, torch.Tensor] = {}        
         # self.const_term_outputs: dict[Term, torch.Tensor] = {}
 

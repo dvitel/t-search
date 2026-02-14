@@ -4,7 +4,6 @@
             "type": "Fitness", 
             "params": {
                 "syntax": {"!ref": "syntax"},
-                "fitness_name": "nmse",
                 "fitness_atol": 1e-07
             }
         },        
@@ -77,12 +76,12 @@
                 "measure_max_len": 200
             }
         },
-        "init_old": {
+        "init": {
             "type": "Up2D", 
             "module": "t_search.operators.classic",
-            "params": { "depth": 2, "with_free_vars": true, "max_consts": 10, "const_1": true } 
+            "params": { "depth": 1, "with_free_vars": true, "max_consts": 10, "const_1": true } 
         },      
-        "init": {
+        "init_old": {
             "type": "RHH", 
             "module": "t_search.operators.classic",
             "params": { 
@@ -142,7 +141,6 @@
                 "evaluator": {"!ref": "evaluator"},
                 "init_op": {"!ref": "point_optim_init"},
                 "normalizer": {"!ref": "normalizer"},
-                "const_optimizer": {"!ref": "const_optimizer"},
                 "position_strategy": "rand_position_order",
                 "num_starts": 10,
                 "range_delta": 0.1,
@@ -152,8 +150,8 @@
                 "tolerance_grad": 1e-06,
                 "with_tabu": true,
                 "num_minimas": 10,
-                "num_lib_terms": 1,
-                "pick_best_dists": true,
+                "num_lib_terms": 3,
+                "pick_best_dists": false,
                 "loss_threshold": 1e-03,
                 "loss_koef": 0.95,
                 "log_file": "./data/point_optim_log.jsonl",
@@ -164,19 +162,29 @@
                 "with_pop_terms": false,
                 "with_subterms": true,
                 "max_query_size": 2048,
-                "max_query_depth": 3,
+                "max_query_depth": 4,
                 "identity_atol": 0.01,
                 "identity_rtol": 0.01,
                 "with_reduction": true,
                 "max_pos_tries": 1,
                 "rate": 1.0
             }
-        }
+        },
+        "const_optim_mutation": {
+            "type": "ConstOptimMutation",
+            "module": "t_search.operators.optim",
+            "params": {
+                "const_optimizer": {"!ref": "const_optimizer"},
+                "max_pos_tries": 1,
+                "rate": 1.0
+            }
+        }        
     },
     "init_service_name": "init",
     "operator_service_names": [
         "selection",
         "point_optim",
+        "const_optim_mutation",
         "evaluator",
         "survivor_selection"
     ],

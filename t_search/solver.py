@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 from t_search.base import ServiceBase
-from t_search.evaluators.fitness import Fitness, nmse_loss_builder
+from t_search.evaluators.fitness import Fitness, nmse
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.initialization import Initialization
 from t_search.operators.listeners import GenListener
@@ -225,7 +225,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
             "debug": self.debug,
             "zero": self.zero,
             "one": self.one,
-            "term_lineage": {} # TODO: maybe service? injected by TermMutation, dict[Term, list[Term]], tracking of term changes
+            "term_lineage": {}, # TODO: maybe service? injected by TermMutation, dict[Term, list[Term]], tracking of term changes
+            "term_frontier": set() # best terms to modify 
         }
 
         self.services.clear()
@@ -599,13 +600,12 @@ def config_pipeline(*, dataset:str, config: str, output="koza-{}.json", device='
     num_invalid = (~y_pred_valid_mask).sum().item()
     y_pred_valid = y_pred[y_pred_valid_mask]
     target_test_valid = target_test[y_pred_valid_mask]
-    nmse_fn = nmse_loss_builder(target_test_valid)
-    nmse = nmse_fn(y_pred_valid).mean(dim=-1).item()
+    nmse_value = nmse(y_pred_valid, target=target_test_valid, target_variance=torch.var(target_test_valid, unbiased=False))
     file_name = os.path.basename(config).split(".")[0]
     metrics = {
         "config_name":file_name, 
         "dataset":dataset, 
-        'test_nmse':nmse, 
+        'test_nmse':nmse_value.mean().item(), 
         'test_pred_num_invalid': num_invalid,
         'test_num_samples': target_test.shape[0],
         'train_num_samples': target.shape[0],

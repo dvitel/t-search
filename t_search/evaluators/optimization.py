@@ -718,8 +718,8 @@ def get_slowest_funs(optim_result: OptimResult,
     return res
          
 def set_local_minimas_(optim_result: OptimResult,
-                        rtol: float = 1e-3,
-                        atol: float = 1e-4) -> None:
+                        rtol: float = 1e-1,
+                        atol: float = 1e-2) -> None:
     '''
         For each test in (num_start, num_tests) of optim_result.binding, picks unique local minimas:
         1. Smallest by loss

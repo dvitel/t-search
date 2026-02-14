@@ -17,6 +17,7 @@ class TermMutation(Operator):
                  rnd: np.random.Generator, 
                  add_metrics: Callable,
                  term_lineage: dict[Term, list[Term]],
+                 term_frontier: set[Term],
                  rate : float | None = 1.0,
                  debug: bool = False):
         self.rate: float = rate
@@ -26,25 +27,41 @@ class TermMutation(Operator):
         self.syntax = syntax
         self.debug = debug
         self.term_lineage = term_lineage
+        self.term_frontier = term_frontier
 
     def add_to_lineage(self, parent: Term, child: Term):
-        self.term_lineage.setdefault(child, []).append(parent)
+        # if self.has_lineage_loop(child, parent):
+        #     return # noop
+        self.term_lineage.setdefault(child, set()).add(parent)
+        self.term_frontier.add(child)
+        self.term_frontier.discard(parent)
 
     def has_lineage_loop(self, candidate: Term, parent: Term) -> bool:
         if candidate == parent:
             return True
         cur_parents = self.term_lineage.get(parent, [])
+        visited = set(cur_parents)
         while len(cur_parents) > 0:
             if any(p == candidate for p in cur_parents):
                 return True 
             cur_parents = [gp for p in cur_parents for gp in self.term_lineage.get(p, [])]
+            filtered_cur_parents = []
+            for gp in cur_parents:
+                if gp in visited:
+                    pass 
+                else:
+                    filtered_cur_parents.append(gp)
+                    visited.add(gp)
+            cur_parents = filtered_cur_parents
         return False    
     
     def get_term_history(self, term: Term):
         cur_terms = [term]
         cur_lineage = [cur_terms]
+        visited_terms = set(cur_terms)
         while len(cur_terms) > 0:
-            cur_terms = [p for t in cur_terms for p in self.term_lineage.get(t, [])]
+            cur_terms = [p for t in cur_terms for p in self.term_lineage.get(t, []) if p not in visited_terms]
+            visited_terms.update(cur_terms)
             cur_lineage.append(cur_terms)  
         return cur_lineage      
 
