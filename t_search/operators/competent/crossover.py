@@ -47,4 +47,7 @@ class CompetentCrossover(TermCrossover, BaseCompetentMutation):
         
         child = PositionMutation.mutate_term(self, term)
 
+        if child is not None:
+            self.evaluator.eval(child)
+
         return child

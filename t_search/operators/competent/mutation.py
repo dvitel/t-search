@@ -30,4 +30,8 @@ class CompetentMutation(BaseCompetentMutation):
         
         child = super().mutate_term(term)
 
+        if child is not None:
+
+            self.evaluator.eval(child)
+
         return child

@@ -21,7 +21,7 @@ from t_search.utils import optimize_kb, unique_vector_ids
 
 DesiredSemantics = list[set[float] | None]  # list of sets of possible values for each dimension.
 
-def general_inv(t: DesiredSemantics, args: list[torch.Tensor], arg_i: int, op_inv) -> DesiredSemantics:
+def general_inv(t: DesiredSemantics, args: list[list[float]], arg_i: int, op_inv) -> DesiredSemantics:
     res = []
     for test_id, possible_values in enumerate(t):
         if possible_values is None: 
@@ -153,10 +153,11 @@ alg_inv = {
     "cos": cos_inv,    
 }
 
-def get_desired_semantics(target: torch.Tensor) -> DesiredSemantics:
+def get_desired_semantics(target: torch.Tensor | list[float]) -> DesiredSemantics:
     res = []
-    for i in range(target.shape[0]):
-        val = target[i].item()
+    if torch.is_tensor(target):
+         target = target.tolist()
+    for val in target:
         res.append( {val} )
     return res
 
@@ -174,7 +175,7 @@ def pre_invert(root: Term, output_getter: Callable[[Term], torch.Tensor]):
         cur_occur = occurs.setdefault(term, 0)
 
         if term not in term_arg_semantics and term.arity() > 0:
-            term_arg_semantics[term] = output_getter(list(term.get_args()))
+            term_arg_semantics[term] = [l.tolist() for l in output_getter(list(term.get_args()))]
 
         args_stack[-1].append((term, cur_occur))
         if term.arity() > 0:
@@ -303,35 +304,39 @@ def get_best_semantics(desired: DesiredSemantics, undesired: list[DesiredSemanti
 
         forbidden_mask |= forbidden_close_mask
 
-    # test_ids = [i for i, d in enumerate(desired) if len(d) > 0]
-    # selected_semantics = all_semantics[:, test_ids]
-    # sem_score = torch.zeros((all_semantics.shape[0],), dtype=all_semantics.dtype, device=all_semantics.device)
-    closest_desired = torch.zeros((all_semantics.shape[0], len(desired)), dtype=all_semantics.dtype, device=all_semantics.device)
-    # closest_test_ids = []
-    for test_id, allowed_values in enumerate(desired):
-        if len(allowed_values) == 0: # any allowed
-            closest_desired[:, test_id] = all_semantics[:, test_id] # precisse same value
-            continue 
-        sem_values = all_semantics[:, test_id].unsqueeze(-1) # (num_terms, 1)
-        allowed_tensor = torch.tensor(list(allowed_values), dtype=all_semantics.dtype, device=all_semantics.device)
-        diffs = torch.abs(sem_values - allowed_tensor.unsqueeze(0)) # (num_terms, num_allowed)
-        best_per_term_id = torch.argmin(diffs, dim=1) # (num_terms,)
-        closest_desired[:, test_id] = allowed_tensor[best_per_term_id] # (num_terms,)
-        del allowed_tensor, diffs
-        # sem_score += torch.min(diffs, dim=1).values # (num_terms,) 
-        # closest_desired_id = torch.unravel_index(, diffs.shape)
-        # closest_desired.append(allowed_tensor[closest_desired_id].item())
-        # closest_test_ids.append(test_id)
-
     allowed_ids = torch.where(~forbidden_mask)[0].tolist()
     if len(allowed_ids) == 0:
         return [], None
-    allowed_closest_desired = closest_desired[allowed_ids] # (num_allowed    
-    del closest_desired, forbidden_mask
 
-    uniq_desired_ids = unique_vector_ids(allowed_closest_desired, atol=epsilon, rtol=0)
-    final_closest_desired = allowed_closest_desired[uniq_desired_ids]
-    del allowed_closest_desired
+    if all(len(v) == 1 for v in desired): # exact match desired
+        final_closest_desired = torch.tensor([next(iter(d)) for d in desired], dtype=all_semantics.dtype, device=all_semantics.device) # (sem_dim,)
+    else:
+        # test_ids = [i for i, d in enumerate(desired) if len(d) > 0]
+        # selected_semantics = all_semantics[:, test_ids]
+        # sem_score = torch.zeros((all_semantics.shape[0],), dtype=all_semantics.dtype, device=all_semantics.device)
+        closest_desired = torch.zeros((all_semantics.shape[0], len(desired)), dtype=all_semantics.dtype, device=all_semantics.device)
+        # closest_test_ids = []
+        for test_id, allowed_values in enumerate(desired):
+            if len(allowed_values) == 0: # any allowed
+                closest_desired[:, test_id] = all_semantics[:, test_id] # precisse same value
+                continue 
+            sem_values = all_semantics[:, test_id].unsqueeze(-1) # (num_terms, 1)
+            allowed_tensor = torch.tensor(list(allowed_values), dtype=all_semantics.dtype, device=all_semantics.device)
+            diffs = torch.abs(sem_values - allowed_tensor.unsqueeze(0)) # (num_terms, num_allowed)
+            best_per_term_id = torch.argmin(diffs, dim=1) # (num_terms,)
+            closest_desired[:, test_id] = allowed_tensor[best_per_term_id] # (num_terms,)
+            del allowed_tensor, diffs
+            # sem_score += torch.min(diffs, dim=1).values # (num_terms,) 
+            # closest_desired_id = torch.unravel_index(, diffs.shape)
+            # closest_desired.append(allowed_tensor[closest_desired_id].item())
+            # closest_test_ids.append(test_id)
+
+        allowed_closest_desired = closest_desired[allowed_ids] # (num_allowed    
+        del closest_desired, forbidden_mask
+
+        uniq_desired_ids = unique_vector_ids(allowed_closest_desired, atol=epsilon, rtol=0)
+        final_closest_desired = allowed_closest_desired[uniq_desired_ids]
+        del allowed_closest_desired
 
     return allowed_ids, final_closest_desired
 

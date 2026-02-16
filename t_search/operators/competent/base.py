@@ -47,7 +47,7 @@ class DesiredSemanticLib(ServiceBase):
         del valid_vectors  
         pass
     
-    def get_desired_semantics(self, term: Term, semantics: torch.Tensor) -> DesiredSemantics:
+    def get_desired_semantics(self, term: Term, semantics: torch.Tensor | list[float]) -> DesiredSemantics:
         if term not in self.term_semantics:
             self.term_semantics[term] = get_desired_semantics(semantics)
         return self.term_semantics[term]
@@ -119,5 +119,8 @@ class BaseCompetentMutation(PositionMutation, LincombMixin):
             return None        
         
         trimmed_term = self.reduce_lincomb(mutated_term)
+
+        if self.syntax.is_valid(trimmed_term) is False:
+            return None
 
         return trimmed_term
