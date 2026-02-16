@@ -6,12 +6,11 @@ from typing import TextIO
 import torch
 
 from t_search.base import ServiceBase
-from t_search.evaluators.fitness import Fitness
-from t_search.operators.listeners import EvalListener, GenListener
+from t_search.operators.listeners import GenListener
 from t_search.syntax.term import Term
 
 # TODO: formatter
-class Logging(ServiceBase, EvalListener, GenListener):
+class Logging(ServiceBase, GenListener):
     ''' Outputs new terms into provided file/ descriptor '''
 
     def __init__(self, *, 
@@ -27,7 +26,7 @@ class Logging(ServiceBase, EvalListener, GenListener):
         self.file_stream: TextIO = file
         self.autoflush = autoflush
 
-    def init(self, **kwargs):
+    def init(self):
         if self.file_path == "":
             self._prompt_start()        
             return

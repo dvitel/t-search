@@ -23,10 +23,14 @@ class SemanticallyDrivenInitialization(Initialization):
                  atol: float = 1e-6,
                  rtol: float = 1e-5,
                  semantic_duplicate_retries: int = 1,
+                 max_depth: int,
+                 max_l2: float = 1e6,
+                 target: torch.Tensor | None = None,
                 #  num_rand_consts: int = 0,
                  size: int = 1000
                  ):
         self.syntax = syntax
+        self.target = target
         self.evaluator = evaluator
         self.semantics = semantics
         self.rnd = rnd
@@ -35,44 +39,46 @@ class SemanticallyDrivenInitialization(Initialization):
         self.size = size
         self.atol = atol
         self.rtol = rtol
-        self.vectors = torch.full((self.size, self.semantics.dims), float("inf"), device=self.semantics.target.device, dtype=self.semantics.target.dtype)
-        self.population: list[Term] = []
+        self.max_depth = max_depth      
+        self.max_l2 = max_l2  
         self.semantic_duplicate_retries = semantic_duplicate_retries
 
-    def add_term(self, new_term: Term):
+    def add_term(self, new_term: Term, vectors: torch.Tensor, 
+                    population: list[Term], pop_under_depth: list[Term]):
         self.evaluator.eval(new_term)
+        if not self.semantics.is_valid(new_term):
+            return False
         outputs = self.semantics.get_outputs(new_term)
         if self.semantics.is_const(outputs) is not None:
             return False
-        present_outputs = self.vectors[:len(self.population)]
+        l2 = ((outputs - self.target) ** 2).sum().item()
+        if l2 > self.max_l2:
+            return False
+        present_outputs = vectors[:len(population)]
         close_mask = torch.isclose(present_outputs, outputs, atol=self.atol, rtol=self.rtol).all(dim=1)
         if not torch.any(close_mask):
-            self.vectors[len(self.population)] = outputs
-            self.population.append(new_term)             
+            vectors[len(population)] = outputs
+            population.append(new_term)          
+            if self.syntax.get_depth(new_term) < self.max_depth:
+                pop_under_depth.append(new_term)
             # if not torch.any(torch.isclose(present_outputs, output, dim=1)):        
             return True
         return False
     
-    def __call__(self) -> list[Term]:
-        # population = self.semantics.get_repr_terms()
-        if len(self.population) > 0:
-            return self.population
-        # if len(population) == 0:
+    def __call__(self, size: int | None = None) -> list[Term]:
+        size = size if size is not None else self.size
+        vectors = torch.full((size, self.semantics.dims), float("inf"), device=self.semantics.target.device, dtype=self.semantics.target.dtype)
+        population = []
+        pop_under_depth = []
         for var in self.syntax.get_vars():
-            self.add_term(var)
-        # if self.num_rand_consts > 0:    
-        #     rand_vals = torch.rand(self.num_rand_consts, generator=self.torch_gen, device=self.const_range.device, dtype=self.const_range.dtype)
-        #     rand_vals = self.const_range[0] + (self.const_range[1] - self.const_range[0]) * rand_vals
-        #     for const_value in rand_vals.tolist():
-        #         const_term = self.syntax.get_const(value=const_value)
-        #         leaf_terms.append(const_term)        
+            self.add_term(var, vectors, population, pop_under_depth)  
         
-        for _ in range(self.size):
+        for _ in range(size - len(population)):
             for _ in range(self.semantic_duplicate_retries):
-                term = self.syntax.get_rand_op(lambda _: self.rnd.choice(self.population))
+                term = self.syntax.get_rand_op(lambda _: self.rnd.choice(pop_under_depth))
                 if term is None:
                     continue
-                was_added = self.add_term(term)
+                was_added = self.add_term(term, vectors, population, pop_under_depth)
                 if was_added:
                     break
-        return self.population
+        return population

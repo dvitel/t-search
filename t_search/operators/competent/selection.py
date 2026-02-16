@@ -19,7 +19,7 @@ class CompetentSelection(TS):
 
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
         half_size = self.selection_size // 2
-        half_parents = super().select(population, half_size + (self.selection_size % 2)) 
+        half_parents = super().__call__(population, size=half_size + (self.selection_size % 2)) 
         half_parents_sems = self.semantics.get_outputs(half_parents, return_type="tensor")
         half_parents_dist = l2(half_parents_sems, self.target)
         children = []

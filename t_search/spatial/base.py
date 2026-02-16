@@ -290,7 +290,7 @@ class VectorStorage(ServiceBase):
         # self.stats_batch_size = stats_batch_size
         # self.stats = StorageStats(self)
 
-    def init(self, **_):
+    def init(self):
         self.vectors = torch.empty((self.capacity, self.dims), dtype=self.dtype, device=self.device)
         self.cur_id = 0
 

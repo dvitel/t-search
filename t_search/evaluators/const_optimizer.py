@@ -123,7 +123,7 @@ class ConstOptimizer(Optimizer):
             optim_term,
             const_range=self.const_range,
             start_binding=start_binding,
-            loss_fn_builder=partial(self.evaluator.get_loss_fn, with_mean_loss_logging=True),
+            loss_fn_builder=self.evaluator.get_loss_fn,
             num_starts=num_starts or self.num_starts,
             lr=self.lr,
             max_evals=max_evals or self.max_evals,

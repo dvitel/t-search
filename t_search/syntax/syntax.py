@@ -228,7 +228,9 @@ class Syntax(ServiceBase):
     def _get_term_priority(self, term: Term) -> tuple:
         if term in self.commutative_priority:
             return self.commutative_priority[term]
-        if isinstance(term, Value):
+        # if isinstance(term, Vector):
+        #     priority = (-1, term.id)
+        elif isinstance(term, Value):
             priority = (0,)
         elif isinstance(term, Variable):
             priority = (1, term.var_id,)

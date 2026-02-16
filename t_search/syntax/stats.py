@@ -1,9 +1,6 @@
 
-from collections import deque
-from dataclasses import dataclass
-from typing import Generator, Optional
+from typing import Optional
 
-import numpy as np
 
 from .traverse import TRAVERSAL_EXIT_NODE, postorder_traversal
 from .term import Term, TermPos

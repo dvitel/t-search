@@ -70,31 +70,75 @@
                 "semantics": {"!ref": "semantics"},
                 "fitness": {"!ref": "fitness"},                
                 "with_inner_evals": true,
-                "max_root_evals": 100000,
-                "max_evals": 100000,
-                "measure_loss_each_n": 1000,
-                "measure_max_len": 100
+                "max_root_evals": 500000,
+                "max_evals": 500000,
+                "measure_loss_each_n": 2000,
+                "measure_max_len": 200
+            }
+        },
+        "lib_init": { 
+            "type": "Up2D", 
+            "module": "t_search.operators.classic",
+            "params": { "depth": 2, "with_free_vars": true, "max_consts": 0, "const_1": false } 
+        },
+        "lib": {
+            "type": "DesiredSemanticLib", 
+            "module": "t_search.operators.competent",
+            "params": {
+                "syntax": {"!ref": "syntax"},
+                "semantics": {"!ref": "semantics"},
+                "evaluator": {"!ref": "evaluator"},
+                "init_op": {"!ref": "lib_init"}
             }
         },
         "init": {
-            "type": "CompetentInitialization", 
-            "module": "t_search.operators.competent",
-            "params": { "size": 100 } 
+            "type": "SemanticallyDrivenInitialization", 
+            "module": "t_search.operators.semantic",
+            "params": { 
+                "syntax": {"!ref": "syntax"},
+                "semantics": {"!ref": "semantics"},
+                "evaluator": {"!ref": "evaluator"},
+                "atol": 1e-4,
+                "rtol": 1e-4,
+                "semantic_duplicate_retries": 10,
+                "max_depth": 6,                
+                "max_l2": 1e6,
+                "size": 1000 
+            } 
         },
         "selection": { 
             "type": "CompetentSelection", 
             "module": "t_search.operators.competent",
-            "params": { "selection_size": 100, "tournament_size": 5 } 
+            "params": { 
+                "selection_size": 1000, 
+                "tournament_size": 7
+            } 
         },
         "mutation": { 
             "type": "CompetentMutation", 
             "module": "t_search.operators.competent",
-            "params": { "rate": 0.1 } 
+            "params": { 
+                "syntax": {"!ref": "syntax"},
+                "semantics": {"!ref": "semantics"},
+                "evaluator": {"!ref": "evaluator"},
+                "lib": {"!ref": "lib"},
+                "identity_atol": 0.001,
+                "identity_rtol": 0.001,                
+                "rate": 0.1 
+            } 
         },
         "crossover": { 
             "type": "CompetentCrossover", 
             "module": "t_search.operators.competent",
-            "params": { "rate": 0.9 } 
+            "params": { 
+                "syntax": {"!ref": "syntax"},
+                "semantics": {"!ref": "semantics"},
+                "evaluator": {"!ref": "evaluator"},
+                "lib": {"!ref": "lib"},               
+                "identity_atol": 0.001,
+                "identity_rtol": 0.001,                 
+                "rate": 0.9 
+            } 
         },
         "survivor_selection": { 
             "type": "MuLambdaSurvivorSelection", 
@@ -104,19 +148,19 @@
                 "mu": 1000, 
                 "strict": false, 
                 "combine": false,
-                "elitism": 1
+                "elitism": 10
             }
         }
     },
     "init_service_name": "init",
     "operator_service_names": [
         "selection",
-        "mutation",
         "crossover",
+        "mutation",
         "evaluator",
         "survivor_selection"
     ],
-    "ops": ["add", "mul", "neg", "inv", "exp", "log", "sin", "cos"],
+    "ops": ["add", "sub", "mul", "div", "exp", "log", "sin", "cos"],
     "evaluator_service_name": "evaluator",
     "syntax_service_name": "syntax",
     "fitness_service_name": "fitness",

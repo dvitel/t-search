@@ -38,7 +38,7 @@
                 "--output", "data/dbg.jsonlist",
                 "--device", "cuda",
                 "--dtype", "float32",
-                "--seed", "42",
+                "--seed", "44",
                 "--debug"
             ],
             "console": "integratedTerminal",
@@ -114,6 +114,50 @@
                 "DEBUG_SOLVER": "1"
             },
             "stopOnEntry": false
-        }                    
+        },
+        {
+            "name": "Geometric",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "t_search",
+            "args": [
+                "--dataset", "test_0",
+                "--config", "configs/geometric.json",
+                "--output", "data/dbg.jsonlist",
+                "--device", "cuda",
+                "--dtype", "float32",
+                "--seed", "42",
+                "--debug"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "DEBUG_SOLVER": "1"
+            },
+            "stopOnEntry": false
+        },
+        {
+            "name": "Competent",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "t_search",
+            "args": [
+                "--dataset", "test_0",
+                "--config", "configs/competent.json",
+                "--output", "data/dbg.jsonlist",
+                "--device", "cuda",
+                "--dtype", "float32",
+                "--seed", "42",
+                "--debug"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "DEBUG_SOLVER": "1"
+            },
+            "stopOnEntry": false
+        }                   
     ]
 }

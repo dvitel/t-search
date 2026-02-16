@@ -1,6 +1,6 @@
 class ServiceBase:
 
-    def init(self, **sevices): 
+    def init(self): 
         ''' Long running init, __init__ should be lightweight '''
         pass 
 

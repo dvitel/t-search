@@ -11,7 +11,6 @@ from t_search.evaluators.fitness import Fitness
 from t_search.evaluators.optimizer import Optimizer
 
 from t_search.evaluators.semantics import Semantics
-from t_search.operators.listeners import EvalListener
 from t_search.operators.operator import Operator
 from t_search.syntax.evaluation import evaluate
 from t_search.syntax.term import Term, Value, Variable
@@ -31,7 +30,7 @@ class Evaluator(Operator):
         pass
 
     def get_loss_fn(self, get_binding: Callable | None = None, set_binding: Callable | None = None, 
-                    no_cache: bool = False, with_mean_loss_logging: bool = False):
+                    no_cache: bool = False):
         ''' Differentiable loss function aligned with fitness '''
         pass
 
@@ -45,9 +44,9 @@ class Evaluator(Operator):
     #     ''' Add initial terms and their semantics to evaluator storage '''
     #     pass
 
-    def add_listeners(self, listeners: list[EvalListener]):
-        ''' Add evaluation listeners '''
-        pass
+    # def add_listeners(self, listeners: list[EvalListener]):
+    #     ''' Add evaluation listeners '''
+    #     pass
 
 
 class DefaultEvaluator(Evaluator, ServiceBase):
@@ -110,14 +109,14 @@ class DefaultEvaluator(Evaluator, ServiceBase):
 
         # self.target: torch.Tensor = target
         self.ops: dict[str, Callable] = ops
-        self.listeners: list[EvalListener] = []
+        # self.listeners: list[EvalListener] = []
 
         # self.bad_fitness = torch.tensor(torch.inf, device=target.device, dtype=target.dtype)
 
         # self.new_listener_terms: list[Term] = []
 
-    def add_listeners(self, listeners: list[EvalListener]):
-        self.listeners.extend(listeners)
+    # def add_listeners(self, listeners: list[EvalListener]):
+    #     self.listeners.extend(listeners)
 
     # def add_initial_terms(self, terms: list[Term], semantics: torch.Tensor):
     #     ''' Add initial terms and their semantics to evaluator storage '''
@@ -170,16 +169,16 @@ class DefaultEvaluator(Evaluator, ServiceBase):
         return None
     
     def _default_set_binding(self, root: Term, term: Term, value: torch.Tensor, 
-                             with_mean_loss_logging: bool = False,
                              under_optim: bool = False):
         self.evals += 1
         if under_optim:
             self.optim_evals += 1
         if root == term:
             self.root_evals += 1
-        if with_mean_loss_logging and len(self.loss_trace) < self.measure_max_len: #self.measure_loss_each_n > 0:
-            cur_loss = self.fitness.get_loss(value).mean(dim=-1).min().item()
-            self.best_loss = min(self.best_loss, cur_loss)
+        if len(self.loss_trace) < self.measure_max_len:
+            if not under_optim:
+                cur_loss = self.fitness.get_loss(value).mean(dim=-1).min().item()
+                self.best_loss = min(self.best_loss, cur_loss)
             if self.evals % self.measure_loss_each_n == 0:
                 self.loss_trace.append(self.best_loss)
         if self.evals >= self.max_evals:
@@ -188,7 +187,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             raise EvSearchTermination("MAX_ROOT_EVAL")
     
     def _set_binding(self, root: Term, term: Term, value: torch.Tensor):
-        self._default_set_binding(root, term, value, with_mean_loss_logging=self.measure_loss_each_n > 0)
+        self._default_set_binding(root, term, value)
         self.new_term_outputs[term] = value    
         
     # def _eval_loop(self, terms: list[Term]) -> list[Term]:
@@ -241,15 +240,15 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             semantics = stack_rows(new_outputs, self.dims)
             self.semantics.set_binding(new_terms, semantics)
             self.fitness.set_fitness(new_terms, semantics)
-            valid_terms = []
-            valid_semantic_list = []
-            for term, sem in zip(new_terms, semantics):
-                if self.semantics.is_valid(term):
-                    valid_terms.append(term)
-                    valid_semantic_list.append(sem)
-            if len(valid_terms) > 0:    
-                for l in self.listeners:
-                    l.on_eval(valid_terms, valid_semantic_list)
+            # valid_terms = []
+            # valid_semantic_list = []
+            # for term, sem in zip(new_terms, semantics):
+            #     if self.semantics.is_valid(term):
+            #         valid_terms.append(term)
+            #         valid_semantic_list.append(sem)
+            # if len(valid_terms) > 0:    
+            #     for l in self.listeners:
+            #         l.on_eval(valid_terms, valid_semantic_list)
             del semantics
 
         if return_tensor:
@@ -257,8 +256,7 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             return outputs
         return [term_outputs[t] for t in terms]
     
-    def get_loss_fn(self, get_binding: Callable | None = None, set_binding: Callable | None = None, no_cache: bool = False,
-                        with_mean_loss_logging: bool = False):
+    def get_loss_fn(self, get_binding: Callable | None = None, set_binding: Callable | None = None, no_cache: bool = False):
         ''' Differentiable function for optimization that iss aligned with fitness (nmse by default) '''
         # TODO: probably define better loss_fn - we use just (f(x) - target)^2)
         if get_binding is None: 
@@ -271,16 +269,13 @@ class DefaultEvaluator(Evaluator, ServiceBase):
                 if outputs is not None:
                     return outputs
                 return self._get_binding(root, term)
-        with_mean_loss_logging = with_mean_loss_logging and (self.measure_loss_each_n > 0)
         if set_binding is None:
             def new_set_binding(root: Term, term: Term, value: torch.Tensor):
-                self._default_set_binding(root, term, value, with_mean_loss_logging=with_mean_loss_logging,
-                                            under_optim=True)
+                self._default_set_binding(root, term, value, under_optim=True)
         else:
             def new_set_binding(root: Term, term: Term, value: torch.Tensor):
                 set_binding(root, term, value)
-                self._default_set_binding(root, term, value, with_mean_loss_logging=with_mean_loss_logging,
-                                            under_optim=True)
+                self._default_set_binding(root, term, value, under_optim=True)
         def loss_fn(term: Term) -> torch.Tensor:
             outputs = evaluate(term, self.ops, new_get_binding, new_set_binding)
             return self.fitness.get_loss(outputs)
@@ -374,7 +369,5 @@ class OptimEvaluator(DefaultEvaluator):
         res = super()._eval_one(optim_term, get_binding, set_binding, mode)
         return res
 
-    def get_loss_fn(self, get_binding: Callable | None = None, set_binding: Callable | None = None, no_cache: bool = False,
-                        with_mean_loss_logging: bool = False):
-        return self.evaluator.get_loss_fn(get_binding=get_binding, set_binding=set_binding, no_cache = no_cache,
-                                            with_mean_loss_logging=with_mean_loss_logging)
+    def get_loss_fn(self, get_binding: Callable | None = None, set_binding: Callable | None = None, no_cache: bool = False):
+        return self.evaluator.get_loss_fn(get_binding=get_binding, set_binding=set_binding, no_cache = no_cache)

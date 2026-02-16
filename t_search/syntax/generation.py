@@ -258,7 +258,7 @@ class TermGenContext:
 
 
             # max_of_max_counts = left_max_counts // term_left_args
-            # arg_max_counts = rnd.randint(arg_min_counts, max_of_max_counts + 1)
+            # arg_max_counts = rnd.integers(arg_min_counts, max_of_max_counts + 1)
             arg_max_counts = left_max_counts # // term_left_args
 
         return TermGenContext(arg_min_counts, arg_max_counts, term_arg_limits)

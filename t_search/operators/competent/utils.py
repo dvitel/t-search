@@ -12,8 +12,11 @@ import math
 from typing import Callable
 import torch
 
+from t_search.operators.reduction import LincombMixin
 from t_search.syntax import Term, Op
+from t_search.syntax.term import TermPos
 from t_search.syntax.traverse import postorder_traversal, TRAVERSAL_EXIT_NODE
+from t_search.utils import optimize_kb, unique_vector_ids
 
 
 DesiredSemantics = list[set[float] | None]  # list of sets of possible values for each dimension.
@@ -21,14 +24,14 @@ DesiredSemantics = list[set[float] | None]  # list of sets of possible values fo
 def general_inv(t: DesiredSemantics, args: list[torch.Tensor], arg_i: int, op_inv) -> DesiredSemantics:
     res = []
     for test_id, possible_values in enumerate(t):
-        if t is None: 
+        if possible_values is None: 
             res.append(None)
             continue
         elif len(possible_values) == 0:
             res.append(set())
             continue
         else:
-            arg_values = [arg[test_id].item() for arg in args]
+            arg_values = [arg[test_id] for arg in args]
             new_desired = set([outcome if outcome is None or math.isfinite(outcome) else None 
                                for desiredValue in possible_values for outcome in op_inv(desiredValue, arg_values, arg_i)])
             if len(new_desired) > 0 and all(d is None for d in new_desired):
@@ -48,10 +51,10 @@ def sub_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
         res = [ args[0] - desired ]
     return res
 
-def mul_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
+def mul_inv(desired: float, args: list[float], arg_i: int, zero_atol: float = 1e-7) -> list[float]:
     other_mul = prod(v for i, v in enumerate(args) if i != arg_i )
-    if other_mul == 0: 
-        if desired == 0:
+    if abs(other_mul) < zero_atol: 
+        if abs(desired) < zero_atol:
             return []
         else:
             return [None]
@@ -59,21 +62,21 @@ def mul_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
         res = [ desired / other_mul ]
         return res
     
-def div_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
+def div_inv(desired: float, args: list[float], arg_i: int, zero_atol: float = 1e-7) -> list[float]:
     if arg_i == 0: # desired w.r.t. dividend
         res = [ desired * args[1] ]
     else: # desired w.r.t. divisor
-        if abs(desired) < 1e-10:
+        if abs(desired) < zero_atol:
             return [None]
         else:
             res = [ args[0] / desired ]
     return res
     
-def pow_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
+def pow_inv(desired: float, args: list[float], arg_i: int, zero_atol: float = 1e-7) -> list[float]:
     base, exponent = args
     if arg_i == 0: # desired w.r.t. base 
-        if exponent == 0:
-            if desired == 1:
+        if abs(exponent) < zero_atol:
+            if abs(desired - 1) < zero_atol:
                 return []
             else:
                 return [None]
@@ -83,7 +86,7 @@ def pow_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
             res = [ desired ** (1 / exponent) ]
             return res
     else: # desired w.r.t. exponent
-        if (base == 0 and desired == 0) or (base == 1 and desired == 1):
+        if (abs(base) < zero_atol and abs(desired) < zero_atol) or (abs(base - 1) < zero_atol and abs(desired - 1) < zero_atol):
             return []
         if base > 0 and desired > 0:
             res = [ math.log(desired) / math.log(base) ]
@@ -96,14 +99,14 @@ def neg_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
     res = [ -desired ]
     return res
 
-def inv_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
-    if abs(desired) < 1e-10:
+def inv_inv(desired: float, args: list[float], arg_i: int, zero_atol: float = 1e-7) -> list[float]:
+    if abs(desired) < zero_atol:
         return [None]
     else:
         res = [ 1 / desired ]
         return res
     
-def exp_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
+def exp_inv(desired: float, args: list[float], arg_i: int, zero_atol: float = 1e-7) -> list[float]:
     if desired <= 0:
         return [None]
     else:
@@ -112,8 +115,11 @@ def exp_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
     
 # NOTE: for log_mod impl should return [exp, -exp] ald op is actually log(abs())
 def log_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
-    res = [ math.exp(desired) ]
-    return res
+    try:
+        res = [ math.exp(desired) ]
+        return res
+    except OverflowError:
+        return [None]
 
 # NOTE: only 2 points
 def sin_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
@@ -136,9 +142,11 @@ def cos_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
 alg_inv = {
     "add": add_inv,
     "mul": mul_inv,
+    "sub": sub_inv,
     "pow": pow_inv,
     "neg": neg_inv,
     "inv": inv_inv,
+    "div": div_inv,
     "exp": exp_inv,
     "log": log_inv,
     "sin": sin_inv,
@@ -166,8 +174,6 @@ def invertTerm(term: Term, desired: DesiredSemantics,
 def pre_invert(root: Term, output_getter: Callable[[Term], torch.Tensor]):
     ''' Tree traversal to collect all occurances and semantics '''
 
-    res = {}
-
     occurs = {}
     term_arg_semantics: dict[Term, list[torch.Tensor]] = {}
     term_occurs: dict[tuple[Term, int], list[tuple[Term, int]]] = {}
@@ -185,6 +191,7 @@ def pre_invert(root: Term, output_getter: Callable[[Term], torch.Tensor]):
         if term.arity() > 0:
             args_stack.append([])
         else:
+            occurs[term] += 1
             return TRAVERSAL_EXIT_NODE        
         
     def _exit_term(term: Term, *_):
@@ -213,6 +220,7 @@ def backward_desired(root: Term, target: DesiredSemantics, bad_semantics: list[D
     def _enter_args(term: Term, *_):
 
         if not isinstance(term, Op) or term.op_id not in op_invs:
+            # raise ValueError(f"Unsupported term for inversion: {term}")
             return TRAVERSAL_EXIT_NODE
 
         cur_occur = occurs.setdefault(term, 0)
@@ -246,7 +254,7 @@ def backward_desired(root: Term, target: DesiredSemantics, bad_semantics: list[D
 def get_best_constant(desired: DesiredSemantics, epsilon: float = 1e-5) -> float | None:
     ''' Detect constant semantics that can approximate desired semantics '''
     if any(d is None for d in desired):
-        return []
+        return None
     desired_nonempty = [d for d in desired if len(d) > 0]
     if len(desired_nonempty) == 0:
         return 0.0 # any constant works
@@ -257,7 +265,7 @@ def get_best_constant(desired: DesiredSemantics, epsilon: float = 1e-5) -> float
         for d in ds:
             pos = bisect_left(d, v)
             if pos == 0: 
-                if abs(d[pos + 1] - v) > epsilon: 
+                if abs(d[pos] - v) > epsilon: 
                     all_close = False
                     break
             elif pos == len(d):
@@ -272,23 +280,23 @@ def get_best_constant(desired: DesiredSemantics, epsilon: float = 1e-5) -> float
             return v 
     return None
 
-def get_best_semantics(desired: DesiredSemantics, undesired: list[DesiredSemantics], all_semantics: torch.Tensor,):
+def get_best_semantics(desired: DesiredSemantics, undesired: list[DesiredSemantics], all_semantics: torch.Tensor, epsilon: float = 1e-5):
     assert len(desired) > 0
 
     if any(d is None for d in desired): # unsat desired at position 
-        return None, None, None
+        return [], None
 
     # if all(len(d) == 0 for d in desired): # any term will work
     #     return None 
 
-    forbidden_mask = torch.zeros((all_semantics.shape[1],), dtype=torch.bool, device=all_semantics.device)
+    forbidden_mask = torch.zeros((all_semantics.shape[0],), dtype=torch.bool, device=all_semantics.device)
 
     for forbidden in undesired:
 
         if any(d is None for d in forbidden):
             continue # unsat undesired - skip
         
-        forbidden_close_mask = torch.ones((all_semantics.shape[1],), dtype=torch.bool, device=all_semantics.device)
+        forbidden_close_mask = torch.ones((all_semantics.shape[0],), dtype=torch.bool, device=all_semantics.device)
 
         for test_id, forbit_values in enumerate(forbidden):
             if len(forbit_values) == 0:
@@ -296,7 +304,7 @@ def get_best_semantics(desired: DesiredSemantics, undesired: list[DesiredSemanti
             sem_values = all_semantics[:, test_id].unsqueeze(-1) # (num_terms, 1)
             forbidden_tensor = torch.tensor(list(forbit_values), dtype=all_semantics.dtype, device=all_semantics.device)
             diffs = torch.abs(sem_values - forbidden_tensor.unsqueeze(0)) # (num_terms, num_forbidden)
-            close_mask = torch.any(diffs < 1e-5, dim=1) # (num_terms,)
+            close_mask = torch.any(diffs < epsilon, dim=1) # (num_terms,)
             forbidden_close_mask &= close_mask
             del forbidden_tensor
             if not torch.any(forbidden_close_mask):
@@ -306,33 +314,45 @@ def get_best_semantics(desired: DesiredSemantics, undesired: list[DesiredSemanti
 
     # test_ids = [i for i, d in enumerate(desired) if len(d) > 0]
     # selected_semantics = all_semantics[:, test_ids]
-    sem_score = torch.zeros((all_semantics.shape[0],), dtype=all_semantics.dtype, device=all_semantics.device)
-    closest_desired = []
-    closest_test_ids = []
+    # sem_score = torch.zeros((all_semantics.shape[0],), dtype=all_semantics.dtype, device=all_semantics.device)
+    closest_desired = torch.zeros((all_semantics.shape[0], len(desired)), dtype=all_semantics.dtype, device=all_semantics.device)
+    # closest_test_ids = []
     for test_id, allowed_values in enumerate(desired):
-        if len(allowed_values) == 0:
+        if len(allowed_values) == 0: # any allowed
+            closest_desired[:, test_id] = all_semantics[:, test_id] # precisse same value
             continue 
         sem_values = all_semantics[:, test_id].unsqueeze(-1) # (num_terms, 1)
         allowed_tensor = torch.tensor(list(allowed_values), dtype=all_semantics.dtype, device=all_semantics.device)
         diffs = torch.abs(sem_values - allowed_tensor.unsqueeze(0)) # (num_terms, num_allowed)
-        sem_score += torch.min(diffs, dim=1).values # (num_terms,) 
-        closest_term_id, closest_desired_id = torch.unravel_index(torch.argmin(diffs), diffs.shape)
-        closest_desired.append(allowed_tensor[closest_desired_id].item())
-        closest_test_ids.append(test_id)
+        best_per_term_id = torch.argmin(diffs, dim=1) # (num_terms,)
+        closest_desired[:, test_id] = allowed_tensor[best_per_term_id] # (num_terms,)
+        del allowed_tensor, diffs
+        # sem_score += torch.min(diffs, dim=1).values # (num_terms,) 
+        # closest_desired_id = torch.unravel_index(, diffs.shape)
+        # closest_desired.append(allowed_tensor[closest_desired_id].item())
+        # closest_test_ids.append(test_id)
 
-    sem_score[forbidden_mask] = torch.inf
+    allowed_ids = torch.where(~forbidden_mask)[0].tolist()
+    if len(allowed_ids) == 0:
+        return [], None
+    allowed_closest_desired = closest_desired[allowed_ids] # (num_allowed    
+    del closest_desired, forbidden_mask
 
-    best_sem_id = torch.argmin(sem_score).item()
+    uniq_desired_ids = unique_vector_ids(allowed_closest_desired, atol=epsilon, rtol=0)
+    final_closest_desired = allowed_closest_desired[uniq_desired_ids]
+    del allowed_closest_desired
 
-    if sem_score[best_sem_id] == torch.inf:
-        return None, None, None
+    return allowed_ids, final_closest_desired
+
+    # dists_to_closest_desires = (all_semantics - closest_desired).abs().sum(dim=1) # (num_terms,)
+    # dists_to_closest_desires[forbidden_mask] = torch.inf
+
+    # best_sem_id = torch.argmin(dists_to_closest_desires).item()
+
+    # if dists_to_closest_desires[best_sem_id] == torch.inf:
+    #     return None, None
     
-    closest_desired = torch.tensor(closest_desired, dtype=all_semantics.dtype, device=all_semantics.device)
-    closest_test_ids = torch.tensor(closest_test_ids, dtype=torch.long, device=all_semantics.device)
-
-    return best_sem_id, closest_desired, closest_test_ids
-
-@dataclass 
-class InversionCache: 
-    term_semantics: dict[Term, DesiredSemantics] = field(default_factory=dict)
-    term_subtree_semantics: dict[Term, dict[tuple[Term, int], tuple[DesiredSemantics, list[DesiredSemantics]]]] = field(default_factory=dict)
+    # best_closest_desired = closest_desired[best_sem_id].clone()
+    # del closest_desired, dists_to_closest_desires, forbidden_mask
+    
+    # return best_sem_id, best_closest_desired

@@ -60,6 +60,7 @@ default_formatters = {
     Op: lambda t, *args: f"({t.op_id} {' '.join(args)})",
     Variable: lambda t, *_: t.var_id,
     Value: float_formatter,
+    # Vector: lambda t, *_: f"V{t.id}",
     NonLeafStructure: lambda t, *args: f"(B{t.arity()} {' '.join(args)})",
     LeafStructure: lambda *_: "L",
     OpWildcard: lambda t, *_: f"({t.op_id} {' '.join([str(a) for a in t.args])})",

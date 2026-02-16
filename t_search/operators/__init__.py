@@ -1,8 +1,9 @@
 from .operator import Operator
-from .listeners import EvalListener, GenListener
+from .listeners import GenListener
 from .initialization import Initialization
+from .reduction import LincombMixin
 
 __all__ = [
-    "Operator", "EvalListener", "GenListener",
-    "Initialization"
+    "Operator", "GenListener",
+    "Initialization", "LincombMixin"
 ]

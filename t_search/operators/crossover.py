@@ -11,13 +11,15 @@ class TermCrossover(TermMutation):
         ''' Abstract. Uses term as based and material from other_term to form a child ''' 
         pass # to be implemented in subclasses
 
-    def select_mate(self, term: Term) -> Term: 
+    def select_mate(self, term: Term) -> Term | None: 
         ''' Picks mate for given term. Default: random '''
         term = self.rnd.choice(self.cur_parents)
         return term
 
     def mutate_term(self, term: Term) -> Term | None:        
         other_term = self.select_mate(term)
+        if other_term is None:
+            return None
         child = self.crossover_terms(term, other_term)
         return child
 

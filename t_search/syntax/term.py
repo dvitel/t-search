@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import numpy as np
+import torch
 
 
 class FnMixin:
@@ -53,6 +54,19 @@ class Value(Term):
     
     def __hash__(self):
         return hash(self.value)
+    
+# @dataclass(frozen=False, eq=False, unsafe_hash=False, repr=False)
+# class Vector(Term): # mimics any syntax with known outcomes
+#     id: int
+#     outputs: torch.Tensor
+
+#     def __eq__(self, value):
+#         if isinstance(value, Vector):
+#             return self.id == value.id
+#         return False 
+    
+#     def __hash__(self):
+#         return hash(self.id)
     
 @dataclass(frozen=True)
 class OptimPoint(Term):

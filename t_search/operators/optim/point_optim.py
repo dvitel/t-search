@@ -1,10 +1,9 @@
 from collections import deque
 from dataclasses import dataclass, field
-from functools import partial
 import json
-from math import prod
 from typing import Any, Callable, Generator, Literal
 
+from pyparsing import Sequence
 import torch
 
 from t_search.base import ServiceBase
@@ -16,9 +15,10 @@ from t_search.evaluators.term_spatial import Normalizer
 from t_search.operators.initialization import Initialization
 from t_search.operators.mutation import PositionMutation
 
+from t_search.operators.reduction import LincombMixin
 from t_search.syntax import Term, TermPos
-from t_search.syntax.term import Op, OptimPoint, Value
-from t_search.utils import EvSearchTermination, metrics_serializer, optimize_kb, unique_vector_ids, unique_vector_ids_batched
+from t_search.syntax.term import OptimPoint, Value
+from t_search.utils import EvSearchTermination, metrics_serializer, unique_vector_ids, unique_vector_ids_batched
 
 @dataclass(frozen=False)
 class TermMutationContext: 
@@ -45,10 +45,12 @@ class TermMutationContext:
     final_term: Term | None = None
     filling: Term | None = None
     status: str = "active"
+    reattempt: bool = False
 
 
 @dataclass(frozen=True)
 class LossBasedContinuation:
+    context: TermMutationContext # original cont_id = 0 context
     filling: Term
     final_term: Term
     final_loss: float
@@ -58,6 +60,7 @@ class LossBasedContinuation:
 
 @dataclass(frozen=True)
 class DistBasedContinuation:
+    context: TermMutationContext # original cont_id = 0 context
     dist: float
     k: float 
     stripped_filling: Term
@@ -66,7 +69,7 @@ class DistBasedContinuation:
     def get_priority(self):
         return (self.dist,)
             
-class PointOptim(PositionMutation, ServiceBase):
+class PointOptim(PositionMutation, ServiceBase, LincombMixin):
     ''' Position Optimization, adjust selected position with optimizer ''' 
     
     def __init__(self, *, 
@@ -92,6 +95,7 @@ class PointOptim(PositionMutation, ServiceBase):
                  with_tabu: bool = True,
                  num_minimas: int = 1, # one hole can have multiple good bindings
                  num_lib_terms: int = 5,
+                 num_conts: int = 1000,
                  pick_best_dists: bool = False,
                  loss_threshold: float = 0.01,
                  log_file: str | None = None,
@@ -102,7 +106,7 @@ class PointOptim(PositionMutation, ServiceBase):
                  max_query_size: int = 1024,
                  max_query_depth: int = 2,
                  allow_no_better: bool = False,
-                 backtrack_lineage: bool = True,
+                 backtrack: Literal["lineage", "worse_fillings", "none"] = "lineage",
                  identity_atol: float = 0.001,
                  identity_rtol: float = 0.001,
                  with_reduction: bool = True,
@@ -138,6 +142,7 @@ class PointOptim(PositionMutation, ServiceBase):
         self.tolerance_grad = tolerance_grad
         self.num_minimas = num_minimas
         self.num_lib_terms = num_lib_terms
+        self.num_conts = num_conts
         self.pick_best_dists = pick_best_dists
         self.loss_threshold = loss_threshold
         self.loss_koef = loss_koef
@@ -162,9 +167,9 @@ class PointOptim(PositionMutation, ServiceBase):
         self.optim_point = OptimPoint(0)
         self.deadends: set[Term] = set() # cannot improve anymore
         self.term_contexts: dict[Term, deque[TermMutationContext]] = {} # cached position priorities for terms
-        self.term_context_continuations: dict[tuple[Term, TermPos], deque[LossBasedContinuation | DistBasedContinuation]] = {} # current position order for term
+        self.term_continuations: dict[Term, list[LossBasedContinuation | DistBasedContinuation]] = {} # current position order for term
         self.allow_no_better = allow_no_better
-        self.backtrack_lineage = backtrack_lineage
+        self.backtrack = backtrack if backtrack != "none" else None
         # self.term_failed_contexts: list[TermMutationContext] = []
         # self.log: dict[Term, list[LogEntry]] = {} # stores current pop optimization log: wwhat positions tried, when and why they are failed
 
@@ -195,11 +200,11 @@ class PointOptim(PositionMutation, ServiceBase):
         self.mutation_log_per_term: dict[str, TermMutationContext] = {}
         # self.debug = debug
 
-    def init(self, evaluator, **_):
+    def init(self):
 
         lib_terms = self.init_op() # these terms will be used for sketches
         terms = sorted(set(lib_terms), key=lambda t: self.syntax._get_term_priority(t))
-        evaluator.eval(terms) # compute unnormalized vectors 
+        self.evaluator.eval(terms) # compute unnormalized vectors 
         valid_terms = [t for t in terms if self.semantics.is_valid(t)]
         valid_terms.sort(key=lambda t: self.syntax._get_term_priority(t))
         vectors = self.semantics.get_outputs(valid_terms, return_type="list") # normalize vectors for better optimization performance
@@ -218,11 +223,7 @@ class PointOptim(PositionMutation, ServiceBase):
 
         del vectors
 
-        duplicate_mask = torch.isclose(normalized.unsqueeze(1), normalized.unsqueeze(0)).all(dim=-1)
-        lower_tri = torch.tril(duplicate_mask, diagonal=-1)
-        has_duplicate_before = lower_tri.any(dim=1)  # (n,) - True if vector i is duplicate of some j < i
-        unique_mask = ~has_duplicate_before  # (n,) - True for unique vectors
-        unique_indices = torch.where(unique_mask)[0]  # Indices of unique vectors
+        unique_indices = unique_vector_ids(normalized)
         final_terms = [final_terms[i] for i in unique_indices.tolist()]
         final_vectors = normalized[unique_indices]
         del normalized
@@ -256,20 +257,10 @@ class PointOptim(PositionMutation, ServiceBase):
 
     def best_grad_position_order(self, term: Term, positions: list[TermPos]) -> list[Any]:
         grads = get_all_grads(term, var_bindings=self.var_bindings, 
-                      get_loss_fn=partial(self.evaluator.get_loss_fn, with_mean_loss_logging=False))
+                      get_loss_fn=self.evaluator.get_loss_fn)
         priorities = [ (-grads[(pos.term, pos.occur)], self.syntax.get_depth(pos.term)) for pos in positions]
         return priorities
     
-    def is_in_lincomb(self, pos: TermPos) -> bool:
-        if pos.parent is None:
-            return False
-        term = pos.parent.term
-        if isinstance(term, Op) and term.op_id in ["add", "mul"]:
-            other_arg = term.get_args()[1 - pos.pos]
-            if isinstance(other_arg, Value):
-                return True 
-        return False
-
     # def is_lincomb(self, pos: TermPos) -> bool:
     #     if pos.parent is None:
     #         return False
@@ -356,287 +347,29 @@ class PointOptim(PositionMutation, ServiceBase):
             # if self.debug:
             #     print(f"Tabu: {optim_term}")
             self.tabu_set.add(optim_term)
-
-    def decompose_lincomb(self, term: Term) -> tuple[Value | None, Term, Value | None]:
-        ''' Returns (k, X, b) if term is of the form k * X + b or None otherwise. k, b can be None if they are not present. '''
-        if isinstance(term, Op) and term.op_id == "add":
-            args = term.get_args()
-            if len(args) != 2:
-                return None, term, None
-            value_id = next((i for i, a in enumerate(args) if isinstance(a, Value)), None)
-            if value_id is None:
-                return None, term, None
-            other_id = 1 - value_id
-            b_value = args[value_id]
-            other = args[other_id]
-            if isinstance(other, Op) and other.op_id == "mul":
-                mul_args = other.get_args()
-                if len(mul_args) != 2:
-                    return (None, other, b_value)
-                k_id = next((i for i, a in enumerate(mul_args) if isinstance(a, Value)), None)
-                if k_id is None:
-                    return (None, other, b_value)
-                X_id = 1 - k_id
-                k_value = mul_args[k_id]
-                X = mul_args[X_id]
-                return (k_value, X, b_value)
-            return (None, other, b_value)
-        elif isinstance(term, Op) and term.op_id == "mul":
-            args = term.get_args()
-            if len(args) != 2:
-                return None, term, None
-            value_id = next((i for i, a in enumerate(args) if isinstance(a, Value)), None)
-            if value_id is None:
-                return None, term, None
-            other_id = 1 - value_id
-            k_value = args[value_id]
-            X = args[other_id]
-            return (k_value, X, None)
-        return None, term, None
-
-    def reduce_lincomb(self, term: Term, 
-                        ops: dict[str, Callable] = {"add": lambda vs: sum(v for v in vs), "mul": lambda vs: prod(v for v in vs)},
-                        identities: dict[str, Callable] = {}
-                      ) -> Term:
-        ''' add/mul for binary is tansformed to one of varying arity and then all constants are combined
-            then, we return to binary ops. Top-down transformation.
-
-            Additional rules are applied only when self.with_reduction.
-            mul rule: (k1 * X + b1)*(k2 * X + b2) --> k3 * X^2 + k4 * X + b3 (4 to 3 consts)
-            add rule: k1 * X + k2 * X --> k3 * X (2 to 1 consts, if X is the same)
-
-            PROBLEMS: reduction leads to the following:
-                  1. Removal of potential pathes to the target through new nodes 
-                  2. Identity removal to some precision could fluctuate the loss especially when it is small enough  
-                  3. A cicle in the lineage could appear 
-            Pros: we target to reduce number of constants to optimize staying neutral (relativelly)
-        '''
-        if not isinstance(term, Op):
-            return term
-        if term.op_id not in ops:
-            reduced_args = []
-            for a in term.get_args():
-                reduced_a = self.reduce_lincomb(a, ops=ops, identities=identities)
-                reduced_args.append(reduced_a)
-            new_term = self.syntax.get_op(term.op_id, *reduced_args)
-            return new_term
-        all_terms = deque([term])
-        final_args = []
-        while len(all_terms) > 0:
-            current = all_terms.popleft()
-            if isinstance(current, Op) and (current.op_id == term.op_id):
-                for a in current.get_args():                    
-                    all_terms.append(a)
-            else:
-                reduced_current = self.reduce_lincomb(current, ops=ops, identities=identities)
-                if isinstance(reduced_current, Op) and (reduced_current.op_id == term.op_id):
-                    for a in reduced_current.get_args():                    
-                        all_terms.append(a) 
-                else:               
-                    final_args.append(reduced_current)
-        const_terms, non_const_terms = [], []
-        for a in final_args:
-            (const_terms if isinstance(a, Value) else non_const_terms).append(a)
-        # if len(const_terms) == 0: # nothing to reduce - leave as it was 
-        #     return term
-        # final_const = const_terms[0]
-        final_const = None 
-        if len(const_terms) == 1:
-            final_const = const_terms[0]
-        elif len(const_terms) > 1:
-            reduce_fn = ops[term.op_id]
-            new_const = reduce_fn([c.value for c in const_terms])
-            final_const = new_const if isinstance(new_const, Value) else self.syntax.get_const(value=new_const)
-        # if (final_const is not None) and ((len(non_const_terms) == 0) or (term.op_id not in identities) or (not identities[term.op_id](final_const.value))):
-        add_identity_fn = identities.get("add", lambda _: False)
-        mul_identity_fn = identities.get("mul", lambda _: False)
-        if term.op_id == "add": # insert const after (mul ...) when possible
-
-            if self.with_reduction:
-                # rule 1: grouping ki * X in sum by X 
-                decomposed_non_const_terms = [self.decompose_lincomb(t) for t in non_const_terms]
-                groups = {}
-                for (k,X,b) in decomposed_non_const_terms:
-                    assert b is None
-                    groups.setdefault(X, []).append((k or self.syntax.one_value).value)
-
-                if len(groups) < len(decomposed_non_const_terms): # some grouped 
-                    new_non_const_terms = []
-                    for X, ks in groups.items():
-                        k = sum(ks)
-                        k_value = self.syntax.get_const(value=k)
-                        if add_identity_fn(k_value.value): #mul 0
-                            continue
-                        if mul_identity_fn(k_value.value): #mul 1
-                            new_X = X
-                        else:
-                            new_X = self.syntax.get_op("mul", k_value, X)
-                        new_non_const_terms.append(new_X)
-                    non_const_terms = new_non_const_terms
-
-            if final_const is not None and not add_identity_fn(final_const.value): #add 0
-                if mul_identity_fn(final_const.value): #add 1
-                    final_const = self.syntax.one_value
-                found_id = next((i for i, t in enumerate(non_const_terms) 
-                                    if isinstance(t, Op) and t.op_id == "mul" and \
-                                    any(isinstance(marg, Value) for marg in t.get_args())), None)
-                if found_id is None:
-                    non_const_terms.append(final_const)        
-                else:    
-                    # non_const_terms.insert(found_id + 1, final_const)
-                    subterm = self.syntax.get_op("add", non_const_terms[found_id], final_const)
-                    non_const_terms = [subterm, *non_const_terms[:found_id], *non_const_terms[found_id + 1:]]
-            if len(non_const_terms) == 0:
-                non_const_terms.append(self.syntax.zero_value)
-        elif term.op_id == "mul": 
-            if final_const is not None and not mul_identity_fn(final_const.value): #mul 1
-                if add_identity_fn(final_const.value): #mul 0
-                    non_const_terms = [self.syntax.zero_value]
-                elif self.with_reduction:
-                    # rule 1: try to find (k * X + b) in args to add the constant there
-                    decomposed_non_const_terms = [self.decompose_lincomb(t) for t in non_const_terms]                
-                    found_id, k, X, b = next(((i, k, X, b) for i, (k, X, b) in enumerate(decomposed_non_const_terms) 
-                                                if k is not None and b is not None), (None, None, None, None))
-                    if found_id is not None:
-                        new_k = self.syntax.get_const(value=k.value * final_const.value)
-                        new_b = self.syntax.get_const(value=b.value * final_const.value)
-                        if add_identity_fn(new_k.value): #mul 0
-                            new_term = new_b
-                        else:
-                            if add_identity_fn(new_b.value): #add 0
-                                new_b = None
-                            if mul_identity_fn(new_k.value): #mul 1
-                                new_k = None
-                            if new_k is None and new_b is None:
-                                new_term = X
-                            elif new_k is None:
-                                new_term = self.syntax.get_op("add", X, new_b)
-                            elif new_b is None:
-                                new_term = self.syntax.get_op("mul", new_k, X)
-                            else:
-                                new_term = self.syntax.get_op("add", self.syntax.get_op("mul", new_k, X), new_b)
-                        non_const_terms[found_id] = new_term
-                    else:
-                        found_id, X, b = next(((i, X, b) for i, (k, X, b) in enumerate(decomposed_non_const_terms) 
-                                                if k is None and b is not None), (None, None, None))
-                        if found_id is not None:
-                            new_k = final_const
-                            new_b = self.syntax.get_const(value=b.value * final_const.value)
-                            new_term = self.syntax.get_op("add", self.syntax.get_op("mul", new_k, X), new_b)
-                            non_const_terms[found_id] = self.reduce_lincomb(new_term, ops=ops, identities=identities)
-                        else:
-                            non_const_terms.append(final_const)
-                else:
-                    non_const_terms.append(final_const)
-            
-            if len(non_const_terms) == 0:
-                non_const_terms.append(self.syntax.one_value)                
-        else:
-            non_const_terms.append(final_const)      
-
-        if len(non_const_terms) == 1:
-            return non_const_terms[0]
-        non_const_terms.sort(key=lambda t: self.syntax._get_term_priority(t), reverse=True)
-        new_term = self.syntax.get_op(term.op_id, *non_const_terms)
-        return new_term
     
-    def reduce_identities(self, term, identities: dict[str, Value], atol=0.001, rtol=0.001) -> Term:
-        if isinstance(term, Op) and term.op_id in identities:
-            identity_value = identities[term.op_id]
-            left_args = []
-            orig_args = term.get_args()
-            for arg in orig_args:
-                if isinstance(arg, Value) and torch.isclose(arg.value, identity_value.value, atol=atol, rtol=rtol):
-                    continue
-                else:
-                    left_args.append(self.reduce_identities(arg, identities, atol=atol, rtol=rtol))
-            if len(left_args) == 0:
-                return identity_value
-            elif len(left_args) == 1:
-                return left_args[0]
-            # elif len(left_args) < len(orig_args):
-            return self.syntax.get_op(term.op_id, *left_args)
-            # return term
-        elif isinstance(term, Op):
-            new_args = [self.reduce_identities(arg, identities, atol=atol, rtol=rtol) for arg in term.get_args()]
-            return self.syntax.get_op(term.op_id, *new_args)
-        return term
-    
-    def add_id_fn(self, v):
-        res = torch.isclose(v, self.syntax.zero_value.value, atol=self.identity_atol, rtol=self.identity_rtol)
-        return res
-    def mul_id_fn(self, v):
-        res = torch.isclose(v, self.syntax.one_value.value, atol=self.identity_atol, rtol=self.identity_rtol)
-        return res
-        
-    def build_lincomb(self, k: float, X: Term, b: float) -> Term:
-        k_value = self.syntax.get_const(value=k)
-        b_value = self.syntax.get_const(value=b)
-        if self.add_id_fn(b_value.value): # add 0
-            if self.mul_id_fn(k_value.value): # mul 1
-                return X
-            elif self.add_id_fn(k_value.value): # mul 0
-                return self.syntax.zero_value
-            else:
-                return self.syntax.get_op("mul", k_value, X)
-        else:
-            if self.mul_id_fn(b_value.value): # add 0
-                b_value = self.syntax.one_value
-            if self.mul_id_fn(k_value.value): # mul 1
-                return self.syntax.get_op("add", X, b_value)
-            elif self.add_id_fn(k_value.value): # mul 0
-                return b_value
-            new_term = self.syntax.get_op("add", self.syntax.get_op("mul", k_value, X), b_value)    
-            return new_term    
-                    
-    def optimize_lincomb(self, candidates: list[Term], targets: torch.Tensor) -> list[tuple[float, float, Term, float]]:
-        X = self.semantics.get_outputs(candidates, return_type="tensor")
-        K, B = optimize_kb(X, targets)
-        X_ = K.unsqueeze(-1) * X.unsqueeze(1) + B.unsqueeze(-1) # (n, k, dims) outputs 
-        del X
-        loss_per_term_per_test = self.fitness.get_loss(X_, custom_target=targets) # (n, k, dims) losses 
-        del X_
-        loss_per_term = loss_per_term_per_test.mean(dim=-1) # (n, k) losses
-        del loss_per_term_per_test
-        min_loss_id_per_term = loss_per_term.argmin(dim=1) # (n,) min loss per term
-        new_terms = []
-        for i, term in enumerate(candidates):
-            j = min_loss_id_per_term[i].item()
-            term_loss = loss_per_term[i,j].item()            
-            new_terms.append((term_loss, K[i,j].item(), term, B[i,j].item()))
+    def add_context_continuation(self, cont: DistBasedContinuation | LossBasedContinuation, cont_id: int) -> None:
 
-        del loss_per_term, min_loss_id_per_term
-        return sorted(new_terms, key=lambda x: x[0])
+        old_context = cont.context
 
-    
-    def add_context_continuation(self, context: TermMutationContext) -> None:
-
-        context_key = (context.term, context.pos)
-        if context_key not in self.term_context_continuations:
-            return 
-        conts = self.term_context_continuations[context_key]
-        if len(conts) == 0:
-            del self.term_context_continuations[context_key]
-            return
-
-        next_context = TermMutationContext(
-            gen = context.gen,
-            term = context.term,
-            pos = context.pos,
-            stripped_pos_term= context.stripped_pos_term,
-            pos_priority = context.pos_priority,
-            pos_id = context.pos_id,
-            cont_id = context.cont_id + 1,
-            num_pos = context.num_pos,
-            optim_term = context.optim_term,
+        context = TermMutationContext(
+            gen = old_context.gen,
+            term = old_context.term,
+            pos = old_context.pos,
+            stripped_pos_term= old_context.stripped_pos_term,
+            pos_priority = old_context.pos_priority,
+            pos_id = old_context.pos_id,
+            cont_id = cont_id,
+            num_pos = old_context.num_pos,
+            optim_term = old_context.optim_term,
             # tabu_markers = context.tabu_markers,
-            start_loss = context.start_loss,
-            optim_loss = context.optim_loss,
-            num_minimas = context.num_minimas,
-            num_optim_vectors = context.num_optim_vectors,
-            found_const = context.found_const,
-            lib_term_dists = context.lib_term_dists,
-            lib_term_order = context.lib_term_order,
+            start_loss = old_context.start_loss,
+            optim_loss = old_context.optim_loss,
+            num_minimas = old_context.num_minimas,
+            num_optim_vectors = old_context.num_optim_vectors,
+            found_const = old_context.found_const,
+            lib_term_dists = old_context.lib_term_dists,
+            lib_term_order = old_context.lib_term_order,
             # --- 
             final_losses = [],
             final_loss = float('inf'),
@@ -645,7 +378,17 @@ class PointOptim(PositionMutation, ServiceBase):
             status = "active"            
         )
 
-        self.term_contexts[context.term].append(next_context)
+        if isinstance(cont, LossBasedContinuation):
+            context.filling = cont.filling
+            context.final_term = cont.final_term
+            context.final_loss = cont.final_loss
+        elif isinstance(cont, DistBasedContinuation):
+            if not (cont.stripped_filling == context.stripped_pos_term):
+                filling = self.build_lincomb(cont.k, cont.stripped_filling, cont.b)
+                if not (isinstance(filling, Value) and isinstance(context.pos.term, Value) and torch.isclose(filling.value, context.pos.term.value, atol=self.identity_atol, rtol=self.identity_rtol)):
+                    context.filling = filling
+        if context.filling is not None:
+            self.term_contexts[context.term].append(context)
     
     def set_query(self, population: list[Term], max_term_depth = 3) -> None: 
         self.query_terms = self.lib_terms
@@ -731,35 +474,15 @@ class PointOptim(PositionMutation, ServiceBase):
         # if self.debug: 
         #     print(f"\tOptim: {optim_state.optim_term}")
 
-        context_key = (context.term, context.pos)
-        if context_key in self.term_context_continuations: # it is continuation of optimization - we may reuse info from original optimization
-            conts = self.term_context_continuations[context_key]
-            assert len(conts) > 0
-            next_cont = conts[0]
-            if isinstance(next_cont, LossBasedContinuation):
-                next_cont = conts.popleft()
-                context.filling = next_cont.filling
-                context.final_term = next_cont.final_term
-                context.final_loss = next_cont.final_loss
-            elif isinstance(next_cont, DistBasedContinuation):
-                while len(conts) > 0:
-                    next_cont = conts.popleft()
-                    if next_cont.stripped_filling == context.stripped_pos_term:
-                        continue
-                    context.filling = self.build_lincomb(next_cont.k, next_cont.stripped_filling, next_cont.b)
-                    if isinstance(context.filling, Value) and isinstance(context.pos.term, Value) and torch.isclose(context.filling.value, context.pos.term.value, atol=self.identity_atol, rtol=self.identity_rtol):
-                        continue
-                    new_term = self.combine_new_term(context.term, context.pos, context.filling)
-                    if new_term is not None:
-                        self.evaluator.eval(new_term)
-                        loss = self.fitness.get_fitness(new_term).item()
-                        context.final_term = new_term
-                        context.final_loss = loss
-                        break
-            else:
-                raise ValueError(f"Unknown continuation type: {type(next_cont)}")
-
-            # self.add_context_continuation(context)
+        if context.cont_id > 0: # it is continuation of optimization - we may reuse info from original optimization
+            assert context.filling is not None
+            if context.final_term is None:
+                new_term = self.combine_new_term(context.term, context.pos, context.filling)
+                if new_term is not None:
+                    self.evaluator.eval(new_term)
+                    loss = self.fitness.get_fitness(new_term).item()
+                    context.final_term = new_term
+                    context.final_loss = loss
 
             self.finalize_context(context)
 
@@ -768,7 +491,7 @@ class PointOptim(PositionMutation, ServiceBase):
         optim_result: OptimResult = optimize_par(context.optim_term, 
                                 self.ranges, 
                                 {self.optim_point: self.semantics.get_outputs(context.pos.term)},
-                                loss_fn_builder=partial(self.evaluator.get_loss_fn, with_mean_loss_logging=False),
+                                loss_fn_builder=self.evaluator.get_loss_fn,
                                 # pos_to_collect=pos_to_collect,
                                 num_starts=self.num_starts,
                                 lr=self.lr,
@@ -791,10 +514,11 @@ class PointOptim(PositionMutation, ServiceBase):
         #     return None                    
 
         # total_threshold_optim_result_(optim_result, self.loss_threshold)
+        num_better_tests_per_start = (optim_result.loss < loss_threshold).sum(dim=-1)
         loss_per_start = optim_result.loss.mean(dim=-1)
         best_loss = torch.min(loss_per_start)
         context.optim_loss = best_loss.item()
-        mask = loss_per_start >= loss_threshold
+        mask = num_better_tests_per_start < (optim_result.loss.shape[-1] / 2.0)
         optim_result.loss[mask, :] = torch.inf        
 
         if torch.any(torch.all(torch.isinf(optim_result.loss), dim=0)): # no minimas found
@@ -923,7 +647,7 @@ class PointOptim(PositionMutation, ServiceBase):
             final_dists = []
             final_fillings = []
             for i in range(len(ordered_kb)):
-                if len(final_term) >= sz:
+                if len(final_terms) >= sz:
                     break
                 dist, k, stripped_filling, b = ordered_kb[i]
                 if stripped_filling == context.stripped_pos_term:
@@ -945,6 +669,10 @@ class PointOptim(PositionMutation, ServiceBase):
 
             context.lib_term_dists = final_dists
             context.lib_term_order = final_fillings
+            if len(final_terms) == 0:
+                context.status = "no_valid_fill"
+                self.finalize_context(context)
+                return
             self.evaluator.eval(final_terms)
             final_losses = self.fitness.get_fitness(final_terms, return_type="tensor")
             context.final_losses = final_losses.tolist()
@@ -960,13 +688,13 @@ class PointOptim(PositionMutation, ServiceBase):
                 filling = final_fillings[term_id]
                 loss = final_losses[term_id].item()
                 final_term = final_terms[term_id]
-                cont = LossBasedContinuation(filling=filling, final_term=final_term, final_loss=loss)
+                cont = LossBasedContinuation(context, filling=filling, final_term=final_term, final_loss=loss)
                 conts.append(cont)
 
             del final_losses, sort_ids            
 
             if len(conts) > 0:
-                self.term_context_continuations[context_key] = deque(conts)                
+                self.term_continuations.setdefault(context.term, []).extend(conts)
 
         elif self.best_by_metric == "dist":
             context.final_loss = float('inf')
@@ -1007,22 +735,18 @@ class PointOptim(PositionMutation, ServiceBase):
                 end_index = min(len(ordered_kb), next_i + self.num_lib_terms - 1)
                 index_range = range(next_i, end_index)
 
-            conts = [DistBasedContinuation(*ordered_kb[i]) for i in index_range]
+            conts = [DistBasedContinuation(context, *ordered_kb[i]) for i in index_range]
             context.lib_term_order = [ordered_kb[i][2] for i in range(end_index)]
             context.lib_term_dists = [ordered_kb[i][0] for i in range(end_index)]
             if len(conts) > 0:
-                self.term_context_continuations[context_key] = deque(conts)
+                self.term_continuations.setdefault(context.term, []).extend(conts)
         else:
             raise ValueError(f"Unknown best_by_metric: {self.best_by_metric}")
 
-        # self.add_context_continuation(context)
 
         self.finalize_context(context)
 
-        # self.mutation_log.append(context)
         return
-
-        # return res_term
     
     def mutate_position(self, _: Term, context: TermMutationContext) -> TermMutationContext | None:
         self.mutation_log.append(context)
@@ -1031,9 +755,11 @@ class PointOptim(PositionMutation, ServiceBase):
         if (context.status == "active") or (self.allow_no_better and context.status == "no_better"):
             assert context.final_term is not None
             return context
-        else: # mutation fail - add back the context continuations
-            self.add_context_continuation(context)
-            return None 
+        return None 
+
+    def population_order(self, population: Sequence[Term]) -> Generator[int, None, None]:
+        ''' Assumes population is ordered by term complexity already. Override shuffle '''
+        return range(len(population))      
        
     def select_positions(self, term: Term) -> Generator[TermMutationContext, None, None]:   
 
@@ -1074,16 +800,9 @@ class PointOptim(PositionMutation, ServiceBase):
                 self.mutation_log_per_term.setdefault(context.term, []).append(context)
                 continue
 
-            # hole_pos = HolePos(priority, term, pos)
             yield context
-            # heappush(self.pos_queue, hole_pos)
 
-        # no more positions - all attempts failed - adding failed contexts back and try backtrack
-        # for context in self.term_failed_contexts:
-        #     self.add_context_continuation(context)
-        # self.term_failed_contexts.clear()
-
-        backtrack_term = self.get_backtrack_term(term)
+        backtrack_term = self.get_backtrack_term(term) # here only can go to lineage
         if backtrack_term is not None:
             yield from self.select_positions(backtrack_term)         
 
@@ -1092,11 +811,7 @@ class PointOptim(PositionMutation, ServiceBase):
     def mutate_term(self, term):
         base_fn = super().mutate_term
         def fn():
-            # self.term_failed_contexts.clear()
             res = base_fn(term)
-            # for failed_context in self.term_failed_contexts:
-            #     self.add_context_continuation(failed_context)
-            # self.term_failed_contexts.clear()
             return res        
         # if self.debug:
         #     res, time = timed(fn)()
@@ -1109,17 +824,51 @@ class PointOptim(PositionMutation, ServiceBase):
         if child.final_term is not None:
             super().add_to_lineage(parent, child.final_term)
 
-    def get_backtrack_term(self, term: Term) -> Term | None:
-        if not self.backtrack_lineage:
+    def get_backtrack_term(self, term: Term, backtrack: Literal["lineage", "worse_fillings"] | None = None) -> Term | None:
+        if len(self.term_contexts.get(term, [])) > 0:
+            return term # try self other position before any backtrack
+        backtrack = backtrack or self.backtrack
+
+        # first, try to refill term_contexts from cached continuations 
+
+        term_continuations = self.term_continuations.pop(term, [])
+        if len(term_continuations) > 0:
+            term_continuations.sort(key=lambda c: c.get_priority()) # accross positions 
+            for cont_id, cont in enumerate(term_continuations):
+                if cont_id >= self.num_conts:
+                    break
+                self.add_context_continuation(cont, cont_id + 1)
+            return term
+
+        if backtrack is None:
             return None
+        if backtrack == "worse_fillings": # first try to find the best no_better attempt in the log and reattempt it
+            logs = self.mutation_log_per_term.get(term, [])
+            filtered_logs = [l for l in logs if l.status == "no_better" and not l.reattempt] # assert final_term is set already + loss and dist
+            best_among_worst = None
+            for log in filtered_logs:
+                assert log.final_term is not None and log.final_loss is not None
+                if best_among_worst is None or log.final_loss < best_among_worst.final_loss:
+                    best_among_worst = log
+            if best_among_worst is not None:
+                best_among_worst.reattempt = True # to filter out on next reattempt 
+                return best_among_worst.final_term # NOTE: returns final_term itself as it is ready
+        # backtrack == "lineage" - pick prev parent
         cur_lineage = self.get_term_history(term)
         filtered_lineage = [fp for cur_terms in cur_lineage 
                                 for fp in [[t for t in cur_terms 
                                                 if t in self.term_contexts and len(self.term_contexts[t]) > 0]]
                                 if len(fp) > 0]
         if len(filtered_lineage) > 0:           
-            backtrack_terms = filtered_lineage[0] # parent, or random
-            parent_term = self.rnd.choice(backtrack_terms) # go to random parent
+            # backtrack_terms = filtered_lineage[0] # parent, or random
+            # pick best parent to continue 
+            backtrack_parents = [p for ps in filtered_lineage for p in ps]
+            if len(backtrack_parents) == 1:
+                return backtrack_parents[0]
+            bp_fitness = self.fitness.get_fitness(backtrack_parents, return_type="tensor")
+            best_bp_id = torch.argmin(bp_fitness).item()            
+            del bp_fitness
+            parent_term = backtrack_parents[best_bp_id]
             return parent_term
         return None
 
@@ -1174,7 +923,10 @@ class PointOptim(PositionMutation, ServiceBase):
         if self.log_file is not None:
             self.mutation_log.sort(key=lambda c: c.final_loss)
             for context in self.mutation_log:
-                json.dump(context.__dict__, self.log_file, default=metrics_serializer)
+                ctx_data = dict(context.__dict__)
+                ctx_data.pop("stripped_pos_term", None)
+                ctx_data.pop("reattempt", None)
+                json.dump(ctx_data, self.log_file, default=metrics_serializer)
                 self.log_file.write("\n")
                 self.log_file.flush()
         # if self.debug:

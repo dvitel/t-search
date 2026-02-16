@@ -70,10 +70,10 @@
                 "semantics": {"!ref": "semantics"},
                 "fitness": {"!ref": "fitness"},                
                 "with_inner_evals": true,
-                "max_root_evals": 100000,
-                "max_evals": 100000,
-                "measure_loss_each_n": 1000,
-                "measure_max_len": 100
+                "max_root_evals": 500000,
+                "max_evals": 500000,
+                "measure_loss_each_n": 2000,
+                "measure_max_len": 200
             }
         },
         "init": {
@@ -83,10 +83,11 @@
                 "syntax": {"!ref": "syntax"},
                 "semantics": {"!ref": "semantics"},
                 "evaluator": {"!ref": "evaluator"},
-                "atol": 1e-6,
-                "rtol": 1e-5,
+                "atol": 1e-4,
+                "rtol": 1e-4,
                 "semantic_duplicate_retries": 10,
                 "max_depth": 6,                
+                "max_l2": 1e6,
                 "size": 1000 
             } 
         },
@@ -95,8 +96,8 @@
             "module": "t_search.operators.semantic",
             "params": { 
                 "semantics": {"!ref": "semantics"},
-                "atol": 1e-6,
-                "rtol": 1e-5,                
+                "atol": 1e-2,
+                "rtol": 1e-2,                
                 "selection_size": 1000, 
                 "tournament_size": 7 
             } 
@@ -106,10 +107,10 @@
             "module": "t_search.operators.semantic",
             "params": { 
                 "evaluator": {"!ref": "evaluator"},
-                "min_d": 0.01,
+                "min_d": 1e-4,
                 "max_d": 100,
                 "max_pos_tries": 10,
-                "rate": 0.5               
+                "rate": 0.5
             } 
         },
         "crossover": { 
@@ -117,7 +118,7 @@
             "module": "t_search.operators.semantic",
             "params": { 
                 "evaluator": {"!ref": "evaluator"},
-                "min_d": 0.01,
+                "min_d": 1e-4,
                 "max_d": 100,
                 "max_pos_tries": 10,                
                 "rate": 0.5

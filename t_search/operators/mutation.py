@@ -19,6 +19,7 @@ class TermMutation(Operator):
                  term_lineage: dict[Term, list[Term]],
                  term_frontier: set[Term],
                  rate : float | None = 1.0,
+                 num_mut_tries: int = 1,
                  debug: bool = False):
         self.rate: float = rate
         self.cur_parents: Sequence[Term] = []
@@ -28,6 +29,9 @@ class TermMutation(Operator):
         self.debug = debug
         self.term_lineage = term_lineage
         self.term_frontier = term_frontier
+        self.num_mut_tries = num_mut_tries
+        self.cur_term_id: int = 0
+        self.should_break_mutation = False
 
     def add_to_lineage(self, parent: Term, child: Term):
         # if self.has_lineage_loop(child, parent):
@@ -69,13 +73,13 @@ class TermMutation(Operator):
         ''' Abstract. Mutates one term in the context of parents and already generated children ''' 
         pass # to be implemented in subclasses
 
-    def select_terms(self, population: Sequence[Term]) -> Generator[Term, None, None]:
-        ''' Produces the order of terms to try. Default: sequential order. '''
-        # permuted_term_ids = self.rnd.permutation(len(population)) 
-        # for term_id in permuted_term_ids:
-        #     yield population[term_id]
-        for term in population:
-            yield term
+    def population_order(self, population: Sequence[Term]) -> Generator[int, None, None]:
+        ''' Produces the order of terms to try. Default: shuffled order. '''
+        permuted_term_ids = self.rnd.permutation(len(population)) 
+        for term_id in permuted_term_ids:
+            yield term_id
+        # for term in population:
+        #     yield term
 
     def __call__(self, population: Sequence[Term]) -> Sequence[Term]: 
         ''' 
@@ -93,20 +97,27 @@ class TermMutation(Operator):
         mutated_size = inf if self.rate is None else int(self.rate * size)
         children = [] 
 
-        for term in self.select_terms(population):
+        for term_id in self.population_order(population):
+            self.cur_term_id = term_id
+            term = population[term_id]
             if mutated_size <= 0: # reproduce
                 children.append(term)
                 repr_cnt += 1
             else: 
-                child = self.mutate_term(term)
-                if child is not None:
-                    success += 1
-                    children.append(child)
-                    self.add_to_lineage(term, child)
-                    mutated_size -= 1
-                else:
-                    fail += 1
-                    children.append(term)
+                child = None
+                for mut_id in range(self.num_mut_tries):
+                    child = self.mutate_term(term)
+                    if child is not None:
+                        success += 1
+                        self.add_to_lineage(term, child)
+                        mutated_size -= 1
+                        break
+                    else:
+                        fail += 1
+                        if self.should_break_mutation:
+                            self.should_break_mutation = False
+                            break
+                children.append(child if child is not None else term)
 
         self.add_metrics(success=success, fail=fail, repr=repr_cnt)        
         return children

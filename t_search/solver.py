@@ -17,7 +17,6 @@ from t_search.evaluators.semantics import Semantics
 from t_search.operators.initialization import Initialization
 from t_search.operators.listeners import GenListener
 from t_search.operators.mutation import TermMutation
-from t_search.operators.syntax.reduce import Reduce
 from t_search.solver_utils import get_method_params, read_config, register_services
 from t_search.syntax.syntax import Syntax
 from t_search.syntax.term import Value, Variable
@@ -84,7 +83,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
         fitness_service_name: str,
         semantics_service_name: str,
         final_reducer_service_name: str = "",
-        eval_listeners: list[str] = [],
+        # eval_listeners: list[str] = [],
 
         ops: dict[str, Callable] | list[str] = default_alg_ops,
         ops_schedule: dict[str, int] | None = None,
@@ -109,7 +108,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         self.final_reducer: TermMutation | None = None
 
-        self.eval_listeners = eval_listeners
+        # self.eval_listeners = eval_listeners
         self.services = {}
 
         self.debug = debug
@@ -326,21 +325,21 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         for service in self.services.values():
             if isinstance(service, ServiceBase):
-                service.init(**self.services)
+                service.init()
 
         self.gen_listeners = []
         for service in self.services.values():
             if isinstance(service, GenListener):
                 self.gen_listeners.append(service)
 
-        eval_listeners_instances = []
-        for listener_name in self.eval_listeners:
-            if listener_name not in self.services:
-                raise ValueError(f"Eval listener service '{listener_name}' not found among registered services")
-            listener = self.services[listener_name]
-            eval_listeners_instances.append(listener)
+        # eval_listeners_instances = []
+        # for listener_name in self.eval_listeners:
+        #     if listener_name not in self.services:
+        #         raise ValueError(f"Eval listener service '{listener_name}' not found among registered services")
+        #     listener = self.services[listener_name]
+        #     eval_listeners_instances.append(listener)
 
-        self.evaluator.add_listeners(eval_listeners_instances)
+        # self.evaluator.add_listeners(eval_listeners_instances)
 
         pass
     

@@ -27,9 +27,13 @@ class Semantics(ServiceBase):
         missing_terms = [t for t in terms if self.storage.get_semantics_for_term(t) is None]
         return missing_terms
 
-    def get_outputs(self, terms: list[Term] | Term, return_type: Literal["list", "tensor"] = "list") -> list[torch.Tensor] | torch.Tensor | None:
+    def get_outputs(self, terms: list[Term] | Term, return_type: Literal["list", "tensor"] = "list",
+                        ensure_dims: bool = False) -> list[torch.Tensor] | torch.Tensor | None:
         if isinstance(terms, Term):
-            return self.get_binding(terms)
+            res =  self.get_binding(terms)
+            if ensure_dims and res.numel() == 1 and self.dims != 1:
+                res = res.expand(self.dims)
+            return res 
         selected_outputs = []
         for t in terms:
             t_outputs = self.get_binding(t)
@@ -38,6 +42,14 @@ class Semantics(ServiceBase):
             selected_outputs.append(t_outputs)
         if return_type == "tensor":
             return stack_rows(selected_outputs, self.dims)
+        elif ensure_dims:
+            final_res = [] 
+            for out in selected_outputs:
+                if out.numel() == 1 and self.dims != 1:
+                    final_res.append(out.expand(self.dims))
+                else:
+                    final_res.append(out)
+            return final_res
         return selected_outputs
 
     def get_binding(self, term: Term) -> Optional[torch.Tensor]:
@@ -45,7 +57,7 @@ class Semantics(ServiceBase):
             return self.var_bindings[term.var_id]
         if isinstance(term, Value):
             # return self.const_binding[term.value]
-            return term.value  
+            return term.value          
         
         term_semantics = self.storage.get_semantics_for_term(term)        
         return term_semantics

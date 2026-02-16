@@ -33,8 +33,8 @@ class Fitness(ServiceBase):
                  syntax: Syntax,
                  target: torch.Tensor,
                  target_variance: torch.Tensor,
-                 fitness_atol: float = 1e-6,
-                 fitness_err: float = 1e-6,
+                 fitness_atol: float = 1e-8,
+                 fitness_err: float = 1e-8,
                  debug: bool = False):
         self.target = target
         self.target_variance = target_variance
@@ -116,6 +116,7 @@ class Fitness(ServiceBase):
             t_fitness = self.fitness.get(t, None)
             if t_fitness is None:
                 raise ValueError(f"Term {t} fitness not found")
+                # t_fitness = torch.tensor(float('inf'), device=self.target.device)
             selected_fitness.append(t_fitness)
         if return_type == "tensor":
             return torch.stack(selected_fitness)

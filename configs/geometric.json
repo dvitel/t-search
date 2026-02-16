@@ -70,10 +70,10 @@
                 "semantics": {"!ref": "semantics"},
                 "fitness": {"!ref": "fitness"},                
                 "with_inner_evals": true,
-                "max_root_evals": 100000,
-                "max_evals": 100000,
-                "measure_loss_each_n": 1000,
-                "measure_max_len": 100
+                "max_root_evals": 500000,
+                "max_evals": 500000,
+                "measure_loss_each_n": 2000,
+                "measure_max_len": 200
             }
         },
         "init": {
@@ -98,8 +98,11 @@
                 "evaluator": {"!ref": "evaluator"},
                 "min_grow_depth": 3,
                 "max_grow_depth": 6,
-                "num_tries": 10,
+                "num_mut_tries": 10,
                 "epsilon": 0.02,
+                "identity_atol": 1e-7,
+                "identity_rtol": 1e-7,
+                "use_best_epsilon": true,
                 "rate": 0.5
             } 
         },
@@ -109,8 +112,10 @@
             "params": { 
                 "evaluator": {"!ref": "evaluator"},
                 "epsilon": 1.0,
-                "num_tries": 10, 
-                "min_d": 0.01,               
+                "num_mut_tries": 10,      
+                "identity_atol": 1e-7,
+                "identity_rtol": 1e-7,          
+                "use_best_epsilon": true,             
                 "rate": 0.5
             } 
         },
