@@ -318,7 +318,7 @@ class Evaluator(Operator, ServiceBase):
         if self.fitness.best_term is None:
             raise RuntimeError("Evaluator is not fitted yet")
 
-        _, output = self._eval_one(self.fitness.best_term, get_binding, set_binding, mode="test")
+        output = self._eval_one(self.fitness.best_term, get_binding, set_binding, mode="test")
         return output      
 
     def get_iter_metrics(self):
