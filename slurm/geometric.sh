@@ -4,6 +4,7 @@
 #SBATCH --output=ge-%a.out
 #SBATCH --error=ge-%a.out
 #SBATCH --mem=32G
+#SBATCH --gpus=1 # 1 GPU
 #SBATCH -p snsm_itn19
 #SBATCH --array=0-29
 

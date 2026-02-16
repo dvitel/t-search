@@ -5,6 +5,7 @@
 #SBATCH --error=kz-%a.out
 #SBATCH --mem=32G
 #SBATCH -p snsm_itn19
+#SBATCH --gpus=1 # 1 GPU
 #SBATCH --array=0-29
 
 ## SBATCH --open-mode=append
