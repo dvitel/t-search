@@ -1,14 +1,12 @@
 ''' Base interface for syntax Evaluators'''
 
 from collections.abc import Callable
-from functools import partial
 from typing import Literal, Optional, Sequence
 
 import torch
 
 from t_search.base import ServiceBase
 from t_search.evaluators.fitness import Fitness
-from t_search.evaluators.optimizer import Optimizer
 
 from t_search.evaluators.semantics import Semantics
 from t_search.operators.operator import Operator
@@ -16,40 +14,7 @@ from t_search.syntax.evaluation import evaluate
 from t_search.syntax.term import Term, Value, Variable
 from t_search.utils import EvSearchTermination, stack_rows
 
-class Evaluator(Operator):
-
-    def test(self, get_binding: Callable) -> torch.Tensor:    
-        ''' Test mode evaluation with test bindings '''
-        pass
-
-    def eval(
-        self,
-        terms: Sequence[Term] | Term,
-    ) -> list[tuple[Term, torch.Tensor]] | tuple[Term, torch.Tensor]:
-        ''' Evaluates given terms. '''
-        pass
-
-    def get_loss_fn(self, get_binding: Callable | None = None, set_binding: Callable | None = None, 
-                    no_cache: bool = False):
-        ''' Differentiable loss function aligned with fitness '''
-        pass
-
-    def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
-        ''' Evaluate given population of terms and return them'''
-        res = self.eval(population)
-        children = [t for t, _ in res]
-        return children
-    
-    # def add_initial_terms(self, terms: list[Term], semantics: torch.Tensor):
-    #     ''' Add initial terms and their semantics to evaluator storage '''
-    #     pass
-
-    # def add_listeners(self, listeners: list[EvalListener]):
-    #     ''' Add evaluation listeners '''
-    #     pass
-
-
-class DefaultEvaluator(Evaluator, ServiceBase):
+class Evaluator(Operator, ServiceBase):
     ''' Default syntax term executor according to given operational semantics
         Lower fitness is better.
     '''
@@ -211,12 +176,12 @@ class DefaultEvaluator(Evaluator, ServiceBase):
                   mode: Literal["train", "test"] = "train") -> torch.Tensor:
         ''' Interrnal, can be overriden, one term evaluation without any caching '''
         output = evaluate(term, self.ops, get_binding or self._get_binding, set_binding or self._set_binding)
-        return (term, output)
+        return output
     
-    def eval(self, terms: list[Term] | Term) -> list[tuple[Term, torch.Tensor]] | tuple[Term, torch.Tensor]:
+    def eval(self, terms: list[Term] | Term, return_type: Literal["tensor", "list"] = "list",
+                ensure_dims: bool = False) -> torch.Tensor:
         ''' Evaluate given term or terms '''
 
-        return_tensor: bool = False
         if isinstance(terms, Term):
             return_tensor = True
             terms = [terms]
@@ -251,10 +216,24 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             #         l.on_eval(valid_terms, valid_semantic_list)
             del semantics
 
-        if return_tensor:
-            outputs = term_outputs[terms[0]]
-            return outputs
-        return [term_outputs[t] for t in terms]
+        if len(terms) == 1:
+            s = term_outputs[terms[0]]
+            if ensure_dims and s.numel() == 1:
+                s = s.expand(self.dims)
+            return s
+        results = [term_outputs[t] for t in terms]
+        if return_type == "tensor":
+            res = stack_rows(results, self.dims)
+            return res
+        elif ensure_dims:
+            final_results = []
+            for r in results:
+                if r.numel() == 1:
+                    final_results.append(r.expand(self.dims))
+                else:
+                    final_results.append(r)
+            return final_results
+        return results
     
     def get_loss_fn(self, get_binding: Callable | None = None, set_binding: Callable | None = None, no_cache: bool = False):
         ''' Differentiable function for optimization that iss aligned with fitness (nmse by default) '''
@@ -343,31 +322,8 @@ class DefaultEvaluator(Evaluator, ServiceBase):
             'iter_eval_cache_hits': [self.eval_cache_hits],
             'iter_eval_cache_miss': [self.eval_cache_miss],
         }              
-
-class OptimEvaluator(DefaultEvaluator):
-    ''' Perform optimization before evaluation '''
-
-    def __init__(self, *,
-                 optimizer: Optimizer,
-                 **kwargs):
-        super().__init__(**kwargs)
-        self.optimizer = optimizer
-        self.term_mapping: dict[Term, Term] = {} # term to optimized term mapping
-
-    def _eval_one(self, term: Term, 
-                  get_binding: Callable | None = None,
-                  set_binding: Callable | None = None,
-                  mode: Literal["train", "test"] = "train") -> torch.Tensor:
-        ''' Optimize and then evaluate the term '''        
-        if term in self.term_mapping:
-            optim_term = self.term_mapping[term]
-        elif mode == "test":
-            optim_term = term
-        else:
-            optim_term = self.optimizer.optimize(term)
-            self.term_mapping[term] = optim_term
-        res = super()._eval_one(optim_term, get_binding, set_binding, mode)
-        return res
-
-    def get_loss_fn(self, get_binding: Callable | None = None, set_binding: Callable | None = None, no_cache: bool = False):
-        return self.evaluator.get_loss_fn(get_binding=get_binding, set_binding=set_binding, no_cache = no_cache)
+    
+    def __call__(self, population: Sequence[Term]) -> Sequence[Term]:
+        ''' Evaluate given population of terms and return them'''
+        self.eval(population)
+        return population    

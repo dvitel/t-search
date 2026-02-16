@@ -101,7 +101,7 @@
             } 
         },      
         "evaluator": {
-            "type": "DefaultEvaluator", 
+            "type": "Evaluator", 
             "params": { 
                 "semantics": {"!ref": "semantics"},
                 "fitness": {"!ref": "fitness"},

@@ -72,28 +72,6 @@
             "stopOnEntry": false
         },
         {
-            "name": "Koza+Const",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "t_search",
-            "args": [
-                "--dataset", "test_0",
-                "--config", "configs/koza_const.json",
-                "--output", "data/dbg.jsonlist",
-                "--device", "cuda",
-                "--dtype", "float32",
-                "--seed", "42",
-                "--debug"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}",
-                "DEBUG_SOLVER": "1"
-            },
-            "stopOnEntry": false
-        },        
-        {
             "name": "Semantic",
             "type": "debugpy",
             "request": "launch",

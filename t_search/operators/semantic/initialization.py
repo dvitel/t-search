@@ -45,11 +45,8 @@ class SemanticallyDrivenInitialization(Initialization):
 
     def add_term(self, new_term: Term, vectors: torch.Tensor, 
                     population: list[Term], pop_under_depth: list[Term]):
-        self.evaluator.eval(new_term)
+        outputs = self.evaluator.eval(new_term)
         if not self.semantics.is_valid(new_term):
-            return False
-        outputs = self.semantics.get_outputs(new_term)
-        if self.semantics.is_const(outputs) is not None:
             return False
         l2 = ((outputs - self.target) ** 2).sum().item()
         if l2 > self.max_l2:

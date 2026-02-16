@@ -3,7 +3,6 @@
         "fitness": { 
             "type": "Fitness", 
             "params": {
-                "syntax": {"!ref": "syntax"},
                 "fitness_atol": 1e-07
             }
         },        
@@ -65,10 +64,8 @@
             } 
         },
         "evaluator": {
-            "type": "DefaultEvaluator", 
+            "type": "Evaluator", 
             "params": {
-                "semantics": {"!ref": "semantics"},
-                "fitness": {"!ref": "fitness"},                
                 "with_inner_evals": true,
                 "max_root_evals": 500000,
                 "max_evals": 500000,
@@ -80,9 +77,6 @@
             "type": "SemanticallyDrivenInitialization", 
             "module": "t_search.operators.semantic",
             "params": { 
-                "syntax": {"!ref": "syntax"},
-                "semantics": {"!ref": "semantics"},
-                "evaluator": {"!ref": "evaluator"},
                 "atol": 1e-4,
                 "rtol": 1e-4,
                 "semantic_duplicate_retries": 10,
@@ -95,7 +89,6 @@
             "type": "SemanticTournamentSelection", 
             "module": "t_search.operators.semantic",
             "params": { 
-                "semantics": {"!ref": "semantics"},
                 "atol": 1e-2,
                 "rtol": 1e-2,                
                 "selection_size": 1000, 
@@ -106,7 +99,6 @@
             "type": "SemanticallyDrivenMutation", 
             "module": "t_search.operators.semantic",
             "params": { 
-                "evaluator": {"!ref": "evaluator"},
                 "min_d": 1e-4,
                 "max_d": 100,
                 "max_pos_tries": 10,
@@ -117,7 +109,6 @@
             "type": "SemanticallyDrivenCrossover", 
             "module": "t_search.operators.semantic",
             "params": { 
-                "evaluator": {"!ref": "evaluator"},
                 "min_d": 1e-4,
                 "max_d": 100,
                 "max_pos_tries": 10,                
@@ -128,7 +119,6 @@
             "type": "MuLambdaSurvivorSelection", 
             "module": "t_search.operators.classic",
             "params": { 
-                "evaluator": {"!ref": "evaluator"},
                 "mu": 1000, 
                 "strict": false, 
                 "combine": false,

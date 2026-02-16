@@ -169,7 +169,7 @@ class LLMMutation(TermMutation):
             this should be handled before calling this method.
         '''
 
-        outcomes = self.semantics.get_outputs(term)
+        outcomes = self.evaluator.eval(term, ensure_dims=True)
         fitness = self.fitness.get_fitness(term)
 
         # selecting hardest tests from this term 
@@ -222,9 +222,8 @@ class LLMMutation(TermMutation):
         
         optimized_term = self.optimizer.optimize(new_term)
         
-        self.evaluator.eval(optimized_term)
+        new_outcomes = self.evaluator.eval(optimized_term, ensure_dims=True)
         new_fitness = self.fitness.get_fitness(optimized_term)
-        new_outcomes = self.semantics.get_outputs(optimized_term)
 
         good_mutations=1 if new_fitness < fitness else 0, 
         bad_mutations=1 if new_fitness > fitness else 0,

@@ -36,8 +36,7 @@ class CompetentInitialization(SemanticallyDrivenInitialization):
         while len(ci_population) < self.size and (i < max_try_count):
             i += 1
             population = super().__call__(size=i * self.size)
-            self.evaluator.eval(population)
-            semantics = self.semantics.get_outputs(population, return_type="tensor")
+            semantics = self.evaluator.eval(population, return_type="tensor")
             # first, filter by distance to target
             l2 = ((semantics.unsqueeze(1) - self.target.unsqueeze(0)) ** 2).sum(dim=-1)
             close_mask  = l2 < 1e6

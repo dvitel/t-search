@@ -13,8 +13,10 @@ class CompetentMutation(BaseCompetentMutation):
     
     def mutate_term(self, term: Term) -> Term | None:
 
-        self.evaluator.eval(term)
-        term_sem = self.semantics.get_outputs(term, ensure_dims=True)
+        term_sem = self.evaluator.eval(term, ensure_dims=True)
+        if self.semantics.is_valid(term) is False:
+            self.should_break_mutation = True
+            return None
         desired_term_sem = self.lib.get_desired_semantics(term, term_sem)
 
         if term not in self.term_subtree_semantics:

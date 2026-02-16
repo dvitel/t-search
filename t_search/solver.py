@@ -245,7 +245,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
                     service_context[param_name] = partial(self.add_metrics, scope=service_name)
                 elif param_name in params:
                     service_context[param_name] = params[param_name]
-                elif param_name in ("fitness", "semantics", "syntax") and param_name in self.services:
+                elif param_name in ("fitness", "semantics", "syntax", "evaluator") and param_name in self.services:
                     service_context[param_name] = self.services[param_name]
 
             inited_params = set(service_context.keys())

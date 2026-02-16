@@ -3,7 +3,6 @@
         "fitness": { 
             "type": "Fitness", 
             "params": {
-                "syntax": {"!ref": "syntax"},
                 "fitness_atol": 1e-07
             }
         },        
@@ -65,10 +64,8 @@
             } 
         },
         "evaluator": {
-            "type": "DefaultEvaluator", 
-            "params": {
-                "semantics": {"!ref": "semantics"},
-                "fitness": {"!ref": "fitness"},                
+            "type": "Evaluator", 
+            "params": {      
                 "with_inner_evals": true,
                 "max_root_evals": 500000,
                 "max_evals": 500000,
@@ -85,9 +82,6 @@
             "type": "DesiredSemanticLib", 
             "module": "t_search.operators.competent",
             "params": {
-                "syntax": {"!ref": "syntax"},
-                "semantics": {"!ref": "semantics"},
-                "evaluator": {"!ref": "evaluator"},
                 "init_op": {"!ref": "lib_init"}
             }
         },
@@ -95,9 +89,6 @@
             "type": "SemanticallyDrivenInitialization", 
             "module": "t_search.operators.semantic",
             "params": { 
-                "syntax": {"!ref": "syntax"},
-                "semantics": {"!ref": "semantics"},
-                "evaluator": {"!ref": "evaluator"},
                 "atol": 1e-4,
                 "rtol": 1e-4,
                 "semantic_duplicate_retries": 10,
@@ -118,9 +109,6 @@
             "type": "CompetentMutation", 
             "module": "t_search.operators.competent",
             "params": { 
-                "syntax": {"!ref": "syntax"},
-                "semantics": {"!ref": "semantics"},
-                "evaluator": {"!ref": "evaluator"},
                 "lib": {"!ref": "lib"},
                 "identity_atol": 0.001,
                 "identity_rtol": 0.001,                
@@ -131,9 +119,6 @@
             "type": "CompetentCrossover", 
             "module": "t_search.operators.competent",
             "params": { 
-                "syntax": {"!ref": "syntax"},
-                "semantics": {"!ref": "semantics"},
-                "evaluator": {"!ref": "evaluator"},
                 "lib": {"!ref": "lib"},               
                 "identity_atol": 0.001,
                 "identity_rtol": 0.001,                 
@@ -144,7 +129,6 @@
             "type": "MuLambdaSurvivorSelection", 
             "module": "t_search.operators.classic",
             "params": { 
-                "evaluator": {"!ref": "evaluator"},
                 "mu": 1000, 
                 "strict": false, 
                 "combine": false,

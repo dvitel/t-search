@@ -28,7 +28,7 @@ class CompetentCrossover(TermCrossover, BaseCompetentMutation):
         if term == other_term:
             return None
 
-        term_sem, other_term_sem, *_ = self.semantics.get_outputs([term, other_term], return_type="list", ensure_dims=True)
+        term_sem, other_term_sem = self.evaluator.eval([term, other_term], return_type="list", ensure_dims=True)
 
         desired_term_sem = self.lib.get_desired_semantics(term, term_sem)
         desired_other_term_sem = self.lib.get_desired_semantics(other_term, other_term_sem)

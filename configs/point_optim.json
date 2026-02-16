@@ -3,7 +3,6 @@
         "fitness": { 
             "type": "Fitness", 
             "params": {
-                "syntax": {"!ref": "syntax"},
                 "fitness_atol": 1e-07
             }
         },        
@@ -65,10 +64,8 @@
             } 
         },
         "evaluator": {
-            "type": "DefaultEvaluator", 
-            "params": {
-                "semantics": {"!ref": "semantics"},
-                "fitness": {"!ref": "fitness"},                
+            "type": "Evaluator", 
+            "params": {        
                 "with_inner_evals": true,
                 "max_root_evals": 500000,
                 "max_evals": 500000,
@@ -99,7 +96,6 @@
             "type": "MuLambdaSurvivorSelection", 
             "module": "t_search.operators.classic",
             "params": { 
-                "evaluator": {"!ref": "evaluator"},
                 "mu": 100, 
                 "strict": false, 
                 "combine": false,
@@ -121,8 +117,6 @@
             "type": "ConstOptimizer",
             "module": "t_search.evaluators.const_optimizer",
             "params": {
-                "syntax": {"!ref": "syntax"},
-                "evaluator": {"!ref": "evaluator"},
                 "num_starts": 5,
                 "max_evals": 20,
                 "lr": 0.05,
@@ -135,10 +129,6 @@
             "type": "PointOptim",
             "module": "t_search.operators.optim.point_optim",
             "params": {
-                "syntax": {"!ref": "syntax"},
-                "fitness": {"!ref": "fitness"},
-                "semantics": {"!ref": "semantics"},
-                "evaluator": {"!ref": "evaluator"},
                 "init_op": {"!ref": "point_optim_init"},
                 "normalizer": {"!ref": "normalizer"},
                 "position_strategy": "best_grad_position_order",
@@ -175,7 +165,6 @@
             "type": "ConstOptimMutation",
             "module": "t_search.operators.optim",
             "params": {
-                "fitness": {"!ref": "fitness"},
                 "const_optimizer": {"!ref": "const_optimizer"},
                 "loss_threshold": 1e-04,
                 "only_best_term": true,

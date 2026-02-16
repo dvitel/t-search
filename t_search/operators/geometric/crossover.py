@@ -21,9 +21,13 @@ class SemanticGeometricCrossover(BaseGeometricMutation, TermCrossover):
         t1 = term  
         t2 = other_term       
 
-        self.evaluator.eval([t1, t2]) # get vectors
+        s1, s2 = self.evaluator.eval([t1, t2]) # get vectors
+        if self.semantics.is_valid(t1) is False:
+            self.should_break_mutation = True
+            return None
+        elif self.semantics.is_valid(t2) is False:
+            return None 
         if self.use_best_epsilon:
-            s1, s2 = self.semantics.get_outputs([t1, t2], return_type="list")
 
             sd = s1 - s2 
             sd2 = (sd * sd).sum()
