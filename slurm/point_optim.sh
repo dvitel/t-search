@@ -1,17 +1,17 @@
 #!/bin/bash 
-#SBATCH --job-name=K1
+#SBATCH --job-name=po
 #SBATCH --time=72:00:00
-#SBATCH --output=K1-%a.out
-#SBATCH --error=K1-%a.out
+#SBATCH --output=po-%a.out
+#SBATCH --error=po-%a.out
 #SBATCH --mem=32G
-#SBATCH -p general
+#SBATCH -p snsm_itn19
 #SBATCH --array=0-29
 
 ## SBATCH --open-mode=append
 
 module purge
 
-config='koza_set1'
+config='point_optim'
 
 seed=$SLURM_ARRAY_TASK_ID
 datasets=('r_1' 'r_2' 'keijzer_3' 'keijzer_4' 'keijzer_11' 'nguyen_12' 'pagie_1' 'vladislavleva_1' 'koza_3' 'keijzer_6' 'vladislavleva_8' 'korns_13' 'korns_14' 'korns_15')
@@ -24,7 +24,7 @@ for dataset in "${datasets[@]}"; do
         --dataset $dataset \
         --config $HOME/t-search/configs/$config.json \
         --output $WORK_BGFS/t-search/results.jsonlist \
-        --device cpu \
+        --device cuda \
         --dtype float32 \
         --seed $seed
 

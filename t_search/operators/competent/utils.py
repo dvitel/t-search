@@ -37,7 +37,7 @@ def general_inv(t: DesiredSemantics, args: list[torch.Tensor], arg_i: int, op_in
             if len(new_desired) > 0 and all(d is None for d in new_desired):
                 res.append(None)
             else:
-                res.append({d for d in new_desired if d is not None})
+                res.append({d for d in new_desired if d is not None})    
     return res
 
 def add_inv(desired: float, args: list[float], arg_i: int) -> list[float]:
@@ -160,17 +160,6 @@ def get_desired_semantics(target: torch.Tensor) -> DesiredSemantics:
         res.append( {val} )
     return res
 
-def invertTerm(term: Term, desired: DesiredSemantics,
-                output_getter: Callable[[Term], torch.Tensor],
-                op_invs: dict[str, Callable],
-                inversion_cache: dict[Term, dict[tuple[Term, int], DesiredSemantics]]) -> None:
-    if term.arity() == 0 or not isinstance(term, Op) or term.op_id not in op_invs: # semantic backgpropagation SB works through arguments 
-        return
-    op_inv = op_invs[term.op_id]
-    arg_semantics = output_getter(list(term.get_args()))
-    for arg_i, arg in enumerate(term.get_args()):
-        arg_desired = general_inv(desired, arg_semantics, arg_i, op_inv)
-
 def pre_invert(root: Term, output_getter: Callable[[Term], torch.Tensor]):
     ''' Tree traversal to collect all occurances and semantics '''
 
@@ -207,7 +196,8 @@ def pre_invert(root: Term, output_getter: Callable[[Term], torch.Tensor]):
 
 def backward_desired(root: Term, target: DesiredSemantics, bad_semantics: list[DesiredSemantics],
             output_getter: Callable[[Term], torch.Tensor], get_desired_semantics: Callable[[Term, torch.Tensor], DesiredSemantics],
-            op_invs: dict[str, Callable]) -> dict[tuple[Term, int], tuple[DesiredSemantics, list[DesiredSemantics]]]:
+            op_invs: dict[str, Callable],
+            on_uneval: Callable = lambda: None) -> dict[tuple[Term, int], tuple[DesiredSemantics, list[DesiredSemantics]]]:
     ''' Semantic backpropagation SB'''
 
     occurs = {}
@@ -241,6 +231,7 @@ def backward_desired(root: Term, target: DesiredSemantics, bad_semantics: list[D
             undesired_all[arg_occur] = arg_undesired_all
             arg_cur = get_desired_semantics(arg_occur[0], arg_semantics[arg_i])
             undesired_with_cur_all[arg_occur] = [*arg_undesired_all, arg_cur]
+            on_uneval()
         
     def _exit_term(term: Term, *_):
         occurs[term] += 1

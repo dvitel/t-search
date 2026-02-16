@@ -9,7 +9,7 @@ class SemanticGeometricCrossover(BaseGeometricMutation, TermCrossover):
     ''' Implementing Semantic Geometric Crossover from Moraglio 2012 
         Linear combination of programs
     '''
-    def __init__(self,
+    def __init__(self,                    
                     **kwargs):
         super().__init__(**kwargs)
 
@@ -18,10 +18,17 @@ class SemanticGeometricCrossover(BaseGeometricMutation, TermCrossover):
         if term == other_term:
             return term        
         
+        other_term = self.trim_term(other_term)        
+        
         t1 = term  
         t2 = other_term       
 
         s1, s2 = self.evaluator.eval([t1, t2]) # get vectors
+        new_term = self.trim_term(t1)
+        if new_term != t1:
+            t1 = new_term
+            s1 = self.semantics.get_outputs(t1)
+
         if self.semantics.is_valid(t1) is False:
             self.should_break_mutation = True
             return None
@@ -33,6 +40,7 @@ class SemanticGeometricCrossover(BaseGeometricMutation, TermCrossover):
             sd2 = (sd * sd).sum()
 
             best_epsilon = ((self.target - s2) * sd).sum() / (sd2 + 1e-8)
+            best_epsilon = (1 - (2 * self.rnd.random() - 1) * self.alpha) * best_epsilon
             best_epsilon.clamp_(-self.epsilon, self.epsilon)
         
         else:
@@ -51,22 +59,8 @@ class SemanticGeometricCrossover(BaseGeometricMutation, TermCrossover):
 
         final_term = self.syntax.get_op("add", t1_term, t2_term)
 
-        trimmed_term = self.trim_deep_term(final_term)
-        if isinstance(trimmed_term, Value):
-            return None   
-
-        self.evaluator.eval(trimmed_term)     
+        # trimmed_term = self.trim_deep_term(final_term, should_trim=False)
+        # if isinstance(trimmed_term, Value):
+        #     return None   
         
-        # final_term = self.trim_deep_term(mutated_term)
-        # if self.check_validity and not self.syntax.is_valid(final_term):
-        #     return None 
-
-        # if self.min_d is not None: # check effectiveness of the operator
-        #     term1_sem, term2_sem, mutated_term_sem, *_ = self.evaluator.eval([term, other_term, final_term])
-        #     dist1 = l2(term1_sem[1], mutated_term_sem[1])
-        #     dist2 = l2(term2_sem[1], mutated_term_sem[1])
-        #     if dist1 < self.min_d or dist2 < self.min_d:
-        #         return None
-        #     else:
-        #         final_term = mutated_term_sem[0]
-        return trimmed_term
+        return final_term

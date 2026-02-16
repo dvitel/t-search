@@ -39,7 +39,8 @@ class CompetentCrossover(TermCrossover, BaseCompetentMutation):
         if (term, other_term) not in self.term_subtree_semantics:
             self.desired_at_pos = backward_desired(term, mid_desired, [desired_term_sem, desired_other_term_sem], 
                                         lambda t: self.semantics.get_outputs(t, ensure_dims=True),
-                                        self.lib.get_desired_semantics, self.op_invs)
+                                        self.lib.get_desired_semantics, self.op_invs,
+                                        on_uneval=lambda: self.evaluator.add_external_optim_eval_cnt())
             self.term_subtree_semantics[(term, other_term)] = self.desired_at_pos
         else:
             self.desired_at_pos = self.term_subtree_semantics[(term, other_term)]

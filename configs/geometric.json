@@ -91,26 +91,28 @@
             "type": "SemanticGeometricMutation", 
             "module": "t_search.operators.geometric",
             "params": { 
-                "min_grow_depth": 3,
-                "max_grow_depth": 6,
+                "min_grow_depth": 1,
+                "max_grow_depth": 5,
                 "num_mut_tries": 10,
-                "epsilon": 0.02,
-                "identity_atol": 1e-7,
-                "identity_rtol": 1e-7,
+                "epsilon": 1.5,
+                "identity_atol": 1e-4,
+                "identity_rtol": 1e-4,
+                "alpha": 0.3,  
                 "use_best_epsilon": true,
-                "rate": 0.5
+                "rate": 0.8
             } 
         },
         "crossover": { 
             "type": "SemanticGeometricCrossover", 
             "module": "t_search.operators.geometric",
             "params": { 
-                "epsilon": 1.0,
+                "epsilon": 1.5,
                 "num_mut_tries": 10,      
-                "identity_atol": 1e-7,
-                "identity_rtol": 1e-7,          
+                "identity_atol": 1e-4,
+                "identity_rtol": 1e-4,       
+                "alpha": 0.3,  
                 "use_best_epsilon": true,             
-                "rate": 0.5
+                "rate": 0.2
             } 
         },
         "survivor_selection": { 

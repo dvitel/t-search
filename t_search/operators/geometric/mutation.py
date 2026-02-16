@@ -12,7 +12,7 @@ class SemanticGeometricMutation(BaseGeometricMutation):
     '''
     def __init__(self, *, 
                     min_grow_depth = 3,
-                    max_grow_depth = 5, 
+                    max_grow_depth = 5,                     
                     **kwargs):
         super().__init__(**kwargs)
         self.min_grow_depth = min_grow_depth
@@ -32,18 +32,25 @@ class SemanticGeometricMutation(BaseGeometricMutation):
                 break 
 
         f, s1, s2 = self.evaluator.eval([term, t1, t2]) # get vectors 
+
+        new_term = self.trim_term(term)
+        if new_term != term:
+            term = new_term
+            f = self.semantics.get_outputs(term)
+
         if not self.semantics.is_valid(f):
             self.should_break_mutation = True
             return None
         elif not self.semantics.is_valid(t1) or not self.semantics.is_valid(t2):
-            return None
+            return None   
         
         if self.use_best_epsilon:
 
             sd = s1 - s2 
             sd2 = (sd * sd).sum()        
 
-            best_epsilon = ((self.target - f) * sd).sum() / (sd2 + 1e-8)
+            best_epsilon = ((self.target - f) * sd).sum() / (sd2 + 1e-10)
+            best_epsilon = (1 - (2 * self.rnd.random() - 1) * self.alpha) * best_epsilon
             best_epsilon.clamp_(-self.epsilon, self.epsilon)
 
         else:
@@ -61,14 +68,17 @@ class SemanticGeometricMutation(BaseGeometricMutation):
 
         final_term = self.syntax.get_op("add", term, self.syntax.get_op("add", t1_term, t2_term))
 
-        trimmed_term = self.trim_deep_term(final_term)
-        if isinstance(trimmed_term, Value):
-            return None
-
-        self.evaluator.eval(trimmed_term)
+        # trimmed_term = self.trim_deep_term(final_term, should_trim=False)
+        # if isinstance(trimmed_term, Value):
+        #     return None
+        
+        # ts, fs = self.evaluator.eval([trimmed_term, final_term])
+        # mask = torch.isclose(ts, fs, atol=1e-3, rtol=1e-3).sum()
+        # if mask == 0:
+        #     return None
         
         # final_term = self.trim_deep_term(mutated_term)
         # We do not validate here the depth of the tree
         # if self.check_validity and not self.syntax.is_valid(final_term):
         #     return None
-        return trimmed_term 
+        return final_term 

@@ -150,6 +150,15 @@ class Evaluator(Operator, ServiceBase):
             raise EvSearchTermination("MAX_EVAL")
         if self.root_evals >= self.max_root_evals:
             raise EvSearchTermination("MAX_ROOT_EVAL")
+        
+    def add_external_optim_eval_cnt(self):
+        self.evals += 1
+        self.optim_evals += 1
+        if len(self.loss_trace) < self.measure_max_len:
+            if self.evals % self.measure_loss_each_n == 0:
+                self.loss_trace.append(self.best_loss)
+        if self.evals >= self.max_evals:
+            raise EvSearchTermination("MAX_EVAL")   
     
     def _set_binding(self, root: Term, term: Term, value: torch.Tensor):
         self._default_set_binding(root, term, value)

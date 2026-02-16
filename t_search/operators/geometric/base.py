@@ -20,6 +20,7 @@ class BaseGeometricMutation(TermMutation, ServiceBase, LincombMixin):
                     evaluator: Evaluator,
                     target: torch.Tensor,
                     epsilon = 0.02, 
+                    alpha: float = 0.3,
                     identity_atol: float = 1e-2,
                     identity_rtol: float = 1e-2,
                     with_reduction: bool = True, 
@@ -31,10 +32,25 @@ class BaseGeometricMutation(TermMutation, ServiceBase, LincombMixin):
         self.epsilon = epsilon
         self.target = target
         self.evaluator = evaluator
+        self.alpha = alpha
         self.identity_atol = identity_atol
         self.identity_rtol = identity_rtol
         self.with_reduction = with_reduction    
         self.use_best_epsilon = use_best_epsilon
+
+    def trim_term(self, term: Term) -> Term:
+        term_depth = self.syntax.get_depth(term)
+        if  term_depth >= self.syntax.max_term_depth: 
+            max_pos_depth = term_depth // 2 
+            pos_terms = []
+            for pos in self.syntax.get_positions(term):
+                if self.syntax.get_depth(pos.term) <= max_pos_depth and not isinstance(pos.term, Value):
+                    pos_terms.append(pos.term)
+            pos_fitness = self.fitess.get_fitness(pos_terms, return_type="tensor")
+            best_pos_id = torch.argmin(pos_fitness).item()            
+            del pos_fitness
+            term = pos_terms[best_pos_id]
+        return term 
 
     def trim_deep_term(self, term: Term, multiplier: torch.Tensor | None = None, should_trim: bool = True) -> Term: 
         # linearize all adds at root and remove smallest coefficients       

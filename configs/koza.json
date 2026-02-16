@@ -65,7 +65,7 @@
         },
         "evaluator": {
             "type": "Evaluator", 
-            "params": {           
+            "params": {
                 "with_inner_evals": true,
                 "max_root_evals": 500000,
                 "max_evals": 500000,

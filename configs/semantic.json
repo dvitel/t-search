@@ -102,7 +102,7 @@
                 "min_d": 1e-4,
                 "max_d": 100,
                 "max_pos_tries": 10,
-                "rate": 0.5
+                "rate": 0.1
             } 
         },
         "crossover": { 
@@ -112,7 +112,7 @@
                 "min_d": 1e-4,
                 "max_d": 100,
                 "max_pos_tries": 10,                
-                "rate": 0.5
+                "rate": 0.9
             } 
         },
         "survivor_selection": { 
