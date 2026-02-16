@@ -18,7 +18,7 @@ from t_search.operators.mutation import PositionMutation
 from t_search.operators.reduction import LincombMixin
 from t_search.syntax import Term, TermPos
 from t_search.syntax.term import OptimPoint, Value
-from t_search.utils import EvSearchTermination, metrics_serializer, unique_vector_ids, unique_vector_ids_batched
+from t_search.utils import EvSearchTermination, metrics_serializer, pearson_corr, spearman_corr, unique_vector_ids, unique_vector_ids_batched
 
 @dataclass(frozen=False)
 class TermMutationContext: 
@@ -38,8 +38,9 @@ class TermMutationContext:
     num_optim_vectors: int = 0
     cont_id: int = 0
     found_const: float | None = None
-    lib_term_dists: list[float] = field(default_factory=list)
-    lib_term_order: list[Term] = field(default_factory=list)
+    dist: float | None = None
+    # lib_term_dists: list[float] = field(default_factory=list)
+    # lib_term_order: list[Term] = field(default_factory=list)
     final_losses: list[float] = field(default_factory=list)
     final_loss: float = float('inf')
     final_term: Term | None = None
@@ -54,9 +55,10 @@ class LossBasedContinuation:
     filling: Term
     final_term: Term
     final_loss: float
+    dist: float
 
     def get_priority(self):
-        return (self.final_loss,)
+        return (self.final_loss, self.dist,)
 
 @dataclass(frozen=True)
 class DistBasedContinuation:
@@ -154,6 +156,10 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         self.with_reduction = with_reduction
         self.max_query_depth = max_query_depth
         self.with_subterms = with_subterms
+
+        # next is for computing correlation
+        self.stats_loss_improvement = []
+        self.stats_dists = []
         # self.rnd=rnd
 
         # self.pos_queue: list[HolePos] = [] # hole priority queue
@@ -367,12 +373,13 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             optim_loss = old_context.optim_loss,
             num_minimas = old_context.num_minimas,
             num_optim_vectors = old_context.num_optim_vectors,
-            found_const = old_context.found_const,
-            lib_term_dists = old_context.lib_term_dists,
-            lib_term_order = old_context.lib_term_order,
+            found_const = old_context.found_const,            
+            # lib_term_dists = old_context.lib_term_dists,
+            # lib_term_order = old_context.lib_term_order,
             # --- 
             final_losses = [],
             final_loss = float('inf'),
+            dist = cont.dist,
             final_term = None,
             filling = None,
             status = "active"            
@@ -382,6 +389,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             context.filling = cont.filling
             context.final_term = cont.final_term
             context.final_loss = cont.final_loss
+            context.dist = cont.dist
         elif isinstance(cont, DistBasedContinuation):
             if not (cont.stripped_filling == context.stripped_pos_term):
                 filling = self.build_lincomb(cont.k, cont.stripped_filling, cont.b)
@@ -482,7 +490,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                     self.evaluator.eval(new_term)
                     loss = self.fitness.get_fitness(new_term).item()
                     context.final_term = new_term
-                    context.final_loss = loss
+                    context.final_loss = loss    
+                    assert context.dist is not None                               
 
             self.finalize_context(context)
 
@@ -667,8 +676,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                 final_dists.append(dist)
                 self.num_total_fills += 1
 
-            context.lib_term_dists = final_dists
-            context.lib_term_order = final_fillings
+            # context.lib_term_dists = final_dists
+            # context.lib_term_order = final_fillings
             if len(final_terms) == 0:
                 context.status = "no_valid_fill"
                 self.finalize_context(context)
@@ -681,6 +690,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             context.final_loss = final_losses[best_loss_id].item()
             context.final_term = final_terms[best_loss_id]     
             context.filling = final_fillings[best_loss_id]   
+            context.dist = final_dists[best_loss_id]
 
             conts = []
             for i in range(1, len(sort_ids)):
@@ -715,31 +725,31 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                     self.evaluator.eval(new_term)
                     loss = self.fitness.get_fitness(new_term).item()
                     context.final_loss = loss
+                    context.dist = dist
                     context.final_term = new_term
                     break
             if context.final_term is not None:
                 context.final_losses = [context.final_loss]
 
-            if self.pick_best_dists:
-                conts = []
-                conts_size = self.num_lib_terms - 1
-                start_i = next_i
-                while next_i < len(ordered_kb) and len(conts) < conts_size:
-                    cur_dist = ordered_kb[next_i][0]
-                    if cur_dist > best_dist:
-                        break
-                    next_i += 1
-                index_range = range(start_i, next_i)
-                end_index = next_i
-            else: 
-                end_index = min(len(ordered_kb), next_i + self.num_lib_terms - 1)
-                index_range = range(next_i, end_index)
+            if next_i > 0:
+                if self.pick_best_dists:
+                    conts = []
+                    conts_size = self.num_lib_terms - 1
+                    end_index = next_i
+                    while end_index < len(ordered_kb) and len(conts) < conts_size:
+                        cur_dist = ordered_kb[end_index][0]
+                        if cur_dist > best_dist:
+                            break
+                        end_index += 1
+                else: 
+                    end_index = min(len(ordered_kb), next_i + self.num_lib_terms - 1)
+                    # index_range = range(next_i, end_index)
 
-            conts = [DistBasedContinuation(context, *ordered_kb[i]) for i in index_range]
-            context.lib_term_order = [ordered_kb[i][2] for i in range(end_index)]
-            context.lib_term_dists = [ordered_kb[i][0] for i in range(end_index)]
-            if len(conts) > 0:
-                self.term_continuations.setdefault(context.term, []).extend(conts)
+                conts = [DistBasedContinuation(context, *ordered_kb[i]) for i in range(next_i, end_index)]
+                # context.lib_term_order = [ordered_kb[i][2] for i in range(next_i - 1, end_index)]
+                # context.lib_term_dists = [ordered_kb[i][0] for i in range(next_i - 1, end_index)]
+                if len(conts) > 0:
+                    self.term_continuations.setdefault(context.term, []).extend(conts)
         else:
             raise ValueError(f"Unknown best_by_metric: {self.best_by_metric}")
 
@@ -896,7 +906,10 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                     #     print(f"Done {cur_term}")
                     pass
             else: 
-                # self.lineage[context.final_term] = context.term
+                if context.start_loss > 1e-4:
+                    loss_percent = (context.start_loss - context.final_loss) / context.start_loss
+                    self.stats_loss_improvement.append(1-loss_percent)
+                    self.stats_dists.append(context.dist)
                 new_children.append(context.final_term)
         # should_exit = False
         # for i in range(self.num_pos_per_term):
@@ -946,6 +959,11 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         return new_children
     
     def get_finalizer(self):
+
+        # compute final correlation between dist and loss change
+        pearson_dist_loss = pearson_corr(self.stats_dists, self.stats_loss_improvement)
+        spearman_dist_loss = spearman_corr(self.stats_dists, self.stats_loss_improvement)
+
         self.add_metrics(
             num_better_fills=self.num_better_fills,
             num_total_fills=self.num_total_fills,
@@ -953,6 +971,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             num_terms_optimized=self.num_terms_optimized,
             tried_optim_terms=len(self.tried_optim_terms),
             tried_optim_terms_hit=self.tried_optim_terms_hit,
+            pearson_dist_loss=pearson_dist_loss,
+            spearman_dist_loss=spearman_dist_loss,
             # "num_terms_created": self.num_terms_created,
             # tabu_positions=sum(len(v) for v in self.tabu_positions.values())
             tabu_positions=len(self.tabu_set)

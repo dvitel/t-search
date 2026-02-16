@@ -33,7 +33,7 @@
             "request": "launch",
             "module": "t_search",
             "args": [
-                "--dataset", "test_0",
+                "--dataset", "korns_2",
                 "--config", "configs/point_optim.json",
                 "--output", "data/dbg.jsonlist",
                 "--device", "cuda",
@@ -55,7 +55,7 @@
             "request": "launch",
             "module": "t_search",
             "args": [
-                "--dataset", "test_0",
+                "--dataset", "nguyen_9",
                 "--config", "configs/koza.json",
                 "--output", "data/dbg.jsonlist",
                 "--device", "cuda",
