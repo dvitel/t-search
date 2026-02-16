@@ -93,7 +93,7 @@
                 "rtol": 1e-4,
                 "semantic_duplicate_retries": 10,
                 "max_depth": 6,                
-                "max_l2": 1e6,
+                "max_l2": 1e8,
                 "size": 1000 
             } 
         },

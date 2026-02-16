@@ -24,7 +24,7 @@ class SemanticallyDrivenInitialization(Initialization):
                  rtol: float = 1e-5,
                  semantic_duplicate_retries: int = 1,
                  max_depth: int,
-                 max_l2: float = 1e6,
+                 max_l2: float = 1e8,
                  target: torch.Tensor | None = None,
                 #  num_rand_consts: int = 0,
                  size: int = 1000
@@ -44,12 +44,13 @@ class SemanticallyDrivenInitialization(Initialization):
         self.semantic_duplicate_retries = semantic_duplicate_retries
 
     def add_term(self, new_term: Term, vectors: torch.Tensor, 
-                    population: list[Term], pop_under_depth: list[Term]):
+                    population: list[Term], pop_under_depth: list[Term],
+                    ignore_max_l2: bool = False) -> bool:
         outputs = self.evaluator.eval(new_term)
         if not self.semantics.is_valid(new_term):
             return False
         l2 = ((outputs - self.target) ** 2).sum().item()
-        if l2 > self.max_l2:
+        if not ignore_max_l2 and (l2 > self.max_l2):
             return False
         present_outputs = vectors[:len(population)]
         close_mask = torch.isclose(present_outputs, outputs, atol=self.atol, rtol=self.rtol).all(dim=1)
@@ -68,7 +69,8 @@ class SemanticallyDrivenInitialization(Initialization):
         population = []
         pop_under_depth = []
         for var in self.syntax.get_vars():
-            self.add_term(var, vectors, population, pop_under_depth)  
+            self.add_term(var, vectors, population, pop_under_depth,
+                            ignore_max_l2=True)  
         
         for _ in range(size - len(population)):
             for _ in range(self.semantic_duplicate_retries):

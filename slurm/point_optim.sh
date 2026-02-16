@@ -7,6 +7,7 @@
 #SBATCH --gpus=1 # 1 GPU
 #SBATCH -p snsm_itn19
 #SBATCH --array=0-29
+#SBATCH --exclude=mdc-1057-28-15
 
 ## SBATCH --open-mode=append
 
