@@ -16,6 +16,8 @@ def mse(vector, target):
 def nmse(vector, target, target_variance: torch.Tensor | None = None) -> torch.Tensor:
     """we follow R^2 normalization: NMSE = 1 - R^2"""        
 
+    if target_variance is None:
+        target_variance = torch.var(target, dim=-1, unbiased=False) # (k,)
     res = mse(vector, target)
     variance_mask_clamped = torch.clamp(target_variance, min=1e-08)   
     res /= variance_mask_clamped

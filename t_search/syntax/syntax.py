@@ -25,6 +25,7 @@ class Syntax(ServiceBase):
                  # from solver context
                  var_names: list[str],
                  ops_signatures: dict[str, inspect.Signature],
+                 ops: dict[str, Callable], # necessary for term simplification 
                  ops_schedule: dict[str, int], # on what iteration the operation should be activated (used in random syntax generation)
                  get_cur_gen: Callable[[], int],
                  add_metrics: Callable,
@@ -50,6 +51,7 @@ class Syntax(ServiceBase):
                  debug: bool = False
                  ):
         self.ops_signatures = ops_signatures
+        self.ops = ops
         self.add_metrics = add_metrics
 
         self.max_term_depth = max_term_depth    
@@ -266,6 +268,11 @@ class Syntax(ServiceBase):
         sorter = sort_commutative_args if op_id in self.commutative else sort_noop
 
         def _alloc_op(*args):
+            if all(isinstance(arg, Value) for arg in args):
+                op_fn = self.ops[op_id]
+                res = op_fn(*tuple(arg.value for arg in args))
+                new_const = self.const_builder.fn(value=res)
+                return new_const
             args = sorter(args)
             signature = (op_id, *args)
             if signature in self.syntax:
@@ -376,19 +383,21 @@ class Syntax(ServiceBase):
         return start_context, arg_counts
 
     def replace_position(self, term: Term, pos: TermPos, new_subterm: Term, with_validation=True) -> Optional[Term]:
-        if with_validation:
-            child = replace_pos_protected(
-                pos,
-                new_subterm,
-                self.builders,
-                depth_cache=self.depth_cache,
-                counts_cache=self.counts_cache,
-                pos_context_cache=self.pos_context_cache.setdefault(term, {}),
-                max_term_depth=self.max_term_depth,
-            )
-        else:
-            child = replace_pos(pos, new_subterm, self.builders)
-        return child
+        # if with_validation:
+        #     child = replace_pos_protected(
+        #         pos,
+        #         new_subterm,
+        #         self.builders,
+        #         depth_cache=self.depth_cache,
+        #         counts_cache=self.counts_cache,
+        #         pos_context_cache=self.pos_context_cache.setdefault(term, {}),
+        #         max_term_depth=self.max_term_depth,
+        #     )
+        # else:
+        child = replace_pos(pos, new_subterm, self.builders)
+        if (not with_validation) or self.is_valid(child):
+            return child
+        return None
     
     # def replace_positions_unvalidated(self, term: Term, pos: TermPos, new_subterms: list[Term]) -> list[Term]:
     #     ''' Replace same position with multiple new subterms, without validation '''

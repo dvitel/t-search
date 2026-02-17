@@ -8,7 +8,7 @@ from .validation import get_pos_constraints, is_valid_at_pos
 from .stats import get_depth
 from .generation import Builders, TermGenContext
 from .traverse import TRAVERSAL_EXIT, TRAVERSAL_EXIT_NODE, postorder_traversal
-from .term import Term, TermPos
+from .term import Term, TermPos, Value
 
 
 def enum_occurs(new_term: Term, some_occurs: dict, fn = lambda *_:()):
@@ -98,6 +98,7 @@ def replace_pos_protected(pos: TermPos, with_term: Term, builders: Builders,
         return None
 
     new_term = replace_pos(pos, with_term, builders)
+        
 
     return new_term
 

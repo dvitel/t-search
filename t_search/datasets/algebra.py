@@ -13,12 +13,10 @@ from t_search.datasets.sampling import get_interval_grid, get_rand_interval_poin
 #0.3 * x * torch.sin(2.0 * torch.pi * x)
 # test_0 = Benchmark("test_0", lambda x: 0.3*x*torch.sin(3.1*x), partial(get_rand_interval_points, transpose=True, pick_rand_grid_points=False), {"num_samples": 20, "ranges": [(-1.0, 1.0)]})
 test_0 = Benchmark(
-    "keijzer_3",
-    lambda x: x * torch.sin(2.0 * torch.pi * x),
-    get_interval_grid,
-    {"steps": 0.1, "ranges": [[-3.0, 3.0]]},
-    get_interval_grid,
-    {"steps": 0.001, "ranges": [[-3.0, 3.0]]},
+    "koza_3",
+    lambda x: x * x * x * x * x * x - 2.0 * x * x * x * x + x * x,
+    get_rand_points,
+    {"num_samples": 20, "ranges": [(-1.0, 1.0)]},
 )
 
 koza_1 = Benchmark(

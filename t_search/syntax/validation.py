@@ -3,7 +3,7 @@ import numpy as np
 
 from .traverse import TRAVERSAL_EXIT, TRAVERSAL_EXIT_NODE, postorder_traversal
 from .generation import Builders, TermGenContext
-from .term import Term, TermPos
+from .term import Term, TermPos, Value
 
 def get_counts(root: Term, builders: Builders, counts_cache: dict[Term, np.ndarray]) -> np.ndarray:
 
@@ -129,8 +129,11 @@ def is_valid_at_pos(term: Term, *, builders: Builders, counts_cache: dict[Term, 
     
     # if pos_context is None:
     #     pos_context = builders.default_gen_context
+    if isinstance(term, Value):
+        return True
+    # NOTE: this routine is called in replacement and _alloc_op can handle constants propagations
                 
-    if pos_context.arg_limits is not None:
+    if pos_context.arg_limits is not None: 
         child_count = builders.zero.copy()
         builder = builders.get_term_builder(term)
         if builder is not None:

@@ -715,11 +715,15 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             context.final_loss = float('inf')
             context.final_term = None    
             next_i = 0   
+            ordered_kb = ordered_kb[:self.num_lib_terms * 2] #
             for (dist, k, stripped_filling, b) in ordered_kb:
                 next_i += 1
                 if stripped_filling == context.stripped_pos_term:
                     continue # do not replace by the same term (even stripped)
                 filling = self.build_lincomb(k, stripped_filling, b)
+                # assumes that lib has at least one constant
+                if isinstance(filling, Value) and not isinstance(stripped_filling, Value):
+                    continue 
                 if isinstance(filling, Value) and isinstance(context.pos.term, Value) and torch.isclose(filling.value, context.pos.term.value, atol=self.identity_atol, rtol=self.identity_rtol):
                     continue
                 context.filling = filling
