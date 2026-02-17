@@ -76,7 +76,7 @@
         "lib_init": { 
             "type": "Up2D", 
             "module": "t_search.operators.classic",
-            "params": { "depth": 2, "with_free_vars": true, "max_consts": 0, "const_1": false } 
+            "params": { "depth": 2, "with_free_vars": true, "with_const": true, "max_consts": 10, "const_1": true } 
         },
         "lib": {
             "type": "DesiredSemanticLib", 
@@ -85,7 +85,7 @@
                 "init_op": {"!ref": "lib_init"}
             }
         },
-        "init": {
+        "init_old": {
             "type": "SemanticallyDrivenInitialization", 
             "module": "t_search.operators.semantic",
             "params": { 
@@ -97,6 +97,15 @@
                 "size": 1000 
             } 
         },
+        "init": {
+            "type": "RHH", 
+            "module": "t_search.operators.classic",
+            "params": { 
+                "syntactic_duplicate_retries": 10,
+                "size": 1000,
+                "max_depth": 6
+            } 
+        },        
         "selection": { 
             "type": "CompetentSelection", 
             "module": "t_search.operators.competent",

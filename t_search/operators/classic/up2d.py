@@ -10,6 +10,7 @@ class Up2D(Initialization):
                  syntax: Syntax,
                  # from config params
                  with_free_vars: bool = False,
+                 with_const: bool = False,  
                  depth = 2, 
                  max_consts: int = 0,
                  const_1: bool = False
@@ -18,6 +19,7 @@ class Up2D(Initialization):
         self.depth = depth
         self.max_consts = max_consts
         self.with_free_vars = with_free_vars
+        self.with_const = with_const
         self.const_1 = const_1
 
     def __call__(self) -> list[Term]:
@@ -25,4 +27,6 @@ class Up2D(Initialization):
         if self.with_free_vars:
             vars = self.syntax.get_vars()
             population.extend(vars)
+        if self.with_const:
+            population.append(self.syntax.one_value)
         return population

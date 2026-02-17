@@ -73,7 +73,7 @@
                 "measure_max_len": 200
             }
         },
-        "init": {
+        "init_old": {
             "type": "RHH", 
             "module": "t_search.operators.classic",
             "params": { 
@@ -82,6 +82,15 @@
                 "max_depth": 6
             } 
         },
+        "init": {
+            "type": "RHH", 
+            "module": "t_search.operators.classic",
+            "params": { 
+                "syntactic_duplicate_retries": 10,
+                "size": 1000,
+                "max_depth": 6
+            } 
+        },        
         "selection": { 
             "type": "TS", 
             "module": "t_search.operators.classic",

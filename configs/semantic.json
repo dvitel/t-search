@@ -73,7 +73,7 @@
                 "measure_max_len": 200
             }
         },
-        "init": {
+        "init_old": {
             "type": "SemanticallyDrivenInitialization", 
             "module": "t_search.operators.semantic",
             "params": { 
@@ -85,6 +85,15 @@
                 "size": 1000 
             } 
         },
+        "init": {
+            "type": "RHH", 
+            "module": "t_search.operators.classic",
+            "params": { 
+                "syntactic_duplicate_retries": 10,
+                "size": 1000,
+                "max_depth": 6
+            } 
+        },        
         "selection": { 
             "type": "SemanticTournamentSelection", 
             "module": "t_search.operators.semantic",

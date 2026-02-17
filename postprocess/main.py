@@ -143,7 +143,7 @@ def draw_trace(base_path: str,
             continue
         dataset_seeds[dataset] = [s for s in seeds if s in common_seeds]
 
-    datasets = [ds for ds in datasets if ds in dataset_seeds and len(dataset_seeds[ds]) > 5]
+    datasets = [ds for ds in datasets if ds in dataset_seeds and len(dataset_seeds[ds]) > 0]
 
     dataset_configs = {}
     for dataset in datasets:
@@ -245,15 +245,16 @@ if __name__ == "__main__":
 
     base_folder = "data/results-02-16"
     datasets = ['r_1', 'r_2', 'keijzer_3', 'keijzer_4', 'keijzer_11', 'nguyen_12', 'pagie_1', 'vladislavleva_1', 'koza_3', 'keijzer_6', 'vladislavleva_8', 'korns_13'] #, 'korns_14', 'korns_15']
-    config_names = ['koza', 'semantic', 'point_optim']
+    config_names = ['koza', 'semantic', 'geometric', 'competent', 'point_optim']
     max_seed = 30
     seeds = list(range(max_seed))
-    config_labels={'koza': 'Kz', 'semantic': 'Sem', 'point_optim': 'PO'}
+    config_labels={'koza': 'Kz', 'semantic': 'Sem', 'geometric': "Geom", 'competent': 'CO', 'point_optim': 'PO'}
     dataset_names = {
         'r_1': 'R1', 'r_2': 'R2', 'keijzer_3': 'Kj3', 'keijzer_4': 'Kj4', 'keijzer_11': 'Kj11',
         'nguyen_12': 'Ng12', 'pagie_1': 'Pg1', 'vladislavleva_1': 'Vl1', 'koza_3': 'Kz3',
         'keijzer_6': 'Kj6', 'vladislavleva_8': 'Vl8', 'korns_13': 'Kn13', 'korns_14': 'Kn14', 'korns_15': 'Kn15'
     }
+    colors = {"koza": "blue", "semantic": "orange", "point_optim": "green", "geometric": "red", "competent": "purple"}
 
     draw_trace(base_path = base_folder, results_file = "results.jsonlist",
                     metric="evaluator.loss_trace", datasets=datasets, 
@@ -261,7 +262,7 @@ if __name__ == "__main__":
                     xs = np.arange(1, 51), 
                     config_labels=config_labels,
                     dataset_names=dataset_names,
-                    colors={"koza": "blue", "semantic": "orange", "point_optim": "green"},
+                    colors=colors,
                     output_prefix="c-", figsize=(6, 4))
     pass
     # draw_table(input="data/raw/tst2.jsonlist",
