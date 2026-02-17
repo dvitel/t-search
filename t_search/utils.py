@@ -4,8 +4,6 @@ from typing import Callable, Sequence, Literal
 import numpy as np
 import torch
 
-from t_search.syntax.term import Term, TermPos
-
 GLOBAL_RNG = np.random.default_rng() 
 
 def add_metrics(metrics: dict, **kwargs):
@@ -113,6 +111,7 @@ def rank(x: torch.Tensor):
 
 
 def metrics_serializer(obj):
+    from t_search.syntax.term import Term, TermPos
     if isinstance(obj, torch.Tensor):
         return obj.cpu().numpy().tolist()
     if isinstance(obj, Term):
@@ -175,7 +174,189 @@ def optimize_kb(X: torch.Tensor, Y: torch.Tensor) -> tuple[torch.Tensor, torch.T
     b = (Sy.unsqueeze(0) - k * Sx.unsqueeze(1)) / dims
     return k, b
 
+def ransac_all_pairs(
+    X,           # (N, dims)
+    Y,           # (K, dims)
+    iters=256,
+    threshold=0.1,
+    min_inliers=4,
+):
+    device = X.device
+
+    N, dims = X.shape
+    K = Y.shape[0]
+
+    # ------------------------------------------------------------
+    # 1. sample random indices along dims axis
+    # ------------------------------------------------------------
+
+    rand = torch.rand(iters, dims, device=device)
+
+    sample_idx = torch.topk(rand, k=2, dim=1, largest=False).indices
+    # shape: (iters, 2)
+
+    # ------------------------------------------------------------
+    # 2. gather samples
+    # ------------------------------------------------------------
+
+    Xs = X[:, sample_idx]   # (N, iters, 2)
+    Ys = Y[:, sample_idx]   # (K, iters, 2)
+
+    # rearrange
+    # Xs = Xs.permute(0,1,2)   # (N, iters, 2)
+    # Ys = Ys.permute(0,1,2)   # (K, iters, 2)
+
+    # ------------------------------------------------------------
+    # 3. compute model parameters
+    # ------------------------------------------------------------
+
+    X_mean = Xs.mean(dim=2)   # (N, iters)
+    Y_mean = Ys.mean(dim=2)   # (K, iters)
+
+    Xc = Xs - X_mean[:,:,None]
+    Yc = Ys - Y_mean[:,:,None]
+
+    numerator = (
+        Xc[:,None,:,:] * Yc[None,:,:,:]
+    ).sum(dim=3)
+
+    denominator = (Xc**2).sum(dim=2)[:,None,:]
+
+    k = numerator / denominator.clamp(min=1e-12)
+    # shape: (N, K, iters)
+
+    b = Y_mean[None,:,:] - k * X_mean[:,None,:]
+
+    # ------------------------------------------------------------
+    # 4. evaluate all dims
+    # ------------------------------------------------------------
+
+    Y_pred = (
+        k[:,:,:,None] * X[:,None,None,:]
+        + b[:,:,:,None]
+    )
+
+    errors = torch.abs(Y_pred - Y[None,:,None,:])
+
+    inliers = errors < threshold
+
+    inlier_count = inliers.sum(dim=3)
+
+    # ------------------------------------------------------------
+    # 5. compute MSE
+    # ------------------------------------------------------------
+
+    sq_errors = errors**2
+
+    mse = sq_errors.sum(dim=3) / inlier_count.clamp(min=1)
+    mse_clone = mse.clone()
+
+    mse[inlier_count < min_inliers] = float('inf')
+
+    # ------------------------------------------------------------
+    # 6. select best iteration
+    # ------------------------------------------------------------
+
+    best_iter = torch.argmin(mse, dim=2)
+
+    k_best = torch.gather(
+        k, 2, best_iter[:,:,None]
+    ).squeeze(2)
+
+    b_best = torch.gather(
+        b, 2, best_iter[:,:,None]
+    ).squeeze(2)
+
+    X_counts = torch.gather(
+        inlier_count, 2, best_iter[:,:,None]
+    ).squeeze(2)    
+
+    X_mse = torch.gather(
+        mse_clone, 2, best_iter[:,:,None]
+    ).squeeze(2)
+
+    del Xs, Ys, X_mean, Y_mean, Xc, Yc, numerator, denominator, k, b, Y_pred, errors, inliers, inlier_count, sq_errors, mse, best_iter, mse_clone
+    return k_best, b_best, X_counts, X_mse
+
 # y = torch.tensor([[3.1, 5.2, 7.1, 9.2]])
 # x = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
 # k, b = optimize_kb(x, y)
 # print(k)  # Should be close to [[2.0]]
+
+
+# # reproducibility
+# torch.manual_seed(0)
+
+# # small test sizes
+# N = 2
+# K = 4
+# dims = 5
+
+# device = 'cpu'  # change to 'cuda' if available
+
+# # ------------------------------------------------------------
+# # create ground truth parameters
+# # ------------------------------------------------------------
+
+# true_k = torch.randn(N, K, device=device) * 2.0
+# true_b = torch.randn(N, K, device=device)
+
+# # ------------------------------------------------------------
+# # create base signals
+# # ------------------------------------------------------------
+
+# # X = torch.randn(N, dims, device=device)
+# X = torch.tensor([[1.,2.,3.,4.,5.], [2., 2., 2., 2.,2.]])
+# Y = torch.tensor([[2., 4., 6., 8., 10.], [4., 4., 4., 4., 4.], [6., 12., 18., 24., 30.], [8., 16., 24., 32., 40.]])
+
+# generate Y from X using true k,b for first X only
+# then mix to create general case
+# Y = torch.empty(K, dims, device=device)
+
+# for k_idx in range(K):
+#     base_x = X[k_idx % N]
+#     Y[k_idx] = true_k[k_idx % N, k_idx] * base_x + true_b[k_idx % N, k_idx]
+
+# ------------------------------------------------------------
+# add noise
+# ------------------------------------------------------------
+
+# Y += torch.randn_like(Y) * 0.001
+
+# ------------------------------------------------------------
+# inject outliers
+# ------------------------------------------------------------
+
+# outlier_mask = torch.rand(K, dims, device=device) < 0.2
+# Y[outlier_mask] += torch.randn_like(Y[outlier_mask]) * 10.0
+
+# ------------------------------------------------------------
+# run RANSAC
+# ------------------------------------------------------------
+
+# k_est, b_est = ransac_all_pairs(
+#     X, Y,
+#     iters=2,
+#     threshold=0.2,
+#     min_inliers=3,
+# )
+
+# # ------------------------------------------------------------
+# # evaluate error
+# # ------------------------------------------------------------
+
+# # compute prediction error
+# Y_pred = k_est[:,:,None] * X[:,None,:] + b_est[:,:,None]
+
+# errors = torch.mean((Y_pred - Y[None,:,:])**2, dim=2)
+
+# print("Mean MSE across all pairs:", errors.mean().item())
+
+# # print a few examples
+# print("\nExample recovered parameters:\n")
+
+# for i in range(min(3, N)):
+#     for j in range(min(3, K)):
+#         print(f"pair ({i},{j}):")
+#         print(f"  k_est={k_est[i,j]:.3f}")
+#         print(f"  b_est={b_est[i,j]:.3f}")

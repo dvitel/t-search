@@ -6,7 +6,7 @@ from typing import Callable
 import torch
 
 from t_search.syntax.term import Op, Term, TermPos, Value
-from t_search.utils import optimize_kb
+from t_search.utils import optimize_kb, ransac_all_pairs
 
 class LincombMixin: 
     ''' Provides methods to create and reduce linear combinations k * X + b, k, b Values and X is term'''
@@ -234,19 +234,20 @@ class LincombMixin:
                     
     def optimize_lincomb(self, candidates: list[Term], targets: torch.Tensor) -> list[tuple[float, float, Term, float]]:
         X = self.semantics.get_outputs(candidates, return_type="tensor")
-        K, B = optimize_kb(X, targets)
-        X_ = K.unsqueeze(-1) * X.unsqueeze(1) + B.unsqueeze(-1) # (n, k, dims) outputs 
-        del X
-        loss_per_term_per_test = self.fitness.get_loss(X_, custom_target=targets) # (n, k, dims) losses 
-        del X_
-        loss_per_term = loss_per_term_per_test.mean(dim=-1) # (n, k) losses
-        del loss_per_term_per_test
-        min_loss_id_per_term = loss_per_term.argmin(dim=1) # (n,) min loss per term
+        K, B, fit_counts, fit_loss = ransac_all_pairs(X, targets, iters=256, threshold=0.01, min_inliers=10) #optimize_kb(X, targets)
+        # X_ = K.unsqueeze(-1) * X.unsqueeze(1) + B.unsqueeze(-1) # (n, k, dims) outputs 
+        # del X
+        # loss_per_term_per_test = self.fitness.get_loss(X_, custom_target=targets) # (n, k, dims) losses 
+        # del X_
+        # loss_per_term = loss_per_term_per_test.mean(dim=-1) # (n, k) losses
+        # del loss_per_term_per_test
+        best_fit_id = fit_counts.argmax(dim=1) # (n,) min loss per term
         new_terms = []
         for i, term in enumerate(candidates):
-            j = min_loss_id_per_term[i].item()
-            term_loss = loss_per_term[i,j].item()            
-            new_terms.append((term_loss, K[i,j].item(), term, B[i,j].item()))
+            j = best_fit_id[i].item()
+            term_fit_count = fit_counts[i,j].item()
+            fl = fit_loss[i,j].item()           
+            new_terms.append(((-term_fit_count, fl), K[i,j].item(), term, B[i,j].item()))
 
-        del loss_per_term, min_loss_id_per_term
-        return sorted(new_terms, key=lambda x: x[0])
+        res =  sorted(new_terms, key=lambda x: x[0])
+        return res

@@ -269,6 +269,12 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
     def best_grad_position_order(self, term: Term, positions: list[TermPos]) -> list[Any]:
         grads = get_all_grads(term, var_bindings=self.var_bindings, 
                       get_loss_fn=self.evaluator.get_loss_fn)
+        # pos_by_depth = [[] for _ in range(self.syntax.get_depth(term)+1)] # lists of poss 
+        # for pos_i, pos in enumerate(positions):
+        #     pos_priority = (-grads[(pos.term, pos.occur)], self.syntax._get_term_priority(pos.term))
+        #     pos_by_depth[pos.at_depth].append((pos_priority, pos_i))
+        # for poss in pos_by_depth:
+        #     poss.sort(key=lambda p: -torch.norm(grads[(p.term, p.occur)]).item())
         priorities = [ (-grads[(pos.term, pos.occur)], self.syntax.get_depth(pos.term)) for pos in positions]
         return priorities
     
@@ -396,10 +402,10 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             context.final_loss = cont.final_loss
             context.dist = cont.dist
         elif isinstance(cont, DistBasedContinuation):
-            if not (cont.stripped_filling == context.stripped_pos_term):
-                filling = self.build_lincomb(cont.k, cont.stripped_filling, cont.b)
-                if not (isinstance(filling, Value) and isinstance(context.pos.term, Value) and torch.isclose(filling.value, context.pos.term.value, atol=self.identity_atol, rtol=self.identity_rtol)):
-                    context.filling = filling
+            # if not (cont.stripped_filling == context.stripped_pos_term):
+            filling = self.build_lincomb(cont.k, cont.stripped_filling, cont.b)
+            if not (isinstance(filling, Value) and isinstance(context.pos.term, Value) and torch.isclose(filling.value, context.pos.term.value, atol=self.identity_atol, rtol=self.identity_rtol)):
+                context.filling = filling
         if context.filling is not None:
             self.term_contexts[context.term].append(context)
     
@@ -664,8 +670,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                 if len(final_terms) >= sz:
                     break
                 dist, k, stripped_filling, b = ordered_kb[i]
-                if stripped_filling == context.stripped_pos_term:
-                    continue # do not replace by the same term (even stripped)
+                # if stripped_filling == context.stripped_pos_term:
+                #     continue # do not replace by the same term (even stripped)
                 filling = self.build_lincomb(k, stripped_filling, b)
                 if isinstance(filling, Value) and isinstance(context.pos.term, Value) and torch.isclose(filling.value, context.pos.term.value, atol=self.identity_atol, rtol=self.identity_rtol):
                     continue                
@@ -718,8 +724,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             ordered_kb = ordered_kb[:self.num_lib_terms * 2] #
             for (dist, k, stripped_filling, b) in ordered_kb:
                 next_i += 1
-                if stripped_filling == context.stripped_pos_term:
-                    continue # do not replace by the same term (even stripped)
+                # if stripped_filling == context.stripped_pos_term:
+                #     continue # do not replace by the same term (even stripped)
                 filling = self.build_lincomb(k, stripped_filling, b)
                 # assumes that lib has at least one constant
                 if isinstance(filling, Value) and not isinstance(stripped_filling, Value):
@@ -927,7 +933,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                 if context.start_loss > 1e-4:
                     loss_percent = (context.start_loss - context.final_loss) / context.start_loss
                     self.stats_loss_improvement.append(1-loss_percent)
-                    self.stats_dists.append(context.dist)
+                    self.stats_dists.append(context.dist[-1])
                 new_children.append(context.final_term)
         # should_exit = False
         # for i in range(self.num_pos_per_term):
