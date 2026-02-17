@@ -5,11 +5,13 @@ from typing import Any, Callable, Generator, Literal
 
 from pyparsing import Sequence
 import torch
+import numpy as np
+from scipy.stats import pearsonr, spearmanr
 
 from t_search.base import ServiceBase
 from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.fitness import Fitness
-from t_search.evaluators.optimization import OptimResult, clean_optim_result, get_all_grads, optimize_par, optimize_seq, set_local_minimas_, get_slowest_funs
+from t_search.evaluators.optimization import OptimResult, clean_optim_result, get_all_grads, optimize_par, set_local_minimas_, get_slowest_funs
 from t_search.evaluators.semantics import Semantics
 from t_search.evaluators.term_spatial import Normalizer
 from t_search.operators.initialization import Initialization
@@ -18,7 +20,7 @@ from t_search.operators.mutation import PositionMutation
 from t_search.operators.reduction import LincombMixin
 from t_search.syntax import Term, TermPos
 from t_search.syntax.term import OptimPoint, Value
-from t_search.utils import EvSearchTermination, metrics_serializer, pearson_corr, spearman_corr, unique_vector_ids, unique_vector_ids_batched
+from t_search.utils import EvSearchTermination, metrics_serializer, unique_vector_ids, unique_vector_ids_batched
 
 @dataclass(frozen=False)
 class TermMutationContext: 
@@ -973,8 +975,10 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
     def get_finalizer(self):
 
         # compute final correlation between dist and loss change
-        pearson_dist_loss = pearson_corr(self.stats_dists, self.stats_loss_improvement)
-        spearman_dist_loss = spearman_corr(self.stats_dists, self.stats_loss_improvement)
+        x = np.array(self.stats_dists)
+        y = np.array(self.stats_loss_improvement)
+        pearson_dist_loss, pearson_dist_loss_p_value = pearsonr(x, y)
+        spearman_dist_loss, spearman_dist_loss_p_value = spearmanr(x, y)
 
         self.add_metrics(
             num_better_fills=self.num_better_fills,
@@ -984,7 +988,9 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             tried_optim_terms=len(self.tried_optim_terms),
             tried_optim_terms_hit=self.tried_optim_terms_hit,
             pearson_dist_loss=pearson_dist_loss,
+            pearson_dist_loss_p_value=pearson_dist_loss_p_value,
             spearman_dist_loss=spearman_dist_loss,
+            spearman_dist_loss_p_value=spearman_dist_loss_p_value,
             # "num_terms_created": self.num_terms_created,
             # tabu_positions=sum(len(v) for v in self.tabu_positions.values())
             tabu_positions=len(self.tabu_set)

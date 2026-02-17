@@ -179,27 +179,3 @@ def optimize_kb(X: torch.Tensor, Y: torch.Tensor) -> tuple[torch.Tensor, torch.T
 # x = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
 # k, b = optimize_kb(x, y)
 # print(k)  # Should be close to [[2.0]]
-
-
-def pearson_corr(x, y):
-    if not torch.is_tensor(x):
-        x = torch.tensor(x)
-    if not torch.is_tensor(y):
-        y = torch.tensor(y)
-    x_mean = x.mean()
-    y_mean = y.mean()
-    x_centered = x - x_mean
-    y_centered = y - y_mean
-    covariance = (x_centered * y_centered).sum()
-    x_std = torch.sqrt((x_centered ** 2).sum())
-    y_std = torch.sqrt((y_centered ** 2).sum())
-    return covariance / (x_std * y_std + 1e-8)
-
-def spearman_corr(x, y):
-    if not torch.is_tensor(x):
-        x = torch.tensor(x)
-    if not torch.is_tensor(y):
-        y = torch.tensor(y)
-    x_ranked = rank(x.unsqueeze(0)).squeeze(0)
-    y_ranked = rank(y.unsqueeze(0)).squeeze(0)
-    return pearson_corr(x_ranked, y_ranked)
