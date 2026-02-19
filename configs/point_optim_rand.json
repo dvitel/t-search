@@ -82,20 +82,6 @@
                 "max_depth": 6
             } 
         },        
-        "init_old": {
-            "type": "Up2D", 
-            "module": "t_search.operators.classic",
-            "params": { "depth": 2, "with_free_vars": true, "max_consts": 10, "const_1": true } 
-        },      
-        "init_old2": {
-            "type": "RHH", 
-            "module": "t_search.operators.classic",
-            "params": { 
-                "syntactic_duplicate_retries": 10,
-                "size": 1000,
-                "max_depth": 6
-            } 
-        },
         "selection": { 
             "type": "TS", 
             "module": "t_search.operators.classic",
@@ -117,16 +103,11 @@
                 "epsilon": 1e-07
             }
         },
-        "point_optim_init_old": {
+        "lib_init": { 
             "type": "Up2D", 
             "module": "t_search.operators.classic",
-            "params": { "depth": 1, "with_free_vars": true, "max_consts": 10, "const_1": true } 
-        },     
-        "point_optim_init": { 
-            "type": "Up2D", 
-            "module": "t_search.operators.classic",
-            "params": { "depth": 2, "with_free_vars": true, "with_const": true, "max_consts": 10, "const_1": true } 
-        },       
+            "params": { "depth": 2, "const_1": true, "max_size": 1000 } 
+        },    
         "const_optimizer": {
             "type": "ConstOptimizer",
             "module": "t_search.evaluators.const_optimizer",
@@ -143,7 +124,7 @@
             "type": "PointOptim",
             "module": "t_search.operators.optim.point_optim",
             "params": {
-                "init_op": {"!ref": "point_optim_init"},
+                "init_op": {"!ref": "lib_init"},
                 "normalizer": {"!ref": "normalizer"},
                 "position_strategy": "rand_position_order",
                 "num_starts": 10,

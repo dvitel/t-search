@@ -132,6 +132,18 @@ def unique_vector_ids(vectors: torch.Tensor, atol: float = 1e-6, rtol: float = 1
     del unique_mask
     return unique_indices
 
+def unique_vector_ids_seq(vectors: torch.Tensor, atol: float = 1e-6, rtol: float = 1e-6) -> list[int]:
+    uniq_ids: list[int] = []
+    for i, vector in enumerate(vectors):
+        if i == 0:
+            uniq_ids.append(0)
+            continue
+        prev_vectors = vectors[uniq_ids]
+        is_duplicate = torch.isclose(vector.unsqueeze(0), prev_vectors, atol=atol, rtol=rtol).all(dim=-1).any()
+        if not is_duplicate:
+            uniq_ids.append(i)
+    return uniq_ids
+
 def unique_vector_ids_batched(vectors: torch.Tensor, 
                                 batch_size: int = 1024, max_size: int | None = None,
                                 atol: float = 1e-6, rtol: float = 1e-6) -> torch.Tensor:
@@ -180,6 +192,7 @@ def ransac_all_pairs(
     iters=256,
     threshold=0.1,
     min_inliers=4,
+    sample_size=2,
 ):
     device = X.device
 
@@ -192,7 +205,7 @@ def ransac_all_pairs(
 
     rand = torch.rand(iters, dims, device=device)
 
-    sample_idx = torch.topk(rand, k=2, dim=1, largest=False).indices
+    sample_idx = torch.topk(rand, k=sample_size, dim=1, largest=False).indices
     # shape: (iters, 2)
 
     # ------------------------------------------------------------
@@ -222,7 +235,7 @@ def ransac_all_pairs(
 
     denominator = (Xc**2).sum(dim=2)[:,None,:]
 
-    k = numerator / denominator.clamp(min=1e-12)
+    k = numerator / denominator.clamp(min=1e-10)
     # shape: (N, K, iters)
 
     b = Y_mean[None,:,:] - k * X_mean[:,None,:]

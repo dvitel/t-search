@@ -12,7 +12,7 @@ from t_search.operators.reduction import LincombMixin
 from t_search.syntax import Term
 from t_search.syntax.syntax import Syntax
 from t_search.syntax.term import TermPos
-from t_search.utils import unique_vector_ids
+from t_search.utils import unique_vector_ids_seq
 
 class DesiredSemanticLib(ServiceBase):
     ''' Competent operators share this lib for pre-initialized set of terms.'''
@@ -41,7 +41,7 @@ class DesiredSemanticLib(ServiceBase):
         self.evaluator.eval(lib_terms)
         valid_terms = [t for t in lib_terms if self.semantics.is_valid(t)]
         valid_vectors = self.semantics.get_outputs(valid_terms, return_type="tensor")
-        unique_ids = unique_vector_ids(valid_vectors)
+        unique_ids = unique_vector_ids_seq(valid_vectors)
         self.lib_terms = [valid_terms[i] for i in unique_ids]
         self.lib_vectors = valid_vectors[unique_ids]  
         del valid_vectors  
@@ -105,7 +105,9 @@ class BaseCompetentMutation(PositionMutation, LincombMixin):
             return None
         
         allowed_terms = [self.lib.lib_terms[i] for i in allowed_ids]
-        ordered_terms = self.optimize_lincomb(allowed_terms, desired_vectors)
+        ordered_terms = self.optimize_lincomb_batched(allowed_terms, desired_vectors, iters=128,
+                                                        candidates_batch=64 if self.semantics.dims >= 100 else 256,
+                                                        targets_batch=16) # NOTE: here we have perfect match on first try as semantics is precise
         best_dist, k, t, b = ordered_terms[0]
         
         new_filling = self.build_lincomb(k, t, b)

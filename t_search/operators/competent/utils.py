@@ -6,17 +6,14 @@
 '''
 
 from bisect import bisect_left
-from dataclasses import dataclass, field
 from math import prod
 import math
 from typing import Callable
 import torch
 
-from t_search.operators.reduction import LincombMixin
 from t_search.syntax import Term, Op
-from t_search.syntax.term import TermPos
 from t_search.syntax.traverse import postorder_traversal, TRAVERSAL_EXIT_NODE
-from t_search.utils import optimize_kb, unique_vector_ids
+from t_search.utils import unique_vector_ids_seq
 
 
 DesiredSemantics = list[set[float] | None]  # list of sets of possible values for each dimension.
@@ -310,6 +307,7 @@ def get_best_semantics(desired: DesiredSemantics, undesired: list[DesiredSemanti
 
     if all(len(v) == 1 for v in desired): # exact match desired
         final_closest_desired = torch.tensor([next(iter(d)) for d in desired], dtype=all_semantics.dtype, device=all_semantics.device) # (sem_dim,)
+        final_closest_desired = final_closest_desired.unsqueeze(0)
     else:
         # test_ids = [i for i, d in enumerate(desired) if len(d) > 0]
         # selected_semantics = all_semantics[:, test_ids]
@@ -334,7 +332,7 @@ def get_best_semantics(desired: DesiredSemantics, undesired: list[DesiredSemanti
         allowed_closest_desired = closest_desired[allowed_ids] # (num_allowed    
         del closest_desired, forbidden_mask
 
-        uniq_desired_ids = unique_vector_ids(allowed_closest_desired, atol=epsilon, rtol=0)
+        uniq_desired_ids = unique_vector_ids_seq(allowed_closest_desired, atol=epsilon, rtol=0)
         final_closest_desired = allowed_closest_desired[uniq_desired_ids]
         del allowed_closest_desired
 

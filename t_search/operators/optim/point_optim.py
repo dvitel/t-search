@@ -20,7 +20,7 @@ from t_search.operators.mutation import PositionMutation
 from t_search.operators.reduction import LincombMixin
 from t_search.syntax import Term, TermPos
 from t_search.syntax.term import OptimPoint, Value
-from t_search.utils import EvSearchTermination, metrics_serializer, unique_vector_ids, unique_vector_ids_batched
+from t_search.utils import EvSearchTermination, metrics_serializer, unique_vector_ids_seq
 
 @dataclass(frozen=False)
 class TermMutationContext: 
@@ -236,8 +236,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
 
         del final_vectors
 
-        unique_indices = unique_vector_ids(normalized)
-        final_terms = [final_terms[i] for i in unique_indices.tolist()]
+        unique_indices = unique_vector_ids_seq(normalized)
+        final_terms = [final_terms[i] for i in unique_indices]
         final_vectors = normalized[unique_indices]
         del normalized
 
@@ -452,9 +452,9 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         # pop_unique_mask = ~pop_has_duplicate_before  # (n,) - True for unique vectors
         # del pop_has_duplicate_before
         # pop_unique_indices = torch.where(pop_unique_mask)[0]  # Indices of unique vectors
-        pop_unique_indices = unique_vector_ids_batched(pop_query_vectors, batch_size=self.max_query_size, max_size=self.max_query_size)
+        pop_unique_indices = unique_vector_ids_seq(pop_query_vectors) # batch_size=self.max_query_size, max_size=self.max_query_size)
         # del pop_unique_mask
-        self.query_terms = [pop_terms[i] for i in pop_unique_indices.tolist()]
+        self.query_terms = [pop_terms[i] for i in pop_unique_indices]
         self.query_vectors = pop_query_vectors[pop_unique_indices]      
         del pop_query_vectors, pop_unique_indices
 
@@ -609,12 +609,14 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                         del subterm_outputs
                         query_vectors = torch.cat([self.query_vectors, normalized_subterm_outputs], dim=0)
                         del normalized_subterm_outputs  
-                        uniq_ids = unique_vector_ids(query_vectors)
+                        uniq_ids = unique_vector_ids_seq(query_vectors)
                         del query_vectors
-                        query_terms = [query_terms[i] for i in uniq_ids.tolist()]
+                        query_terms = [query_terms[i] for i in uniq_ids]
                         del uniq_ids
 
-            ordered_kb = self.optimize_lincomb(query_terms, optim_vectors_plain)
+            ordered_kb = self.optimize_lincomb_batched(query_terms, optim_vectors_plain, iters=128,
+                                                        candidates_batch=64 if self.semantics.dims >= 100 else 256,
+                                                        targets_batch=16)
 
             del optim_vectors
             clean_optim_result(slowest_traces)

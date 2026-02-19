@@ -232,9 +232,13 @@ class LincombMixin:
             new_term = self.syntax.get_op("add", self.syntax.get_op("mul", k_value, X), b_value)    
             return new_term    
                     
-    def optimize_lincomb(self, candidates: list[Term], targets: torch.Tensor) -> list[tuple[float, float, Term, float]]:
+    def optimize_lincomb(self, candidates: list[Term], targets: torch.Tensor, iters:int=128, sample_size:int=2) -> list[tuple[float, float, Term, float]]:
         X = self.semantics.get_outputs(candidates, return_type="tensor")
-        K, B, fit_counts, fit_loss = ransac_all_pairs(X, targets, iters=256, threshold=0.01, min_inliers=10) #optimize_kb(X, targets)
+        K, B, fit_counts, fit_loss = ransac_all_pairs(X, targets, 
+                                                      iters=iters, 
+                                                      threshold=0.01,
+                                                      min_inliers=10, 
+                                                      sample_size=sample_size) #optimize_kb(X, targets)
         # X_ = K.unsqueeze(-1) * X.unsqueeze(1) + B.unsqueeze(-1) # (n, k, dims) outputs 
         # del X
         # loss_per_term_per_test = self.fitness.get_loss(X_, custom_target=targets) # (n, k, dims) losses 
@@ -251,3 +255,52 @@ class LincombMixin:
 
         res =  sorted(new_terms, key=lambda x: x[0])
         return res
+    
+    def optimize_lincomb_batched(self, candidates: list[Term], targets: torch.Tensor, iters:int=128, sample_size:int=2,
+                                    candidates_batch: int = 128,
+                                    targets_batch: int = 64) -> list[tuple[float, float, Term, float]]:
+        new_terms = []
+        for i in range(0, len(candidates), candidates_batch):
+            cur_candidates = candidates[i:i+candidates_batch]
+            X = self.semantics.get_outputs(cur_candidates, return_type="tensor")
+            all_Ks, all_Bs, all_fit_counts, all_fit_loss = [], [], [], []
+            for j in range(0, targets.shape[0], targets_batch):
+                cur_targets = targets[j:j+targets_batch]
+                K, B, fit_counts, fit_loss = ransac_all_pairs(X, cur_targets, 
+                                                            iters=iters, 
+                                                            threshold=0.01,
+                                                            min_inliers=10, 
+                                                            sample_size=sample_size) #optimize_kb(X, targets)
+                all_Ks.append(K)
+                all_Bs.append(B)
+                all_fit_counts.append(fit_counts)
+                all_fit_loss.append(fit_loss)
+                # X_ = K.unsqueeze(-1) * X.unsqueeze(1) + B.unsqueeze(-1) # (n, k, dims) outputs 
+                # del X
+                # loss_per_term_per_test = self.fitness.get_loss(X_, custom_target=targets) # (n, k, dims) losses 
+                # del X_
+                # loss_per_term = loss_per_term_per_test.mean(dim=-1) # (n, k) losses
+                # del loss_per_term_per_test
+            K = torch.cat(all_Ks, dim=1)
+            B = torch.cat(all_Bs, dim=1)
+            fit_counts = torch.cat(all_fit_counts, dim=1)
+            fit_loss = torch.cat(all_fit_loss, dim=1)
+            best_fit_id = fit_counts.argmax(dim=1) # (n,) min loss per term                
+            for i, term in enumerate(cur_candidates):
+                j = best_fit_id[i].item()
+                term_fit_count = fit_counts[i,j].item()
+                fl = fit_loss[i,j].item()           
+                new_terms.append(((-term_fit_count, fl), K[i,j].item(), term, B[i,j].item()))
+
+            del X, K, B, fit_counts, fit_loss
+            for K in all_Ks:
+                del K
+            for B in all_Bs:
+                del B
+            for fit_counts in all_fit_counts:
+                del fit_counts
+            for fit_loss in all_fit_loss:
+                del fit_loss
+            pass
+        res =  sorted(new_terms, key=lambda x: x[0])
+        return res    

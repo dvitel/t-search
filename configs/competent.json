@@ -76,7 +76,7 @@
         "lib_init": { 
             "type": "Up2D", 
             "module": "t_search.operators.classic",
-            "params": { "depth": 2, "with_free_vars": true, "with_const": true, "max_consts": 10, "const_1": true } 
+            "params": { "depth": 2, "const_1": true, "max_size": 1000 } 
         },
         "lib": {
             "type": "DesiredSemanticLib", 
@@ -110,8 +110,8 @@
             "type": "CompetentSelection", 
             "module": "t_search.operators.competent",
             "params": { 
-                "selection_size": 1000, 
-                "tournament_size": 7
+                "selection_size": 100, 
+                "tournament_size": 3
             } 
         },
         "mutation": { 

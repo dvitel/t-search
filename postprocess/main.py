@@ -445,7 +445,8 @@ if __name__ == "__main__":
     # data["metric"] = data["metric"] / 60.0 / 1000.0  # convert to minutes
     # print(data)
 
-    base_folder = "data/results-02-16"
+    base_folder = "data/results-02-19"
+    results_file = "1.jsonlist"
     datasets = ['r_1', 'r_2', 'keijzer_3', 'keijzer_4', 'keijzer_11', 'nguyen_12', 'pagie_1', 'vladislavleva_1', 'koza_3', 'keijzer_6', 'vladislavleva_8', 'korns_14'] #, 'korns_14', 'korns_15']
     config_names = ['koza', 'semantic', 'geometric', 'competent', 'point_optim']
     max_seed = 30
@@ -458,27 +459,27 @@ if __name__ == "__main__":
     }
     colors = {"koza": "blue", "semantic": "orange", "point_optim": "green", "geometric": "red", "competent": "purple"}
 
-    draw_trace(base_path = base_folder, results_file = "results.jsonlist",
+    draw_trace(base_path = base_folder, results_file = results_file,
                     metric="evaluator.loss_trace", datasets=datasets, 
                     config_names=config_names, seeds=seeds,
                     xs = np.arange(1, 51), 
                     config_labels=config_labels,
                     dataset_names=dataset_names,
                     colors=colors,
-                    output_prefix="c-", figsize=(6, 4))
-    # draw_bars(
-    #     base_path=base_folder, 
-    #     results_file="results.jsonlist",
-    #     metric="test_nmse", 
-    #     datasets=datasets, 
-    #     config_names=config_names, 
-    #     seeds=seeds,
-    #     config_labels=config_labels,
-    #     dataset_names=dataset_names,
-    #     colors=colors,
-    #     output_prefix="v-", 
-    #     figsize=(6, 4)
-    # )    
+                    output_prefix="c0-", figsize=(6, 4))
+    draw_bars(
+        base_path=base_folder, 
+        results_file=results_file,
+        metric="test_nmse", 
+        datasets=datasets, 
+        config_names=config_names, 
+        seeds=seeds,
+        config_labels=config_labels,
+        dataset_names=dataset_names,
+        colors=colors,
+        output_prefix="v0-", 
+        figsize=(6, 4)
+    )    
     pass
     # draw_table(input="data/raw/tst2.jsonlist",
     #            metric="test_nmse",
