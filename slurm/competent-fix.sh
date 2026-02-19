@@ -6,7 +6,7 @@
 #SBATCH --mem=64G
 #SBATCH --gpus=1 # 1 GPU
 #SBATCH -p snsm_itn19
-#SBATCH --array=0-29
+#SBATCH --array=0-1
 #SBATCH --exclude=mdc-1057-28-15,mdc-1057-27-18
 
 ## SBATCH --open-mode=append
@@ -15,7 +15,8 @@ module purge
 
 config='competent'
 
-seed=$SLURM_ARRAY_TASK_ID
+seeds=(19 20)
+seed=${seeds[$SLURM_ARRAY_TASK_ID]}
 datasets=('r_1' 'r_2' 'keijzer_3' 'keijzer_4' 'keijzer_11' 'nguyen_12' 'pagie_1' 'vladislavleva_1' 'koza_3' 'keijzer_6' 'vladislavleva_8' 'korns_13' 'korns_14' 'korns_15')
 
 for dataset in "${datasets[@]}"; do
