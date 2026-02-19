@@ -110,7 +110,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                  max_query_size: int = 1024,
                  max_query_depth: int = 2,
                  allow_no_better: bool = False,
-                 backtrack: Literal["lineage", "worse_fillings", "none"] = "lineage",
+                 backtrack: Literal["lineage", "worse_fillings", "rand", "none"] = "lineage",
+                 backtrack_rand_grow_depth: int = 6,
                  num_worse_fillings: int | None = None,
                  identity_atol: float = 0.001,
                  identity_rtol: float = 0.001,
@@ -179,6 +180,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         self.term_continuations: dict[Term, list[LossBasedContinuation | DistBasedContinuation]] = {} # current position order for term
         self.allow_no_better = allow_no_better
         self.backtrack = backtrack if backtrack != "none" else None
+        self.backtrack_rand_grow_depth = backtrack_rand_grow_depth
         self.num_worse_fillings = num_worse_fillings or 0
         self.worse_filling_counts: dict[Term, int] = {}
         # self.term_failed_contexts: list[TermMutationContext] = []
@@ -883,6 +885,11 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                     return best_among_worst.final_term # NOTE: returns final_term itself as it is ready
             else:
                 pass
+        elif backtrack == "rand":
+            depth = self.rnd.integers(1, self.backtrack_rand_grow_depth + 1)
+            rand_term = self.syntax.grow(depth)
+            self.evaluator.eval(rand_term)
+            return rand_term
         # backtrack == "lineage" - pick prev parent
         cur_lineage = self.get_term_history(term)
         filtered_lineage = [fp for cur_terms in cur_lineage 
