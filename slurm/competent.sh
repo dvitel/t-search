@@ -3,7 +3,7 @@
 #SBATCH --time=72:00:00
 #SBATCH --output=co-%a.out
 #SBATCH --error=co-%a.out
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --gpus=1 # 1 GPU
 #SBATCH -p snsm_itn19
 #SBATCH --array=0-29
