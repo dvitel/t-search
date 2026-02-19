@@ -1,5 +1,4 @@
 from itertools import product
-from attrs import inspect
 import numpy as np
 from t_search.operators.initialization import Initialization
 from t_search.syntax import Term
