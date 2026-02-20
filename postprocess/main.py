@@ -116,7 +116,7 @@ def draw_trace(base_path: str,
         for mp in metric_path:
             trace = trace.get(mp, {})
         if len(trace) == 0:
-            print(f"Warning: Metric {metric} not found in {config_name} for dataset {dataset}, config {config_name}, seed {seed}. Skipping.")
+            print(f"Error: Metric {metric} not found in {config_name} for dataset {dataset}, config {config_name}, seed {seed}. Skipping.")
             trace = [0]
         else:
             trace = [-math.log(v, 10) for v in trace] # convert to log scale, handle 0 or negative values
@@ -139,7 +139,7 @@ def draw_trace(base_path: str,
                 seeds_with_trace = set(traces_map[dataset][config_name].keys())
                 missing_seeds = default_seeds - seeds_with_trace
                 if len(missing_seeds) > 0:
-                    print(f"Warning: Missing trace for dataset {dataset}, config {config_name}, seeds {missing_seeds}")
+                    print(f"Warning: Missing {config_name}:{dataset}, seeds {missing_seeds}")
                     for mseed in missing_seeds:
                         traces_map[dataset][config_name][mseed] = [0] * len(xs)
                 # common_seeds = common_seeds.intersection(seeds_with_trace)
@@ -178,14 +178,19 @@ def draw_trace(base_path: str,
         col_id = ds_id % num_in_row
         ax = axes[row_id, col_id] if num_rows > 1 else axes[col_id]
         ds_config_names = dataset_configs[dataset]
+        y_min = float('inf')
         y_max = 0
         for config_name in ds_config_names:
             res_traces = avg_traces[dataset][config_name]
+            min_v = res_traces["min_v"]
             max_v = res_traces["max_v"]
             # Handle inf values from -log(0)
+            finite_min = min_v[np.isfinite(min_v)]
             finite_max = max_v[np.isfinite(max_v)]
             if len(finite_max) > 0:
-                y_max = max(y_max, np.max(finite_max) * 1.1)
+                y_max = max(y_max, np.max(finite_max))
+            if len(finite_min) > 0:
+                y_min = min(y_min, np.min(finite_min))
                 
         for config_name in ds_config_names:
             res_traces = avg_traces[dataset][config_name]
@@ -199,7 +204,8 @@ def draw_trace(base_path: str,
                 ordered_labels.append(config_labels[config_name])
             ax.fill_between(xs, min_v, max_v, color=ln[0].get_color(), alpha=0.2)
         
-        ax.set_ylim(0, math.ceil(y_max)) 
+        y_min = max(0, math.ceil(y_min * 0.9 * 10) / 10) if y_min != float('inf') else 0
+        ax.set_ylim(y_min, math.ceil(y_max * 1.1 * 10) / 10) 
         ax.set_xlim(1, len(xs))
         dataset_name = dataset_names.get(dataset, dataset)
         ax.set_title(f"{dataset_name}", fontsize=10, y=0.99, loc='right', pad=-7)
@@ -281,11 +287,10 @@ def draw_bars(base_path: str,
         #     trace = trace + [0] * num_missing
         # if len(trace) > len(xs):
         #     trace = trace[:len(xs)]
-        if trace > 1: 
-            print(f"{dataset}:{config_name}:{seed}, {trace} high loss value, assume 0")
+        trace = -math.log(trace, 10)
+        if trace < 0: 
+            # print(f"{dataset}:{config_name}:{seed}, {trace} high loss value, assume 0")
             trace = 0
-        else:
-            trace = -math.log(trace, 10)
         traces_map.setdefault(dataset, {}).setdefault(config_name, {})[seed] = trace # scalar value here
 
     datasets = [ds for ds in datasets if ds in traces_map ]
@@ -301,7 +306,7 @@ def draw_bars(base_path: str,
                 # if len(missing_seeds) > 0:
                 #     print(f"Warning: Missing trace for dataset {dataset}, config {config_name}, seeds {missing_seeds}")
                 for mseed in missing_seeds:
-                    print(f"Warning: Missing trace for dataset {dataset}, config {config_name}, seed {mseed}")
+                    # print(f"Warning: Missing trace for dataset {dataset}, config {config_name}, seed {mseed}")
                     traces_map[dataset][config_name][mseed] = 0
                 # common_seeds = common_seeds.intersection(seeds_with_trace)
         # if len(common_seeds) == 0:
@@ -445,9 +450,9 @@ if __name__ == "__main__":
     # data["metric"] = data["metric"] / 60.0 / 1000.0  # convert to minutes
     # print(data)
 
-    base_folder = "data/results-02-19"
-    results_file = "1.jsonlist"
-    datasets = ['r_1', 'r_2', 'keijzer_3', 'keijzer_4', 'keijzer_11', 'nguyen_12', 'pagie_1', 'vladislavleva_1', 'koza_3', 'keijzer_6', 'vladislavleva_8', 'korns_14'] #, 'korns_14', 'korns_15']
+    base_folder = "data/results-02-20"
+    results_file = "results.jsonlist"
+    datasets = ['r_1', 'r_2', 'keijzer_3', 'keijzer_4', 'keijzer_11', 'nguyen_12', 'pagie_1', 'vladislavleva_1', 'koza_3', 'keijzer_6', 'vladislavleva_8', 'korns_13'] #, 'korns_14', 'korns_15']
     config_names = ['koza', 'semantic', 'geometric', 'competent', 'point_optim']
     max_seed = 30
     seeds = list(range(max_seed))
