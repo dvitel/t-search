@@ -995,10 +995,16 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
     def get_finalizer(self):
 
         # compute final correlation between dist and loss change
-        x = np.array(self.stats_dists)
-        y = np.array(self.stats_loss_improvement)
-        pearson_dist_loss, pearson_dist_loss_p_value = pearsonr(x, y)
-        spearman_dist_loss, spearman_dist_loss_p_value = spearmanr(x, y)
+        try:
+            x = np.array(self.stats_dists)
+            y = np.array(self.stats_loss_improvement)
+            pearson_dist_loss, pearson_dist_loss_p_value = pearsonr(x, y)
+            spearman_dist_loss, spearman_dist_loss_p_value = spearmanr(x, y)
+        except Exception as e:
+            pearson_dist_loss = None
+            pearson_dist_loss_p_value = None
+            spearman_dist_loss = None
+            spearman_dist_loss_p_value = None
 
         self.add_metrics(
             num_better_fills=self.num_better_fills,
