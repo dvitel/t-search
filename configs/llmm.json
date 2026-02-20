@@ -65,7 +65,7 @@
         },
         "evaluator": {
             "type": "Evaluator", 
-            "params": {        
+            "params": {
                 "with_inner_evals": true,
                 "max_root_evals": 500000,
                 "max_evals": 500000,
@@ -73,41 +73,6 @@
                 "measure_max_len": 200
             }
         },
-        "init": {
-            "type": "RHH", 
-            "module": "t_search.operators.classic",
-            "params": { 
-                "syntactic_duplicate_retries": 10,
-                "size": 1000,
-                "max_depth": 6
-            } 
-        },        
-        "selection": { 
-            "type": "TS", 
-            "module": "t_search.operators.classic",
-            "params": { "selection_size": 100, "tournament_size": 3, "add_pop": false } 
-        },
-        "survivor_selection": { 
-            "type": "MuLambdaSurvivorSelection", 
-            "module": "t_search.operators.classic",
-            "params": { 
-                "mu": 100, 
-                "strict": false, 
-                "combine": false,
-                "elitism": 0
-            } 
-        },
-        "normalizer": {
-            "type": "ZScoreNormalizer",
-            "params": {
-                "epsilon": 1e-07
-            }
-        },
-        "lib_init": { 
-            "type": "Up2D", 
-            "module": "t_search.operators.classic",
-            "params": { "depth": 1, "const_1": true, "max_size": 1000 } 
-        },    
         "const_optimizer": {
             "type": "ConstOptimizer",
             "module": "t_search.evaluators.const_optimizer",
@@ -119,41 +84,49 @@
                 "tolerance_grad": 1e-10,
                 "loss_threshold": 1e-08
             }
+        },        
+        "init": {
+            "type": "RHH", 
+            "module": "t_search.operators.classic",
+            "params": { 
+                "syntactic_duplicate_retries": 10,
+                "size": 1,
+                "max_depth": 6
+            } 
         },
-        "point_optim": {
-            "type": "PointOptim",
-            "module": "t_search.operators.optim.point_optim",
+        "selection": { 
+            "type": "TS", 
+            "module": "t_search.operators.classic",
+            "params": { "selection_size": 1, "tournament_size": 3 } 
+        },
+        "llm_caller": {
+            "type": "LLMCaller",
+            "module": "t_search.operators.llm.utils",
             "params": {
-                "init_op": {"!ref": "lib_init"},
-                "normalizer": {"!ref": "normalizer"},
-                "position_strategy": "rand_position_order",
-                "num_starts": 10,
-                "range_delta": 0.1,
-                "max_evals": 20,
-                "lr": 1,
-                "tolerance_change": 1e-07,
-                "tolerance_grad": 1e-07,
-                "with_tabu": true,
-                "num_minimas": 5,
-                "num_lib_terms": 3,
-                "num_conts": 3,
-                "pick_best_dists": false,
-                "loss_threshold": 1e-02,
-                "loss_koef": 1.0,
-                "best_by_metric": "dist",
-                "allow_no_better": false,
-                "backtrack": "rand",
-                "backtrack_rand_grow_depth": 6,
-                "num_worse_fillings": 3,
-                "with_pop_terms": false,
-                "with_subterms": false,
-                "max_query_size": 2048,
-                "max_query_depth": 4,
-                "identity_atol": 0.001,
-                "identity_rtol": 0.001,
-                "with_reduction": true,
-                "max_pos_tries": 1,
-                "rate": 1.0
+                "model": "gpt-5-nano"
+            }
+        },
+        "mutation": { 
+            "type": "LLMMutation", 
+            "module": "t_search.operators.llm",
+            "params": { 
+                "llm": {"!ref": "llm_caller"},
+                "optimizer": {"!ref": "const_optimizer"},
+                "rate": 1.0,
+                "num_last_mutations": 3,
+                "max_num_tests": 3,
+                "max_num_demo_tests": 2,
+                "loss_name": "NMSE"
+            } 
+        },
+        "survivor_selection": { 
+            "type": "MuLambdaSurvivorSelection", 
+            "module": "t_search.operators.classic",
+            "params": { 
+                "mu": 1000, 
+                "strict": false, 
+                "combine": false,
+                "elitism": 10
             }
         },
         "const_optim_mutation": {
@@ -170,8 +143,7 @@
     },
     "init_service_name": "init",
     "operator_service_names": [
-        "selection",
-        "point_optim",
+        "mutation",
         "evaluator",
         "survivor_selection"
     ],

@@ -6,6 +6,7 @@
         GOOGLE_API_KEY - for Google Gemini models    
 '''
 
+import json
 import os
 from typing import Type, TypeVar
 
@@ -47,7 +48,7 @@ class LLMCaller:
                 api_key = os.environ["OPENAI_API_KEY"],
                 organization = os.environ.get("OPENAI_ORG_ID", None),
             )
-        response = self.openai_client.responses.parse(
+        response = self.openai_client.responses.create(
             model=self.model,
             input=[
                 {
@@ -55,10 +56,12 @@ class LLMCaller:
                     "content": prompt
                 }
             ],
-            text_format = response_schema
+            text={
+                "format": response_schema
+            }
         )
 
-        res = response.output_parsed
+        res = json.loads(response.output_text)
 
         meta = response.usage
 

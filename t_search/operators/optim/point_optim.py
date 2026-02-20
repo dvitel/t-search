@@ -1,6 +1,7 @@
 from collections import deque
 from dataclasses import dataclass, field
 import json
+import math
 from typing import Any, Callable, Generator, Literal
 
 from pyparsing import Sequence
@@ -876,7 +877,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             if cur_num_worse_fillings < self.num_worse_fillings:
                 self.worse_filling_counts[term] = cur_num_worse_fillings + 1
                 logs = self.mutation_log_per_term.get(term, [])
-                filtered_logs = [l for l in logs if l.status == "no_better" and not l.reattempt] # assert final_term is set already + loss and dist
+                filtered_logs = [l for l in logs if l.status == "no_better" and not l.reattempt and math.isfinite(l.final_loss) and math.isfinite(l.dist[-1])] # assert final_term is set already + loss and dist
                 best_among_worst = None
                 for log in filtered_logs:
                     assert log.final_term is not None and log.final_loss is not None

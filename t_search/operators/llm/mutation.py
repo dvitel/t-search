@@ -9,6 +9,7 @@ from typing import Callable, Sequence
 
 import torch
 
+from t_search.base import ServiceBase
 from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.fitness import Fitness
 from t_search.evaluators.optimizer import Optimizer
@@ -36,6 +37,13 @@ class GoodMutationContext:
     fitness_diff: float
 
 @dataclass 
+class BadMutationContext:
+    term: str 
+    term_after: str
+    tests: Sequence[TestCaseContext]
+    fitness_diff: float    
+
+@dataclass 
 class PromptContext: 
     previous_good_mutations: Sequence[GoodMutationContext]
     term: str
@@ -43,6 +51,8 @@ class PromptContext:
     fitness: float
     op_desc: dict[str, str]        
     free_vars: Sequence[str]
+    max_depth: int 
+    max_constants: int
     loss_name: str = "nmse"
 
 # DONE: ICL --> best mutations and their effect 
@@ -67,7 +77,7 @@ Use C as a placeholder constant.
 Allowed operations:
 {% for k,v in op_desc.items() %}- {{k}}: {{v}}
 {% endfor %}
-Constraints: depth ≤ {{max_depth}}, constants ≤ {{max_constants}}.
+Constraints: depth ≤ {{max_depth}}, constants count ≤ {{max_constants}}.
 
 {% for e in previous_good_mutations -%}
     {% if loop.first %}
@@ -75,17 +85,17 @@ Constraints: depth ≤ {{max_depth}}, constants ≤ {{max_constants}}.
     {% endif %}
     {{loop.index}}. {{e.term}} → {{e.term_after}}  (Δ{{loss_name}} = {{e.fitness_diff|round(4)}})
     {% for t in e.tests %}
-    test{{loop.index}}: {% for var,val in t.vars.items() -%}{{var}}={{val|round(3)}}, {% endfor %}
-    Δ={{t.diff|round(3)}} → Δ={{t.diff_after|round(3)}}
+    test{{loop.index}}: {% for var,val in t.vars.items() -%}{{var}}={{val|round(4)}}, {% endfor %}
+    Δ={{t.diff|round(4)}} → Δ={{t.diff_after|round(4)}}
     {% endfor %}
 {% endfor %}
 
 Current term:
 {{term}}
-Hard tests:
+Hard tests (Δ - distance between actual and expected output):
 {% for t in tests %}
-  test{{loop.index}}: {% for v,val in t.vars.items() -%}{{v}}={{val|round(3)}}, {% endfor %}
-  Δ={{t.diff|round(3)}}
+  test{{loop.index}}: {% for v,val in t.vars.items() -%}{{v}}={{val|round(4)}}, {% endfor %}
+  Δ={{t.diff|round(4)}}
 {% endfor %}
 {{loss_name}}={{fitness|round(5)}}
 
@@ -93,7 +103,7 @@ Output (only these fields):
 - reasoning: 2–3 short bullets (why this change). 
 - mutated_term: final LISP expression
 
-Prefer minimal edits; keep syntax valid.
+Prefer minimal edits if possible; keep syntax valid.
 """
 
 # @dataclass
@@ -112,49 +122,78 @@ class MutationExecution:
     reasoning: list[str]
     mutated_term: str 
 
-class LLMMutation(TermMutation):
+mutation_response_schema = {
+    "type": "json_schema",
+    "name": "MutationExecution",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "reasoning": {
+                "type": "array",
+                "items": {"type": "string"}
+            },
+            "mutated_term": {
+                "type": "string"
+            }
+        },
+        "required": ["reasoning", "mutated_term"],
+        "additionalProperties": False
+    }
+}
+
+class LLMMutation(TermMutation, ServiceBase):
 
     def __init__(self, *,     
                  llm: LLMCaller,
-                 syntax: Syntax,
                  var_bindings: dict[str, torch.Tensor],
+                 ops: dict[str, Callable],
                  evaluator: Evaluator,
                  fitness: Fitness,
                  semantics: Semantics,
                  optimizer: Optimizer,
                  target: torch.Tensor,
-                 add_metrics: Callable,
-                #  prompt_template_path: str = "",
                  prompt_template: str = tests_prompt,
                  op_desc: dict[str, str] = ops_descriptions,
-                 max_num_examples: int = 3,
+                 num_last_mutations: int = 3,
                  max_num_tests: int = 3,
                  max_num_demo_tests: int = 2,
                  loss_name: str = "NMSE",
+                 response_log_file: str | None = None,
                  **kwargs):
         super().__init__(**kwargs)
-        self.max_num_examples = max_num_examples
+        self.num_last_mutations = num_last_mutations
         self.max_num_tests = max_num_tests
         self.max_num_demo_tests = max_num_demo_tests
         self.loss_name = loss_name
         from jinja2 import Template
+        self.ops = ops
         self.prompt_template: Template = Template(prompt_template)
         self.llm = llm
         self.op_desc = op_desc        
         self.good_mutations: list[GoodMutationContext] = []
+        self.bad_attempts: dict[Term, ]
         self.evaluator = evaluator
         self.optimizer = optimizer
         self.target = target
-        self.syntax = syntax
         self.var_bindings = var_bindings
-        self.add_metrics = add_metrics
+        self.fitness = fitness
+        self.semantics = semantics
+        self.response_log_file = None 
+        if response_log_file:
+            self.response_log_file = open(response_log_file, "a")
+        # self.add_metrics = add_metrics
+
+    def get_finalizer(self):
+        def fn():
+            self.response_log_file.close() if self.response_log_file else None
+        return fn
 
     def select_exemplars(self, term: str):
         ''' Currently we pick just last N good mutations 
             TODO: consider similarity, diversity metrics and NMSE improvement
                   (article on salient aspects)
         '''
-        if len(self.good_mutations) <= self.max_num_examples:
+        if len(self.good_mutations) <= self.num_last_mutations:
             return self.good_mutations
         rand_good_mutations = self.rnd.choice(
             self.good_mutations, 
@@ -179,7 +218,7 @@ class LLMMutation(TermMutation):
         del test_ids
         expected = self.target[hardest_test_ids].tolist()
         actual = outcomes[hardest_test_ids].tolist()
-        var_values = {var_name:var_vals[hardest_test_ids].tolist() for var_name, var_vals in self.var_bindings}
+        var_values = {var_name:var_vals[hardest_test_ids].tolist() for var_name, var_vals in self.var_bindings.items()}
         tests = [TestCaseContext(vars = {x: var_values[x][i] for x in self.var_bindings.keys()},
                                   expected = expected[i],
                                   actual = actual[i],
@@ -190,11 +229,13 @@ class LLMMutation(TermMutation):
         context = PromptContext(
             term = term_to_const_skeleton_str(term),
             tests = tests,
-            fitness = fitness,
-            op_desc = self.op_desc,
-            free_vars=[x.var_id for x in vars],
+            fitness = fitness.item(),
+            op_desc = {op:desc for op, desc in self.op_desc.items() if op in self.ops},
+            free_vars=[x.var_id for x in self.syntax.get_vars()],
             loss_name=self.loss_name,
-            previous_good_mutations = demonstrations
+            previous_good_mutations = demonstrations,
+            max_depth=self.syntax.max_term_depth,
+            max_constants=self.syntax.max_consts
         )
         
         try:
@@ -205,14 +246,14 @@ class LLMMutation(TermMutation):
             return None
 
         try:
-            response, usage = self.llm(prompt, MutationExecution)
+            response, usage = self.llm(prompt, mutation_response_schema)
             self.add_metrics(**usage)
         except Exception as e:
             print("Error during LLM prompting:", e)
             self.add_metrics(llm_error=1)
             return None
 
-        new_term = self.syntax.parse_const_skeleton(response.mutated_term)
+        new_term = self.syntax.parse_const_skeleton(response["mutated_term"])
         if new_term is None:
             self.add_metrics(llm_syn_invalid=1)
             return None
