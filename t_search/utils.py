@@ -193,6 +193,7 @@ def ransac_all_pairs(
     threshold=0.1,
     min_inliers=4,
     sample_size=2,
+    torch_gen: torch.Generator | None = None
 ):
     device = X.device
 
@@ -203,7 +204,7 @@ def ransac_all_pairs(
     # 1. sample random indices along dims axis
     # ------------------------------------------------------------
 
-    rand = torch.rand(iters, dims, device=device)
+    rand = torch.rand(iters, dims, device=device, generator=torch_gen)
 
     sample_idx = torch.topk(rand, k=sample_size, dim=1, largest=False).indices
     # shape: (iters, 2)

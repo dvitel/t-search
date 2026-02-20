@@ -69,6 +69,7 @@ class BaseCompetentMutation(PositionMutation, LincombMixin):
                     identity_atol: float = 1e-4,
                     identity_rtol: float = 1e-4,
                     with_reduction: bool = True,
+                    torch_gen: torch.Generator | None = None,
                     **kwargs
                     ):
         super().__init__(**kwargs)
@@ -81,6 +82,7 @@ class BaseCompetentMutation(PositionMutation, LincombMixin):
         self.identity_atol = identity_atol
         self.identity_rtol = identity_rtol
         self.with_reduction = with_reduction
+        self.torch_gen = torch_gen
 
     def mutate_position(self, term: Term, position: TermPos) -> Term | None:
         

@@ -541,7 +541,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         loss_per_start = optim_result.loss.mean(dim=-1)
         best_loss = torch.min(loss_per_start)
         context.optim_loss = best_loss.item()
-        mask = num_better_tests_per_start < (optim_result.loss.shape[-1] / 2.0)
+        mask = num_better_tests_per_start < 0.75 * optim_result.loss.shape[-1]
         optim_result.loss[mask, :] = torch.inf        
 
         if torch.any(torch.all(torch.isinf(optim_result.loss), dim=0)): # no minimas found
@@ -578,7 +578,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         if possible_const is not None:
             context.found_const = possible_const
             context.status = "const"
-            ordered_kb = [(0.0, 0.0, self.syntax.zero_value, possible_const)]
+            ordered_kb = [((-optim_vectors.shape[-1], 0.0), 0.0, self.syntax.zero_value, possible_const)]
         else: # we order lib terms by dist measure            
 
             # pos_k, pos_subterm, pos_b = self.decompose_lincomb(context.pos.term)
@@ -685,6 +685,9 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                     continue
                 if best_dist is None:
                     best_dist = dist
+                self.evaluator.eval(new_term)
+                if not self.semantics.is_valid(new_term):
+                    continue
                 if (self.pick_best_dists and dist > best_dist):
                     break
                 final_terms.append(new_term)
@@ -698,7 +701,6 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                 context.status = "no_valid_fill"
                 self.finalize_context(context)
                 return
-            self.evaluator.eval(final_terms)
             final_losses = self.fitness.get_fitness(final_terms, return_type="tensor")
             context.final_losses = final_losses.tolist()
             sort_ids = torch.argsort(final_losses)
@@ -714,7 +716,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                 filling = final_fillings[term_id]
                 loss = final_losses[term_id].item()
                 final_term = final_terms[term_id]
-                cont = LossBasedContinuation(context, filling=filling, final_term=final_term, final_loss=loss)
+                dist = final_dists[term_id]
+                cont = LossBasedContinuation(context, filling=filling, final_term=final_term, final_loss=loss, dist=dist)
                 conts.append(cont)
 
             del final_losses, sort_ids            
@@ -740,9 +743,11 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                 context.filling = filling
                 new_term = self.combine_new_term(context.term, context.pos, filling)
                 if new_term is not None:
+                    self.evaluator.eval(new_term)
+                    if not self.semantics.is_valid(new_term):
+                        continue
                     if best_dist is None:
                         best_dist = dist
-                    self.evaluator.eval(new_term)
                     loss = self.fitness.get_fitness(new_term).item()
                     context.final_loss = loss
                     context.dist = dist
@@ -911,7 +916,12 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             del bp_fitness
             parent_term = backtrack_parents[best_bp_id]
             return parent_term
-        return None
+        # resort to random restart when whole lineage is exhausted
+        depth = self.rnd.integers(1, self.backtrack_rand_grow_depth + 1)
+        rand_term = self.syntax.grow(depth)
+        self.evaluator.eval(rand_term)
+        return rand_term
+        # return None
 
     def __call__(self, population):   
 
@@ -940,9 +950,9 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                     #     print(f"Done {cur_term}")
                     pass
             else: 
-                if context.start_loss > 1e-4:
-                    loss_percent = (context.start_loss - context.final_loss) / context.start_loss
-                    self.stats_loss_improvement.append(1-loss_percent)
+                if (context.start_loss > 1e-6) and (context.final_loss < context.start_loss):
+                    loss_percent_left = context.final_loss / context.start_loss
+                    self.stats_loss_improvement.append(loss_percent_left)
                     self.stats_dists.append(context.dist[-1])
                 new_children.append(context.final_term)
         # should_exit = False

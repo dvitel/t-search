@@ -25,6 +25,7 @@ class BaseGeometricMutation(TermMutation, ServiceBase, LincombMixin):
                     identity_rtol: float = 1e-2,
                     with_reduction: bool = True, 
                     use_best_epsilon: bool = True,
+                    torch_gen: torch.Generator | None = None,
                     **kwargs):
         super().__init__(**kwargs)
         self.fitess = fitness
@@ -37,6 +38,7 @@ class BaseGeometricMutation(TermMutation, ServiceBase, LincombMixin):
         self.identity_rtol = identity_rtol
         self.with_reduction = with_reduction    
         self.use_best_epsilon = use_best_epsilon
+        self.torch_gen = torch_gen
 
     def trim_term(self, term: Term) -> Term:
         term_depth = self.syntax.get_depth(term)

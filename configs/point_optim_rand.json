@@ -81,11 +81,11 @@
                 "size": 1000,
                 "max_depth": 6
             } 
-        },        
+        },
         "selection": { 
             "type": "TS", 
             "module": "t_search.operators.classic",
-            "params": { "selection_size": 100, "tournament_size": 3, "add_pop": false } 
+            "params": { "selection_size": 100, "tournament_size": 3 } 
         },
         "survivor_selection": { 
             "type": "MuLambdaSurvivorSelection", 
@@ -106,7 +106,7 @@
         "lib_init": { 
             "type": "Up2D", 
             "module": "t_search.operators.classic",
-            "params": { "depth": 1, "const_1": true, "max_size": 1000 } 
+            "params": { "depth": 2, "const_1": true, "max_size": 1000 } 
         },    
         "const_optimizer": {
             "type": "ConstOptimizer",
@@ -140,11 +140,11 @@
                 "pick_best_dists": false,
                 "loss_threshold": 1e-02,
                 "loss_koef": 1.0,
-                "best_by_metric": "dist",
+                "best_by_metric": "loss",
                 "allow_no_better": false,
                 "backtrack": "rand",
                 "backtrack_rand_grow_depth": 6,
-                "num_worse_fillings": 3,
+                "num_worse_fillings": 2,
                 "with_pop_terms": false,
                 "with_subterms": false,
                 "max_query_size": 2048,

@@ -238,7 +238,8 @@ class LincombMixin:
                                                       iters=iters, 
                                                       threshold=0.01,
                                                       min_inliers=10, 
-                                                      sample_size=sample_size) #optimize_kb(X, targets)
+                                                      sample_size=sample_size,
+                                                      torch_gen=self.torch_gen) #optimize_kb(X, targets)
         # X_ = K.unsqueeze(-1) * X.unsqueeze(1) + B.unsqueeze(-1) # (n, k, dims) outputs 
         # del X
         # loss_per_term_per_test = self.fitness.get_loss(X_, custom_target=targets) # (n, k, dims) losses 
@@ -270,7 +271,8 @@ class LincombMixin:
                                                             iters=iters, 
                                                             threshold=0.01,
                                                             min_inliers=10, 
-                                                            sample_size=sample_size) #optimize_kb(X, targets)
+                                                            sample_size=sample_size,
+                                                            torch_gen=self.torch_gen) #optimize_kb(X, targets)
                 all_Ks.append(K)
                 all_Bs.append(B)
                 all_fit_counts.append(fit_counts)
