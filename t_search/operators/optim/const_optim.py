@@ -33,9 +33,12 @@ class ConstOptimMutation(TermMutation, ServiceBase):
     def __call__(self, population):
         if self.n_best_terms is not None:
             self.evaluator.eval(population)
-            fitness = self.fitness.get_fitness(population, return_type="tensor")
-            best_indices = fitness.topk(self.n_best_terms, largest=False).indices
-            self.preselected = set(population[i] for i in best_indices)
-            del fitness, best_indices
+            if len(population) <= self.n_best_terms:
+                self.preselected = set(population)
+            else:
+                fitness = self.fitness.get_fitness(population, return_type="tensor")
+                best_indices = fitness.topk(self.n_best_terms, largest=False).indices
+                self.preselected = set(population[i] for i in best_indices)
+                del fitness, best_indices
         children = super().__call__(population)
         return children

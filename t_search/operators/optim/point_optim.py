@@ -856,7 +856,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
 
             yield context
 
-        backtrack_term = self.get_backtrack_term(term) # here only can go to lineage
+        backtrack_term = self.get_backtrack_term(term, backtrack="lineage", no_random=True) # here only can go to lineage
         if backtrack_term is not None:
             yield from self.select_positions(backtrack_term)         
 
@@ -878,7 +878,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         if child.final_term is not None:
             super().add_to_lineage(parent, child.final_term)
 
-    def get_backtrack_term(self, term: Term, backtrack: Literal["lineage", "worse_fillings"] | None = None) -> Term | None:
+    def get_backtrack_term(self, term: Term, backtrack: Literal["lineage", "worse_fillings"] | None = None,
+                                no_random: bool = False) -> Term | None:
         if len(self.term_contexts.get(term, [])) > 0:
             return term # try self other position before any backtrack
         backtrack = backtrack or self.backtrack
@@ -940,13 +941,13 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             parent_term = backtrack_parents[best_bp_id]
             return parent_term
         # resort to random restart when whole lineage is exhausted
-        filtered_lineage = [fp for cur_terms in cur_lineage 
-                                for fp in [[t for t in cur_terms 
-                                                if self.worse_filling_counts.get(t, 0) < self.num_worse_fillings ]]
-                                if len(fp) > 0]
-        if len(filtered_lineage) > 0:
-            first_parent = filtered_lineage[0][0]
-            return first_parent
+        # filtered_lineage = [fp for cur_terms in cur_lineage 
+        #                         for fp in [[t for t in cur_terms 
+        #                                         if self.worse_filling_counts.get(t, 0) < self.num_worse_fillings ]]
+        #                         if len(fp) > 0]
+        # if len(filtered_lineage) > 0:
+        #     first_parent = filtered_lineage[0][0]
+        #     return first_parent
 
         # best subterm not yet optimized 
         # subterms = []
@@ -959,11 +960,13 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         #     best_subterm = subterms[best_subterm_id]
         #     del fitnesses
         #     return best_subterm
-        depth = self.rnd.integers(1, self.backtrack_rand_grow_depth + 1)
-        rand_term = self.syntax.grow(depth)
-        self.evaluator.eval(rand_term)
-        return rand_term
-        # return None
+        # if no_random:
+        #     return None
+        # depth = self.rnd.integers(1, self.backtrack_rand_grow_depth + 1)
+        # rand_term = self.syntax.grow(depth)
+        # self.evaluator.eval(rand_term)
+        # return rand_term
+        return None
 
     def __call__(self, population):   
 
@@ -1042,6 +1045,10 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             pass
         if len(new_children) == 0:
             raise EvSearchTermination("DEADEND")
+            # print("WARNING: Deadend reached, no new children generated and no backtrack possible, generating random term")
+            # new_term = self.syntax.grow(self.rnd.integers(1, self.backtrack_rand_grow_depth + 1))
+            # self.evaluator.eval(new_term)
+            # new_children.append(new_term)
         return new_children
     
     def get_finalizer(self):
