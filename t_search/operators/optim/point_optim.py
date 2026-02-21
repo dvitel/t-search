@@ -949,16 +949,16 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             return first_parent
 
         # best subterm not yet optimized 
-        subterms = []
-        for pos in self.syntax.get_positions(term):
-            if self.syntax.get_depth(pos.term) > 0 and pos.term not in self.term_contexts:
-                subterms.append(pos.term)
-        if len(subterms) > 0:
-            fitnesses = self.fitness.get_fitness(subterms, return_type="tensor")
-            best_subterm_id = torch.argmin(fitnesses).item()
-            best_subterm = subterms[best_subterm_id]
-            del fitnesses
-            return best_subterm
+        # subterms = []
+        # for pos in self.syntax.get_positions(term):
+        #     if self.syntax.get_depth(pos.term) > 0 and pos.term not in self.term_contexts:
+        #         subterms.append(pos.term)
+        # if len(subterms) > 0:
+        #     fitnesses = self.fitness.get_fitness(subterms, return_type="tensor")
+        #     best_subterm_id = torch.argmin(fitnesses).item()
+        #     best_subterm = subterms[best_subterm_id]
+        #     del fitnesses
+        #     return best_subterm
         depth = self.rnd.integers(1, self.backtrack_rand_grow_depth + 1)
         rand_term = self.syntax.grow(depth)
         self.evaluator.eval(rand_term)
