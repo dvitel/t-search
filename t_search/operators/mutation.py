@@ -32,6 +32,7 @@ class TermMutation(Operator):
         self.num_mut_tries = num_mut_tries
         self.cur_term_id: int = 0
         self.should_break_mutation = False
+        self.do_not_add_none = False
 
     def add_to_lineage(self, parent: Term, child: Term):
         # if self.has_lineage_loop(child, parent):
@@ -107,7 +108,7 @@ class TermMutation(Operator):
                 child = None
                 for mut_id in range(self.num_mut_tries):
                     child = self.mutate_term(term)
-                    if child is not None:
+                    if child is not None and child != term:
                         success += 1
                         self.add_to_lineage(term, child)
                         mutated_size -= 1
@@ -117,6 +118,8 @@ class TermMutation(Operator):
                         if self.should_break_mutation:
                             self.should_break_mutation = False
                             break
+                if self.do_not_add_none and child is None:
+                    continue
                 children.append(child if child is not None else term)
 
         self.add_metrics(success=success, fail=fail, repr=repr_cnt)        

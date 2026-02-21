@@ -36,7 +36,7 @@ class TermMutationContext:
     # tabu_markers: list[Term] = field(default_factory=list)
     start_loss: float | None = None
     optim_loss: float | None = None
-    num_minimas: int | None = None
+    # num_minimas: int | None = None
     # optim_vectors: list[torch.Tensor] = field(default_factory=list)
     num_optim_vectors: int = 0
     cont_id: int = 0
@@ -161,6 +161,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         self.with_reduction = with_reduction
         self.max_query_depth = max_query_depth
         self.with_subterms = with_subterms
+        # self.selected_backtrack_term: Term | None = None
 
         # next is for computing correlation
         self.stats_loss_improvement = []
@@ -184,6 +185,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         self.backtrack_rand_grow_depth = backtrack_rand_grow_depth
         self.num_worse_fillings = num_worse_fillings or 0
         self.worse_filling_counts: dict[Term, int] = {}
+        self.do_not_add_none = True
         # self.term_failed_contexts: list[TermMutationContext] = []
         # self.log: dict[Term, list[LogEntry]] = {} # stores current pop optimization log: wwhat positions tried, when and why they are failed
 
@@ -382,7 +384,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             # tabu_markers = context.tabu_markers,
             start_loss = old_context.start_loss,
             optim_loss = old_context.optim_loss,
-            num_minimas = old_context.num_minimas,
+            # num_minimas = old_context.num_minimas,
             num_optim_vectors = old_context.num_optim_vectors,
             found_const = old_context.found_const,            
             # lib_term_dists = old_context.lib_term_dists,
@@ -560,7 +562,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
 
         set_local_minimas_(optim_result)
 
-        slowest_traces = get_slowest_funs(optim_result, max_num_funs=self.num_minimas, set_num_minimas=lambda n: setattr(context, "num_minimas", n))
+        slowest_traces = get_slowest_funs(optim_result, max_num_funs=self.num_minimas) #set_num_minimas=lambda n: setattr(context, "num_minimas", n))
 
         clean_optim_result(optim_result)
 
@@ -838,6 +840,13 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             
         contexts = self.term_contexts[term]
 
+        if len(contexts) == 0: # already went though all positions of term - backtrack to lineage or worse filling
+            # self.selected_backtrack_term = 
+            # if self.selected_backtrack_term is not None:
+            #     yield from self.select_positions(self.selected_backtrack_term)
+            # else:
+            return 
+
         pos_id = 0
         num_pos = len(contexts) 
 
@@ -856,16 +865,22 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
 
             yield context
 
-        backtrack_term = self.get_backtrack_term(term, backtrack="lineage", no_random=True) # here only can go to lineage
-        if backtrack_term is not None:
-            yield from self.select_positions(backtrack_term)         
+        # backtrack_term = self.get_backtrack_term(term, backtrack="lineage", no_random=True) # here only can go to lineage
+        # if backtrack_term is not None:
+        #     yield from self.select_positions(backtrack_term)         
 
         return
     
     def mutate_term(self, term):
         base_fn = super().mutate_term
         def fn():
+            # self.selected_backtrack_term = None
             res = base_fn(term)
+            if res is None: 
+                backtrack_term = self.get_backtrack_term(term)
+                return backtrack_term
+                # if res is None and self.selected_backtrack_term is not None:
+                #     return self.selected_backtrack_term
             return res        
         # if self.debug:
         #     res, time = timed(fn)()
@@ -874,15 +889,14 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         res = fn()
         return res
 
-    def add_to_lineage(self, parent: Term, child: TermMutationContext):
-        if child.final_term is not None:
-            super().add_to_lineage(parent, child.final_term)
+    def add_to_lineage(self, parent: Term, child: Term | TermMutationContext):
+        if isinstance(child, TermMutationContext) and child.final_term is not None:
+            super().add_to_lineage(child.term, child.final_term)
 
-    def get_backtrack_term(self, term: Term, backtrack: Literal["lineage", "worse_fillings"] | None = None,
-                                no_random: bool = False) -> Term | None:
+    def get_backtrack_term(self, term: Term) -> Term | TermMutationContext | None:
         if len(self.term_contexts.get(term, [])) > 0:
             return term # try self other position before any backtrack
-        backtrack = backtrack or self.backtrack
+        # assert len(self.term_contexts.get(term, [])) == 0   
 
         # first, try to refill term_contexts from cached continuations 
 
@@ -895,39 +909,21 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                 self.add_context_continuation(cont, cont_id + 1)
             return term
 
-        if backtrack is None:
+        if self.backtrack is None:
             return None
-        if backtrack == "worse_fillings": # first try to find the best no_better attempt in the log and reattempt it
-            cur_num_worse_fillings = self.worse_filling_counts.setdefault(term, 0)
-            if cur_num_worse_fillings < self.num_worse_fillings:
-                self.worse_filling_counts[term] = cur_num_worse_fillings + 1
-                logs = self.mutation_log_per_term.get(term, [])
-                filtered_logs = [l for l in logs if l.status in ["delayed", "no_better"] and not l.reattempt and math.isfinite(l.final_loss)] # assert final_term is set already + loss and dist
-                if len(filtered_logs) == 0:
-                    self.worse_filling_counts[term] = 1e6
-                best_among_worst = None
-                for log in filtered_logs:
-                    assert log.final_term is not None and log.final_loss is not None
-                    if best_among_worst is None or log.final_loss < best_among_worst.final_loss:
-                        best_among_worst = log
-                if best_among_worst is not None:
-                    best_among_worst.reattempt = True # to filter out on next reattempt 
-                    if best_among_worst.status == "no_better": # we advance away from target, allow to do this once
-                        self.worse_filling_counts[best_among_worst.final_term] = 1e6
-                    return best_among_worst.final_term # NOTE: returns final_term itself as it is ready
-            else:
-                pass
-        elif backtrack == "rand":
+        if self.backtrack == "rand":
             depth = self.rnd.integers(1, self.backtrack_rand_grow_depth + 1)
             rand_term = self.syntax.grow(depth)
             self.evaluator.eval(rand_term)
-            return rand_term
-        # backtrack == "lineage" - pick prev parent
+            return rand_term  
+
         cur_lineage = self.get_term_history(term)
         filtered_lineage = [fp for cur_terms in cur_lineage 
                                 for fp in [[t for t in cur_terms 
                                                 if t in self.term_contexts and len(self.term_contexts[t]) > 0]]
                                 if len(fp) > 0]
+        top_n_parents = []
+        best_parent_loss = float('inf')
         if len(filtered_lineage) > 0:           
             # backtrack_terms = filtered_lineage[0] # parent, or random
             # pick best parent to continue 
@@ -935,38 +931,39 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             if len(backtrack_parents) == 1:
                 return backtrack_parents[0]
             bp_fitness = self.fitness.get_fitness(backtrack_parents, return_type="tensor")
-            best_bp_id = torch.argmin(bp_fitness).item()
+            best_bp_ids = torch.argsort(bp_fitness)
             # best_bp_id = self.rnd.choice(len(backtrack_parents))
+            best_parent_loss = bp_fitness[best_bp_ids[0]].item()
+            top_n_parents = [backtrack_parents[i] for i in best_bp_ids[:2].tolist()]
             del bp_fitness
-            parent_term = backtrack_parents[best_bp_id]
-            return parent_term
-        # resort to random restart when whole lineage is exhausted
-        # filtered_lineage = [fp for cur_terms in cur_lineage 
-        #                         for fp in [[t for t in cur_terms 
-        #                                         if self.worse_filling_counts.get(t, 0) < self.num_worse_fillings ]]
-        #                         if len(fp) > 0]
-        # if len(filtered_lineage) > 0:
-        #     first_parent = filtered_lineage[0][0]
-        #     return first_parent
+                      
+        best_among_worst = None
+        if self.backtrack == "worse_fillings": # first try to find the best no_better attempt in the log and reattempt it
+            cur_num_worse_fillings = self.worse_filling_counts.setdefault(term, 0)
+            if cur_num_worse_fillings < self.num_worse_fillings:
+                self.worse_filling_counts[term] = cur_num_worse_fillings + 1
+                logs = self.mutation_log_per_term.get(term, [])
+                filtered_logs = [l for l in logs if l.status in ["delayed", "no_better"] and not l.reattempt and l.final_loss < best_parent_loss] # assert final_term is set already + loss and dist
+                if len(filtered_logs) == 0:
+                    self.worse_filling_counts[term] = 1e6
+                else:
+                    best_among_worst = self.rnd.choice(filtered_logs)
+                # for log in filtered_logs:
+                #     assert log.final_term is not None and log.final_loss is not None
+                #     if best_among_worst is None or log.final_loss < best_among_worst.final_loss:
+                #         best_among_worst = log
+                # if best_among_worst is not None:
+                    best_among_worst.reattempt = True # to filter out on next reattempt 
+                    if best_among_worst.status == "no_better": # we advance away from target, allow to do this once
+                        self.worse_filling_counts[best_among_worst.final_term] = 1e6
+                    # return best_among_worst.final_term # NOTE: returns final_term itself as it is ready
+            else:
+                pass
 
-        # best subterm not yet optimized 
-        # subterms = []
-        # for pos in self.syntax.get_positions(term):
-        #     if self.syntax.get_depth(pos.term) > 0 and pos.term not in self.term_contexts:
-        #         subterms.append(pos.term)
-        # if len(subterms) > 0:
-        #     fitnesses = self.fitness.get_fitness(subterms, return_type="tensor")
-        #     best_subterm_id = torch.argmin(fitnesses).item()
-        #     best_subterm = subterms[best_subterm_id]
-        #     del fitnesses
-        #     return best_subterm
-        # if no_random:
-        #     return None
-        # depth = self.rnd.integers(1, self.backtrack_rand_grow_depth + 1)
-        # rand_term = self.syntax.grow(depth)
-        # self.evaluator.eval(rand_term)
-        # return rand_term
-        return None
+        if best_among_worst is None:
+            rnd_parent = self.rnd.choice(top_n_parents) if len(top_n_parents) > 0 else None
+            return rnd_parent
+        return best_among_worst
 
     def __call__(self, population):   
 
@@ -987,13 +984,15 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         # retry_terms = []
         for context in mutations:
             if isinstance(context, Term): # retry term
-                backtrack_term = self.get_backtrack_term(context)
-                if backtrack_term is not None:
-                    new_children.append(backtrack_term)
-                else:
-                    # if self.debug:
-                    #     print(f"Done {cur_term}")
-                    pass
+                new_children.append(context)
+                # backtrack_term = self.get_backtrack_term(context)
+                # if backtrack_term is not None:
+                #     new_children.append(backtrack_term)
+                # else:
+                #     # if self.debug:
+                #     #     print(f"Done {cur_term}")
+                #     pass
+                pass
             else: 
                 if (context.start_loss > 1e-6) and (context.final_loss < context.start_loss):
                     loss_percent_left = context.final_loss / context.start_loss
@@ -1044,8 +1043,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             new_children = list(set.difference(self.term_frontier, self.deadends))
             pass
         if len(new_children) == 0:
+            print("WARNING: Deadend reached, no new children generated and no backtrack possible")
             raise EvSearchTermination("DEADEND")
-            # print("WARNING: Deadend reached, no new children generated and no backtrack possible, generating random term")
             # new_term = self.syntax.grow(self.rnd.integers(1, self.backtrack_rand_grow_depth + 1))
             # self.evaluator.eval(new_term)
             # new_children.append(new_term)
