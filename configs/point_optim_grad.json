@@ -65,7 +65,7 @@
         },
         "evaluator": {
             "type": "Evaluator", 
-            "params": {        
+            "params": {
                 "with_inner_evals": true,
                 "max_root_evals": 500000,
                 "max_evals": 500000,
@@ -108,18 +108,6 @@
             "module": "t_search.operators.classic",
             "params": { "depth": 2, "const_1": true, "max_size": 1000 } 
         },
-        "const_optimizer": {
-            "type": "ConstOptimizer",
-            "module": "t_search.evaluators.const_optimizer",
-            "params": {
-                "num_starts": 5,
-                "max_evals": 20,
-                "lr": 0.05,
-                "tolerance_change": 1e-09,
-                "tolerance_grad": 1e-10,
-                "loss_threshold": 1e-08
-            }
-        },
         "point_optim": {
             "type": "PointOptim",
             "module": "t_search.operators.optim.point_optim",
@@ -135,8 +123,8 @@
                 "tolerance_grad": 1e-07,
                 "with_tabu": true,
                 "num_minimas": 5,
-                "num_lib_terms": 3,
-                "num_conts": 3,
+                "num_lib_terms": 5,
+                "num_conts": 0,
                 "pick_best_dists": false,
                 "loss_threshold": 1e-02,
                 "loss_koef": 1.0,
@@ -144,7 +132,7 @@
                 "allow_no_better": false,
                 "backtrack": "worse_fillings",
                 "backtrack_rand_grow_depth": 6,
-                "num_worse_fillings": 2,
+                "num_worse_fillings": 3,
                 "with_pop_terms": false,
                 "with_subterms": false,
                 "max_query_size": 2048,
@@ -156,15 +144,26 @@
                 "rate": 1.0
             }
         },
+        "const_optimizer": {
+            "type": "ConstOptimizer",
+            "module": "t_search.evaluators.const_optimizer",
+            "params": {
+                "num_starts": 5,
+                "max_evals": 20,
+                "lr": 0.05,
+                "tolerance_change": 1e-09,
+                "tolerance_grad": 1e-10,
+                "loss_threshold": 1e-08
+            }
+        },
         "const_optim_mutation": {
             "type": "ConstOptimMutation",
             "module": "t_search.operators.optim",
             "params": {
                 "const_optimizer": {"!ref": "const_optimizer"},
-                "loss_threshold": 1e-04,
-                "only_best_term": true,
+                "only_best_term": false,
                 "max_pos_tries": 1,
-                "rate": 1.0
+                "rate": 0.1
             }
         }
     },
@@ -172,6 +171,7 @@
     "operator_service_names": [
         "selection",
         "point_optim",
+        "const_optim_mutation",
         "evaluator",
         "survivor_selection"
     ],
@@ -181,5 +181,7 @@
     "fitness_service_name": "fitness",
     "semantics_service_name": "semantics",
     "max_gen": 1000,
-    "max_dim_size": 1000
+    "max_dim_size": 100,
+    "const_min": -1e02,
+    "const_max": 1e02
 }

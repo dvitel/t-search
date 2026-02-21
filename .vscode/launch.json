@@ -33,12 +33,12 @@
             "request": "launch",
             "module": "t_search",
             "args": [
-                "--dataset", "korns_13",
+                "--dataset", "koza_3",
                 "--config", "configs/point_optim.json",
                 "--output", "data/dbg.jsonlist",
                 "--device", "cuda",
                 "--dtype", "float32",
-                "--seed", "19",
+                "--seed", "42",
                 "--debug"
             ],
             "console": "integratedTerminal",
@@ -77,7 +77,7 @@
             "request": "launch",
             "module": "t_search",
             "args": [
-                "--dataset", "test_0",
+                "--dataset", "korns_13",
                 "--config", "configs/koza.json",
                 "--output", "data/dbg.jsonlist",
                 "--device", "cuda",

@@ -30,7 +30,8 @@ from sklearn.base import BaseEstimator, RegressorMixin
 from t_search.syntax import Term
 from t_search.evaluators import Evaluator
 
-def detect_const_range(target: torch.Tensor, var_bindings: Sequence[torch.Tensor]) -> torch.Tensor:
+def detect_const_range(target: torch.Tensor, var_bindings: Sequence[torch.Tensor],
+                        const_min: float, const_max: float) -> torch.Tensor:
     min_value = target.min()
     max_value = target.max()
     if torch.isclose(
@@ -48,6 +49,11 @@ def detect_const_range(target: torch.Tensor, var_bindings: Sequence[torch.Tensor
     dist = const_range[0] - const_range[1]
     const_range[0] -= 0.1 * dist
     const_range[1] += 0.1 * dist
+
+    if const_range[0] < const_min:
+        const_range[0] = const_min
+    if const_range[1] > const_max:
+        const_range[1] = const_max
     return const_range
 
 def get_var_bindings(free_vars: torch.Tensor) -> dict[str, torch.Tensor]:
@@ -82,6 +88,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         syntax_service_name: str,
         fitness_service_name: str,
         semantics_service_name: str,
+        const_min: float = -1e6,
+        const_max: float = 1e6,
         final_reducer_service_name: str = "",
         # eval_listeners: list[str] = [],
 
@@ -149,6 +157,8 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.is_fitted_: bool = False
         self.status: GPSolverStatus = "INIT"
         self.start_time: float = 0
+        self.const_min = const_min
+        self.const_max = const_max
 
         self.init: Initialization | None = None 
         self.operators: list[Operator] = []
@@ -195,7 +205,7 @@ class GPSolver(BaseEstimator, RegressorMixin):
 
         self.target = target.to(device=self.device, dtype=self.dtype)
 
-        self.const_range = detect_const_range(self.target, self.free_vars)
+        self.const_range = detect_const_range(self.target, self.free_vars, self.const_min, self.const_max)
 
         self.zero = torch.zeros((1,), dtype = self.target.dtype, device = self.target.device)
         self.one = torch.ones((1,), dtype = self.target.dtype, device = self.target.device)
@@ -353,6 +363,10 @@ class GPSolver(BaseEstimator, RegressorMixin):
         self.add_metrics(init_time=elapsed)
         _, elapsed = timed(self.evaluator.eval)(self.cur_population)
         self.add_metrics(init_eval_time=elapsed, total_eval_time=elapsed)
+
+        for service in self.services.values():
+            if isinstance(service, ServiceBase):
+                service.delayed_init()        
 
         while self.gen < self.max_gen:
             iter_start_time = perf_counter()
@@ -599,12 +613,17 @@ def config_pipeline(*, dataset:str, config: str, output="koza-{}.json", device='
     num_invalid = (~y_pred_valid_mask).sum().item()
     y_pred_valid = y_pred[y_pred_valid_mask]
     target_test_valid = target_test[y_pred_valid_mask]
-    nmse_value = nmse(y_pred_valid, target=target_test_valid, target_variance=torch.var(target_test_valid, unbiased=False))
+    num_valid = y_pred_valid_mask.sum().item()
+    if num_valid == 0:
+        nmse_value = float("inf")
+    else:
+        nmse_values = nmse(y_pred_valid, target=target_test_valid, target_variance=torch.var(target_test_valid, unbiased=False))
+        nmse_value = nmse_values.mean().item()
     file_name = os.path.basename(config).split(".")[0]
     metrics = {
         "config_name":file_name, 
         "dataset":dataset, 
-        'test_nmse':nmse_value.mean().item(), 
+        'test_nmse':nmse_value, 
         'test_pred_num_invalid': num_invalid,
         'test_num_samples': target_test.shape[0],
         'train_num_samples': target.shape[0],

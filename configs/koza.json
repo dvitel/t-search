@@ -73,18 +73,6 @@
                 "measure_max_len": 200
             }
         },
-        "const_optimizer": {
-            "type": "ConstOptimizer",
-            "module": "t_search.evaluators.const_optimizer",
-            "params": {
-                "num_starts": 5,
-                "max_evals": 20,
-                "lr": 0.05,
-                "tolerance_change": 1e-09,
-                "tolerance_grad": 1e-10,
-                "loss_threshold": 1e-08
-            }
-        },        
         "init": {
             "type": "RHH", 
             "module": "t_search.operators.classic",
@@ -125,15 +113,26 @@
                 "elitism": 10
             }
         },
+        "const_optimizer": {
+            "type": "ConstOptimizer",
+            "module": "t_search.evaluators.const_optimizer",
+            "params": {
+                "num_starts": 5,
+                "max_evals": 20,
+                "lr": 0.05,
+                "tolerance_change": 1e-09,
+                "tolerance_grad": 1e-10,
+                "loss_threshold": 1e-08
+            }
+        },
         "const_optim_mutation": {
             "type": "ConstOptimMutation",
             "module": "t_search.operators.optim",
             "params": {
                 "const_optimizer": {"!ref": "const_optimizer"},
-                "loss_threshold": 1e-04,
-                "only_best_term": true,
+                "only_best_term": false,
                 "max_pos_tries": 1,
-                "rate": 1.0
+                "rate": 0.01
             }
         }
     },
@@ -142,6 +141,7 @@
         "selection",
         "crossover",
         "mutation",
+        "const_optim_mutation",
         "evaluator",
         "survivor_selection"
     ],
@@ -151,5 +151,7 @@
     "fitness_service_name": "fitness",
     "semantics_service_name": "semantics",
     "max_gen": 1000,
-    "max_dim_size": 1000
+    "max_dim_size": 100,
+    "const_min": -1e02,
+    "const_max": 1e02
 }

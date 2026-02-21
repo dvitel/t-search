@@ -214,7 +214,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         self.mutation_log_per_term: dict[str, TermMutationContext] = {}
         # self.debug = debug
 
-    def init(self):
+    def delayed_init(self):
 
         lib_terms = self.init_op() # these terms will be used for sketches
         terms = sorted(set(lib_terms), key=lambda t: self.syntax._get_term_priority(t))
@@ -367,11 +367,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             # if self.debug:
             #     print(f"Tabu: {optim_term}")
             self.tabu_set.add(optim_term)
-    
-    def add_context_continuation(self, cont: DistBasedContinuation | LossBasedContinuation, cont_id: int) -> None:
 
-        old_context = cont.context
-
+    def copy_context(self, old_context: TermMutationContext) -> TermMutationContext:
         context = TermMutationContext(
             gen = old_context.gen,
             term = old_context.term,
@@ -379,7 +376,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             stripped_pos_term= old_context.stripped_pos_term,
             pos_priority = old_context.pos_priority,
             pos_id = old_context.pos_id,
-            cont_id = cont_id,
+            cont_id = 0,
             num_pos = old_context.num_pos,
             optim_term = old_context.optim_term,
             # tabu_markers = context.tabu_markers,
@@ -393,11 +390,20 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             # --- 
             final_losses = [],
             final_loss = float('inf'),
-            dist = cont.dist,
+            dist = float('inf'),
             final_term = None,
             filling = None,
-            status = "active"            
+            status = "active",
+            reattempt=False        
         )
+        return context
+    
+    def add_context_continuation(self, cont: DistBasedContinuation | LossBasedContinuation, cont_id: int) -> None:
+
+        old_context = cont.context
+        context = self.copy_context(old_context)
+        context.cont_id = cont_id
+        context.dist = cont.dist
 
         if isinstance(cont, LossBasedContinuation):
             context.filling = cont.filling
@@ -536,13 +542,16 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         #     self.add_to_tabu(optim_state)
         #     return None                    
 
-        # total_threshold_optim_result_(optim_result, self.loss_threshold)
+        # # total_threshold_optim_result_(optim_result, self.loss_threshold)
         num_better_tests_per_start = (optim_result.loss < loss_threshold).sum(dim=-1)
         loss_per_start = optim_result.loss.mean(dim=-1)
         best_loss = torch.min(loss_per_start)
         context.optim_loss = best_loss.item()
         mask = num_better_tests_per_start < 0.75 * optim_result.loss.shape[-1]
         optim_result.loss[mask, :] = torch.inf        
+        # loss_per_start = optim_result.loss.mean(dim=-1)
+        # mask = loss_per_start >= loss_threshold
+        # optim_result.loss[mask, :] = torch.inf        
 
         if torch.any(torch.all(torch.isinf(optim_result.loss), dim=0)): # no minimas found
             self.add_to_tabu(context.optim_term)
@@ -616,7 +625,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                         del uniq_ids
 
             ordered_kb = self.optimize_lincomb_batched(query_terms, optim_vectors_plain, iters=128,
-                                                        candidates_batch=64 if self.semantics.dims >= 100 else 256,
+                                                        candidates_batch=64 if self.semantics.dims > 100 else 256,
                                                         targets_batch=16)
 
             del optim_vectors
@@ -717,13 +726,23 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                 loss = final_losses[term_id].item()
                 final_term = final_terms[term_id]
                 dist = final_dists[term_id]
-                cont = LossBasedContinuation(context, filling=filling, final_term=final_term, final_loss=loss, dist=dist)
-                conts.append(cont)
+                new_context = self.copy_context(context)
+                new_context.final_loss = loss
+                new_context.final_term = final_term
+                new_context.filling = filling
+                new_context.dist = dist
+                # new_context.status = "no_better"
+                self.finalize_context(new_context)
+                if new_context.status == "active":
+                    new_context.status = "delayed"
+                # cont = LossBasedContinuation(context, filling=filling, final_term=final_term, final_loss=loss, dist=dist)
+                self.mutation_log_per_term.setdefault(context.term, []).append(new_context)
+                # conts.append(cont)
 
             del final_losses, sort_ids            
 
-            if len(conts) > 0:
-                self.term_continuations.setdefault(context.term, []).extend(conts)
+            # if len(conts) > 0:
+            #     self.term_continuations.setdefault(context.term, []).extend(conts)
 
         elif self.best_by_metric == "dist":
             context.final_loss = float('inf')
@@ -882,7 +901,9 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             if cur_num_worse_fillings < self.num_worse_fillings:
                 self.worse_filling_counts[term] = cur_num_worse_fillings + 1
                 logs = self.mutation_log_per_term.get(term, [])
-                filtered_logs = [l for l in logs if l.status == "no_better" and not l.reattempt and math.isfinite(l.final_loss) and math.isfinite(l.dist[-1])] # assert final_term is set already + loss and dist
+                filtered_logs = [l for l in logs if l.status in ["delayed", "no_better"] and not l.reattempt and math.isfinite(l.final_loss)] # assert final_term is set already + loss and dist
+                if len(filtered_logs) == 0:
+                    self.worse_filling_counts[term] = 1e6
                 best_among_worst = None
                 for log in filtered_logs:
                     assert log.final_term is not None and log.final_loss is not None
@@ -890,6 +911,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                         best_among_worst = log
                 if best_among_worst is not None:
                     best_among_worst.reattempt = True # to filter out on next reattempt 
+                    if best_among_worst.status == "no_better": # we advance away from target, allow to do this once
+                        self.worse_filling_counts[best_among_worst.final_term] = 1e6
                     return best_among_worst.final_term # NOTE: returns final_term itself as it is ready
             else:
                 pass
@@ -917,6 +940,25 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             parent_term = backtrack_parents[best_bp_id]
             return parent_term
         # resort to random restart when whole lineage is exhausted
+        filtered_lineage = [fp for cur_terms in cur_lineage 
+                                for fp in [[t for t in cur_terms 
+                                                if self.worse_filling_counts.get(t, 0) < self.num_worse_fillings ]]
+                                if len(fp) > 0]
+        if len(filtered_lineage) > 0:
+            first_parent = filtered_lineage[0][0]
+            return first_parent
+
+        # best subterm not yet optimized 
+        subterms = []
+        for pos in self.syntax.get_positions(term):
+            if self.syntax.get_depth(pos.term) > 0 and pos.term not in self.term_contexts:
+                subterms.append(pos.term)
+        if len(subterms) > 0:
+            fitnesses = self.fitness.get_fitness(subterms, return_type="tensor")
+            best_subterm_id = torch.argmin(fitnesses).item()
+            best_subterm = subterms[best_subterm_id]
+            del fitnesses
+            return best_subterm
         depth = self.rnd.integers(1, self.backtrack_rand_grow_depth + 1)
         rand_term = self.syntax.grow(depth)
         self.evaluator.eval(rand_term)

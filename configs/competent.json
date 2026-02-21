@@ -65,7 +65,7 @@
         },
         "evaluator": {
             "type": "Evaluator", 
-            "params": {      
+            "params": {
                 "with_inner_evals": true,
                 "max_root_evals": 500000,
                 "max_evals": 500000,
@@ -105,14 +105,11 @@
                 "size": 1000,
                 "max_depth": 6
             } 
-        },        
+        },
         "selection": { 
             "type": "CompetentSelection", 
             "module": "t_search.operators.competent",
-            "params": { 
-                "selection_size": 100, 
-                "tournament_size": 3
-            } 
+            "params": { "selection_size": 100, "tournament_size": 3 } 
         },
         "mutation": { 
             "type": "CompetentMutation", 
@@ -143,6 +140,28 @@
                 "combine": false,
                 "elitism": 10
             }
+        },
+        "const_optimizer": {
+            "type": "ConstOptimizer",
+            "module": "t_search.evaluators.const_optimizer",
+            "params": {
+                "num_starts": 5,
+                "max_evals": 20,
+                "lr": 0.05,
+                "tolerance_change": 1e-09,
+                "tolerance_grad": 1e-10,
+                "loss_threshold": 1e-08
+            }
+        },
+        "const_optim_mutation": {
+            "type": "ConstOptimMutation",
+            "module": "t_search.operators.optim",
+            "params": {
+                "const_optimizer": {"!ref": "const_optimizer"},
+                "only_best_term": false,
+                "max_pos_tries": 1,
+                "rate": 0.1
+            }
         }
     },
     "init_service_name": "init",
@@ -150,6 +169,7 @@
         "selection",
         "crossover",
         "mutation",
+        "const_optim_mutation",
         "evaluator",
         "survivor_selection"
     ],
@@ -159,5 +179,7 @@
     "fitness_service_name": "fitness",
     "semantics_service_name": "semantics",
     "max_gen": 1000,
-    "max_dim_size": 1000
+    "max_dim_size": 100,
+    "const_min": -1e02,
+    "const_max": 1e02
 }

@@ -73,18 +73,6 @@
                 "measure_max_len": 200
             }
         },
-        "init_old": {
-            "type": "SemanticallyDrivenInitialization", 
-            "module": "t_search.operators.semantic",
-            "params": { 
-                "atol": 1e-4,
-                "rtol": 1e-4,
-                "semantic_duplicate_retries": 10,
-                "max_depth": 6,                
-                "max_l2": 1e20,
-                "size": 1000 
-            } 
-        },
         "init": {
             "type": "RHH", 
             "module": "t_search.operators.classic",
@@ -93,7 +81,7 @@
                 "size": 1000,
                 "max_depth": 6
             } 
-        },        
+        },
         "selection": { 
             "type": "SemanticTournamentSelection", 
             "module": "t_search.operators.semantic",
@@ -133,6 +121,28 @@
                 "combine": false,
                 "elitism": 10
             }
+        },
+        "const_optimizer": {
+            "type": "ConstOptimizer",
+            "module": "t_search.evaluators.const_optimizer",
+            "params": {
+                "num_starts": 5,
+                "max_evals": 20,
+                "lr": 0.05,
+                "tolerance_change": 1e-09,
+                "tolerance_grad": 1e-10,
+                "loss_threshold": 1e-08
+            }
+        },
+        "const_optim_mutation": {
+            "type": "ConstOptimMutation",
+            "module": "t_search.operators.optim",
+            "params": {
+                "const_optimizer": {"!ref": "const_optimizer"},
+                "only_best_term": false,
+                "max_pos_tries": 1,
+                "rate": 0.01
+            }
         }
     },
     "init_service_name": "init",
@@ -140,6 +150,7 @@
         "selection",
         "crossover",
         "mutation",
+        "const_optim_mutation",
         "evaluator",
         "survivor_selection"
     ],
@@ -149,5 +160,7 @@
     "fitness_service_name": "fitness",
     "semantics_service_name": "semantics",
     "max_gen": 1000,
-    "max_dim_size": 1000
+    "max_dim_size": 100,
+    "const_min": -1e02,
+    "const_max": 1e02
 }

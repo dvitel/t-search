@@ -36,7 +36,7 @@ class DesiredSemanticLib(ServiceBase):
         self.lib_terms: list[Term] = []
         self.lib_vectors: torch.Tensor | None = None
 
-    def init(self):
+    def delayed_init(self):
         lib_terms = self.init_op()
         self.evaluator.eval(lib_terms)
         valid_terms = [t for t in lib_terms if self.semantics.is_valid(t)]
