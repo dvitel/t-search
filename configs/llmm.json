@@ -134,8 +134,7 @@
             "module": "t_search.operators.optim",
             "params": {
                 "const_optimizer": {"!ref": "const_optimizer"},
-                "loss_threshold": 1e-04,
-                "only_best_term": true,
+                "n_best_terms": 10,
                 "max_pos_tries": 1,
                 "rate": 1.0
             }

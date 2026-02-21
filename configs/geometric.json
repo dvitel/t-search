@@ -142,9 +142,9 @@
             "module": "t_search.operators.optim",
             "params": {
                 "const_optimizer": {"!ref": "const_optimizer"},
-                "only_best_term": false,
+                "n_best_terms": 10,
                 "max_pos_tries": 1,
-                "rate": 0.01
+                "rate": 1.0
             }
         }
     },

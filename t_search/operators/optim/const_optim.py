@@ -14,27 +14,28 @@ class ConstOptimMutation(TermMutation, ServiceBase):
                  evaluator: Evaluator,
                  fitness: Fitness,
                  const_optimizer: ConstOptimizer,
-                 loss_threshold: float | None = None, # start optimizing only when bellow this level
-                 only_best_term: bool = False, # optimize only new best if it is given
+                 n_best_terms: int | None = None,
                  **kwargs):
         super().__init__(**kwargs)
         self.fitness = fitness
         self.evaluator = evaluator
         self.const_optimizer = const_optimizer
-        self.loss_threshold = loss_threshold
-        self.only_best_term = only_best_term
+        self.n_best_terms = n_best_terms    
+        self.preselected: set[Term] = set()
 
     def mutate_term(self, term: Term) -> Term | None:
 
-        if self.only_best_term and self.fitness.best_term != term:
-            return term 
-
-        if self.loss_threshold is None:
-            new_term = self.const_optimizer.optimize(term)        
-            return new_term
-        self.evaluator.eval(term)
-        fitness = self.fitness.get_fitness(term)
-        if fitness < self.loss_threshold:
-            new_term = self.const_optimizer.optimize(term)        
-            return new_term
-        return term
+        if self.n_best_terms is not None and term not in self.preselected:
+            return None
+        new_term = self.const_optimizer.optimize(term)        
+        return new_term
+    
+    def __call__(self, population):
+        if self.n_best_terms is not None:
+            self.evaluator.eval(population)
+            fitness = self.fitness.get_fitness(population, return_type="tensor")
+            best_indices = fitness.topk(self.n_best_terms, largest=False).indices
+            self.preselected = set(population[i] for i in best_indices)
+            del fitness, best_indices
+        children = super().__call__(population)
+        return children
