@@ -33,12 +33,12 @@
             "request": "launch",
             "module": "t_search",
             "args": [
-                "--dataset", "korns_13",
+                "--dataset", "r_1",
                 "--config", "configs/point_optim_koef.json",
                 "--output", "data/dbg.jsonlist",
                 "--device", "cuda",
                 "--dtype", "float32",
-                "--seed", "1",
+                "--seed", "11",
                 "--debug"
             ],
             "console": "integratedTerminal",

@@ -453,8 +453,8 @@ if __name__ == "__main__":
     base_folder = "data/results-02-22"
     results_file = "results.jsonlist"
     datasets = ['r_1', 'r_2', 'keijzer_3', 'keijzer_4', 'keijzer_11', 'nguyen_12', 'pagie_1', 'vladislavleva_1', 'koza_3', 'keijzer_6', 'vladislavleva_8', 'korns_13'] #, 'korns_14', 'korns_15']
-    # config_names = ['koza', 'semantic', 'geometric', 'competent', 'point_optim_grad']
-    config_names = ['point_optim', 'point_optim_rand', 'point_optim_grad']
+    config_names = ['koza', 'semantic', 'geometric', 'competent', 'point_optim_grad']
+    # config_names = ['point_optim', 'point_optim_rand', 'point_optim_grad']
     max_seed = 30
     seeds = list(range(max_seed))
     config_labels={'koza': 'Kz', 'semantic': 'Sem', 'geometric': "Geom", 'competent': 'CO', 'point_optim': 'PO', 'point_optim_rand': 'PO$_r$', 'point_optim_grad': 'PO$_g$'}
@@ -463,7 +463,7 @@ if __name__ == "__main__":
         'nguyen_12': 'Ng12', 'pagie_1': 'Pg1', 'vladislavleva_1': 'Vl1', 'koza_3': 'Kz3',
         'keijzer_6': 'Kj6', 'vladislavleva_8': 'Vl8', 'korns_13': 'Kn13', 'korns_14': 'Kn14', 'korns_15': 'Kn15'
     }
-    colors = {"koza": "blue", "semantic": "orange", "point_optim": "#238423", "point_optim_rand": "#7ccf6b", "point_optim_grad": "#0C460C", "geometric": "red", "competent": "purple"}
+    colors = {"koza": "blue", "semantic": "orange", "point_optim": "#238423", "point_optim_rand": "#607491", "point_optim_grad": "#0C460C", "geometric": "red", "competent": "purple"}
 
     draw_trace(base_path = base_folder, results_file = results_file,
                     metric="evaluator.loss_trace", datasets=datasets, 
@@ -472,7 +472,7 @@ if __name__ == "__main__":
                     config_labels=config_labels,
                     dataset_names=dataset_names,
                     colors=colors,
-                    output_prefix="c-po-", figsize=(6, 4))
+                    output_prefix="c-grd-", figsize=(6, 4))
     draw_bars(
         base_path=base_folder, 
         results_file=results_file,
@@ -483,7 +483,7 @@ if __name__ == "__main__":
         config_labels=config_labels,
         dataset_names=dataset_names,
         colors=colors,
-        output_prefix="v-po-", 
+        output_prefix="v-grd-", 
         figsize=(6, 4)
     )    
     pass

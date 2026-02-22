@@ -625,6 +625,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                         del query_vectors
                         query_terms = [query_terms[i] for i in uniq_ids]
                         del uniq_ids
+                    del subterm_outputs
 
             ordered_kb = self.optimize_lincomb_batched(query_terms, optim_vectors_plain, iters=128,
                                                         candidates_batch=64 if self.semantics.dims > 100 else 256,
