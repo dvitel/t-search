@@ -132,7 +132,7 @@
                 "allow_no_better": false,
                 "backtrack": "worse_fillings",
                 "backtrack_rand_grow_depth": 6,
-                "num_worse_fillings": 1,
+                "num_worse_fillings": 10,
                 "with_pop_terms": false,
                 "with_subterms": false,
                 "max_query_size": 2048,

@@ -34,11 +34,11 @@
             "module": "t_search",
             "args": [
                 "--dataset", "korns_13",
-                "--config", "configs/point_optim.json",
+                "--config", "configs/point_optim_koef.json",
                 "--output", "data/dbg.jsonlist",
                 "--device", "cuda",
                 "--dtype", "float32",
-                "--seed", "19",
+                "--seed", "1",
                 "--debug"
             ],
             "console": "integratedTerminal",
