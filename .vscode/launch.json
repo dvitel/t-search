@@ -34,7 +34,7 @@
             "module": "t_search",
             "args": [
                 "--dataset", "r_1",
-                "--config", "configs/point_optim_koef.json",
+                "--config", "configs/point_optim_sub.json",
                 "--output", "data/dbg.jsonlist",
                 "--device", "cuda",
                 "--dtype", "float32",

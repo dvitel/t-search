@@ -602,9 +602,9 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                 present_terms = set(self.query_terms)
                 new_terms = []
                 # pos_max_depth = min(self.syntax.max_term_depth - context.pos.at_depth, self.max_query_depth)
-                pos_max_depth = self.syntax.get_depth(context.pos.term) - 2 # for lincomb
+                pos_max_depth = min(self.backtrack_rand_grow_depth, self.syntax.get_depth(context.pos.term)) # for lincomb
                 for subpos in self.syntax.get_positions(context.term):
-                    if subpos.term not in present_terms and self.syntax.get_depth(subpos.term) <= pos_max_depth:
+                    if subpos.term not in present_terms and not isinstance(subpos.term, Value) and self.syntax.get_depth(subpos.term) <= pos_max_depth:
                         present_terms.add(subpos.term)
                         new_terms.append(subpos.term)
                 if len(new_terms) > 0:
@@ -625,7 +625,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                         del query_vectors
                         query_terms = [query_terms[i] for i in uniq_ids]
                         del uniq_ids
-                    del subterm_outputs
+                    else:
+                        del subterm_outputs
 
             ordered_kb = self.optimize_lincomb_batched(query_terms, optim_vectors_plain, iters=128,
                                                         candidates_batch=64 if self.semantics.dims > 100 else 256,
