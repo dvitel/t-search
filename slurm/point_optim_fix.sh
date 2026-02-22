@@ -15,8 +15,8 @@ module purge
 
 config='point_optim'
 
-seeds=(2 4 11 14 15 29 20 19 19 18 19 20 20 19 19 20 2)
-datasets=('keijzer_4' 'keijzer_4' 'keijzer_4' 'keijzer_4' 'keijzer_4' 'keijzer_4' 'pagie_1' 'pagie_1' 'keijzer_6' 'korns_13' 'korns_13' 'korns_13' 'korns_14' 'korns_14' 'korns_15' 'korns_15' 'korns_15') 
+seeds=(11 13 16 22)
+datasets=('korns_14' 'korns_13' 'korns_15' 'korns_14') 
 seed=${seeds[$SLURM_ARRAY_TASK_ID]}
 dataset=${datasets[$SLURM_ARRAY_TASK_ID]}
 
