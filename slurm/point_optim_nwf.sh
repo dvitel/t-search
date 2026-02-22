@@ -1,8 +1,8 @@
 #!/bin/bash 
-#SBATCH --job-name=po
+#SBATCH --job-name=pow
 #SBATCH --time=72:00:00
-#SBATCH --output=po-%a.out
-#SBATCH --error=po-%a.out
+#SBATCH --output=pow-%a.out
+#SBATCH --error=pow-%a.out
 #SBATCH --mem=32G
 #SBATCH --gpus=1 # 1 GPU
 #SBATCH -p snsm_itn19
