@@ -283,6 +283,9 @@ class LincombMixin:
                 # del X_
                 # loss_per_term = loss_per_term_per_test.mean(dim=-1) # (n, k) losses
                 # del loss_per_term_per_test
+            if len(all_Ks) == 0:
+                print(f"Zero K: Batch size {targets_batch}, {targets.shape[0]} samples, {len(cur_candidates)} candidates.")
+                continue
             K = torch.cat(all_Ks, dim=1)
             B = torch.cat(all_Bs, dim=1)
             fit_counts = torch.cat(all_fit_counts, dim=1)
