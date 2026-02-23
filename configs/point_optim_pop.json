@@ -136,7 +136,7 @@
                 "with_pop_terms": true,
                 "with_subterms": false,
                 "max_query_size": 2048,
-                "max_query_depth": 4,
+                "max_query_depth": 3,
                 "identity_atol": 0.001,
                 "identity_rtol": 0.001,
                 "with_reduction": true,

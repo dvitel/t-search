@@ -992,7 +992,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         # tt = self.syntax.get_op("add", self.syntax.get_var("x0"), self.syntax.get_const(1.0))
         # self.evaluator.eval(tt)
         # parents.insert(0, tt)        
-        self.set_query(population, max_term_depth=self.max_query_depth)
+        self.set_query(self.term_frontier, max_term_depth=self.max_query_depth)
         mutations = super().__call__(population)
         if self.with_pop_terms:
             del self.query_vectors
