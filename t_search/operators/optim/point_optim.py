@@ -140,7 +140,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         self.range_delta = range_delta
         self.with_pop_terms = with_pop_terms
         self.max_query_size = max_query_size
-        self.tried_optim_terms: set[Term] = set()
+        self.tried_optim_terms: dict[Term, torch.Tensor | None] = {}
         self.tried_optim_terms_hit: int = 0
         self.lr = lr
         self.normalizer = normalizer
@@ -307,13 +307,16 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         context.optim_term = optim_term
 
         if optim_term in self.tried_optim_terms:
+
+            if (self.with_subterms or self.with_pop_terms) and self.tried_optim_terms[optim_term] is not None:
+                return # allow this hole as there could be new filling in population.
             self.tried_optim_terms_hit += 1
             context.status = "skipped_tried"
             # self.log[term][-1].status = "skipped_tried"
             # if self.debug:
             #     print(f"Skipped tried: {optim_term} for {term}@({position.term},{position.occur})")            
             return None
-        self.tried_optim_terms.add(optim_term)
+        # self.tried_optim_terms.add(optim_term)
 
         # pos_outputs = self.semantics.get_outputs(position.term)
 
@@ -519,60 +522,72 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
 
             return            
         
-        optim_result: OptimResult = optimize_par(context.optim_term, 
-                                self.ranges, 
-                                {self.optim_point: self.semantics.get_outputs(context.pos.term)},
-                                loss_fn_builder=self.evaluator.get_loss_fn,
-                                # pos_to_collect=pos_to_collect,
-                                num_starts=self.num_starts,
-                                lr=self.lr,
-                                max_evals=self.max_evals,
-                                tolerance_change=self.tolerance_change,
-                                tolerance_grad=self.tolerance_grad,
-                                torch_gen=self.torch_gen)
+        if context.optim_term not in self.tried_optim_terms:
+            optim_result: OptimResult = optimize_par(context.optim_term, 
+                                    self.ranges, 
+                                    {self.optim_point: self.semantics.get_outputs(context.pos.term)},
+                                    loss_fn_builder=self.evaluator.get_loss_fn,
+                                    # pos_to_collect=pos_to_collect,
+                                    num_starts=self.num_starts,
+                                    lr=self.lr,
+                                    max_evals=self.max_evals,
+                                    tolerance_change=self.tolerance_change,
+                                    tolerance_grad=self.tolerance_grad,
+                                    torch_gen=self.torch_gen)
 
-        # self.log[optim_state.term][-1].status = "optimized" if optim_result is not None else "no_minima"
-        # self.log[optim_state.term][-1].optim_result = optim_result
+            # self.log[optim_state.term][-1].status = "optimized" if optim_result is not None else "no_minima"
+            # self.log[optim_state.term][-1].optim_result = optim_result
 
-        self.num_terms_optimized += 1
-        loss_threshold = min(self.loss_threshold, context.start_loss)
-        # loss_threshold = self.loss_threshold
-        # if self.fitness.best_term_fitness is not None and self.fitness.best_term_fitness < loss_threshold:
-        #     loss_threshold = self.fitness.best_term_fitness.item()
+            self.num_terms_optimized += 1
+            loss_threshold = min(self.loss_threshold, context.start_loss)
+            # loss_threshold = self.loss_threshold
+            # if self.fitness.best_term_fitness is not None and self.fitness.best_term_fitness < loss_threshold:
+            #     loss_threshold = self.fitness.best_term_fitness.item()
 
-        # if optim_result is None:
-        #     self.add_to_tabu(optim_state)
-        #     return None                    
+            # if optim_result is None:
+            #     self.add_to_tabu(optim_state)
+            #     return None                    
 
-        # # total_threshold_optim_result_(optim_result, self.loss_threshold)
-        num_better_tests_per_start = (optim_result.loss < loss_threshold).sum(dim=-1)
-        loss_per_start = optim_result.loss.mean(dim=-1)
-        best_loss = torch.min(loss_per_start)
-        context.optim_loss = best_loss.item()
-        mask = num_better_tests_per_start < 0.75 * optim_result.loss.shape[-1]
-        optim_result.loss[mask, :] = torch.inf        
-        # loss_per_start = optim_result.loss.mean(dim=-1)
-        # mask = loss_per_start >= loss_threshold
-        # optim_result.loss[mask, :] = torch.inf        
+            # # total_threshold_optim_result_(optim_result, self.loss_threshold)
+            num_better_tests_per_start = (optim_result.loss < loss_threshold).sum(dim=-1)
+            loss_per_start = optim_result.loss.mean(dim=-1)
+            best_loss = torch.min(loss_per_start)
+            context.optim_loss = best_loss.item()
+            mask = num_better_tests_per_start < 0.75 * optim_result.loss.shape[-1]
+            optim_result.loss[mask, :] = torch.inf        
+            # loss_per_start = optim_result.loss.mean(dim=-1)
+            # mask = loss_per_start >= loss_threshold
+            # optim_result.loss[mask, :] = torch.inf        
 
-        if torch.any(torch.all(torch.isinf(optim_result.loss), dim=0)): # no minimas found
-            self.add_to_tabu(context.optim_term)
-            context.status = "no_minima"
-            return None
+            if torch.any(torch.all(torch.isinf(optim_result.loss), dim=0)): # no minimas found
+                self.add_to_tabu(context.optim_term)
+                context.status = "no_minima"
+                self.tried_optim_terms[context.optim_term] = None
+                return None
 
-        set_local_minimas_(optim_result)
+            set_local_minimas_(optim_result)
 
-        slowest_traces = get_slowest_funs(optim_result, max_num_funs=self.num_minimas) #set_num_minimas=lambda n: setattr(context, "num_minimas", n))
+            slowest_traces = get_slowest_funs(optim_result, max_num_funs=self.num_minimas) #set_num_minimas=lambda n: setattr(context, "num_minimas", n))
 
-        clean_optim_result(optim_result)
+            clean_optim_result(optim_result)
 
-        # if slowest_traces is None:
-        #     self.add_to_tabu(optim_state)
-        #     continue
-        
-        # slowest_traces_binding = [t.clone() for traces in slowest_traces.binding.values() for t in traces] 
+            # if slowest_traces is None:
+            #     self.add_to_tabu(optim_state)
+            #     continue
+            
+            # slowest_traces_binding = [t.clone() for traces in slowest_traces.binding.values() for t in traces] 
 
-        optim_vectors_plain = list(slowest_traces.binding.values())[0]
+            optim_vectors_plain = list(slowest_traces.binding.values())[0]
+
+            self.tried_optim_terms[context.optim_term] = optim_vectors_plain
+
+        else:
+            optim_vectors_plain = self.tried_optim_terms[context.optim_term]
+            slowest_traces = None
+            if optim_vectors_plain is None:
+                context.status = "no_minima"
+                return None
+
         optim_vectors = self.normalizer.normalize(optim_vectors_plain)
 
         if len(optim_vectors) == 1 and torch.allclose(optim_vectors[0], self.normalizer.get_normalized_target()):
@@ -633,7 +648,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                                                         targets_batch=16)
 
             del optim_vectors
-            clean_optim_result(slowest_traces)
+            if slowest_traces is not None:
+                clean_optim_result(slowest_traces)
 
             # context.lib_term_dists = list(result_dists)
             # context.lib_term_order = list(result_terms)
