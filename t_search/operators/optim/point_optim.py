@@ -12,7 +12,7 @@ from scipy.stats import pearsonr, spearmanr
 from t_search.base import ServiceBase
 from t_search.evaluators.evaluator import Evaluator
 from t_search.evaluators.fitness import Fitness
-from t_search.evaluators.optimization import OptimResult, clean_optim_result, get_all_grads, optimize_par, set_local_minimas_, get_slowest_funs
+from t_search.evaluators.optimization import OptimResult, clean_optim_result, get_all_grads, optimize_par, optimize_seq, set_local_minimas_, get_slowest_funs
 from t_search.evaluators.semantics import Semantics
 from t_search.evaluators.term_spatial import Normalizer
 from t_search.operators.initialization import Initialization
@@ -113,11 +113,11 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                  allow_no_better: bool = False,
                  backtrack: Literal["lineage", "worse_fillings", "rand", "none"] = "lineage",
                  backtrack_rand_grow_depth: int = 6,
-                 num_worse_fillings: int | None = None,
                  identity_atol: float = 0.001,
                  identity_rtol: float = 0.001,
                  with_reduction: bool = True,
                  with_subterms: bool = False,
+                 optim_type: Literal["seq", "par"] = "par",
                 #  debug: bool = False,
                 #  rnd: np.random.Generator = GLOBAL_RNG,
                  **kwargs):
@@ -145,6 +145,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         self.lr = lr
         self.normalizer = normalizer
         self.max_evals = max_evals
+        self.optim_type = optim_type
         self.tolerance_change = tolerance_change
         self.tolerance_grad = tolerance_grad
         self.num_minimas = num_minimas
@@ -183,8 +184,6 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         self.allow_no_better = allow_no_better
         self.backtrack = backtrack if backtrack != "none" else None
         self.backtrack_rand_grow_depth = backtrack_rand_grow_depth
-        self.num_worse_fillings = num_worse_fillings or 0
-        self.worse_filling_counts: dict[Term, int] = {}
         self.do_not_add_none = True
         # self.term_failed_contexts: list[TermMutationContext] = []
         # self.log: dict[Term, list[LogEntry]] = {} # stores current pop optimization log: wwhat positions tried, when and why they are failed
@@ -523,7 +522,8 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             return            
         
         if context.optim_term not in self.tried_optim_terms:
-            optim_result: OptimResult = optimize_par(context.optim_term, 
+            optimize_fn = optimize_par if self.optim_type == "par" else optimize_seq
+            optim_result: OptimResult = optimize_fn(context.optim_term, 
                                     self.ranges, 
                                     {self.optim_point: self.semantics.get_outputs(context.pos.term)},
                                     loss_fn_builder=self.evaluator.get_loss_fn,
@@ -940,48 +940,37 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                                 for fp in [[t for t in cur_terms 
                                                 if t in self.term_contexts and len(self.term_contexts[t]) > 0]]
                                 if len(fp) > 0]
-        top_n_parents = []
+        backtrack_parents = []
         best_parent_loss = float('inf')
         if len(filtered_lineage) > 0:           
             # backtrack_terms = filtered_lineage[0] # parent, or random
             # pick best parent to continue 
             backtrack_parents = [p for ps in filtered_lineage for p in ps]
-            if len(backtrack_parents) == 1:
-                return backtrack_parents[0]
+            # if len(backtrack_parents) == 1:
+            #     return backtrack_parents[0]
             bp_fitness = self.fitness.get_fitness(backtrack_parents, return_type="tensor")
             best_bp_ids = torch.argsort(bp_fitness)
             # best_bp_id = self.rnd.choice(len(backtrack_parents))
             best_parent_loss = bp_fitness[best_bp_ids[0]].item()
-            top_n_parents = [backtrack_parents[i] for i in best_bp_ids[:2].tolist()]
             del bp_fitness
                       
-        best_among_worst = None
+        best_among_worse = None
         if self.backtrack == "worse_fillings": # first try to find the best no_better attempt in the log and reattempt it
-            cur_num_worse_fillings = self.worse_filling_counts.setdefault(term, 0)
-            if cur_num_worse_fillings < self.num_worse_fillings:
-                self.worse_filling_counts[term] = cur_num_worse_fillings + 1
-                logs = self.mutation_log_per_term.get(term, [])
-                filtered_logs = [l for l in logs if l.status in ["delayed", "no_better"] and not l.reattempt and l.final_loss < best_parent_loss] # assert final_term is set already + loss and dist
-                if len(filtered_logs) == 0:
-                    self.worse_filling_counts[term] = 1e6
-                else:
-                    best_among_worst = self.rnd.choice(filtered_logs)
-                # for log in filtered_logs:
-                #     assert log.final_term is not None and log.final_loss is not None
-                #     if best_among_worst is None or log.final_loss < best_among_worst.final_loss:
-                #         best_among_worst = log
-                # if best_among_worst is not None:
-                    best_among_worst.reattempt = True # to filter out on next reattempt 
-                    if best_among_worst.status == "no_better": # we advance away from target, allow to do this once
-                        self.worse_filling_counts[best_among_worst.final_term] = 1e6
-                    # return best_among_worst.final_term # NOTE: returns final_term itself as it is ready
-            else:
-                pass
+            logs = self.mutation_log_per_term.get(term, [])
+            delayed_logs = [l for l in logs if l.status in ["delayed"] and not l.reattempt and l.final_loss < best_parent_loss]
+            for l in delayed_logs:
+                if (best_among_worse is None) or (best_among_worse.final_loss > l.final_loss):
+                    best_among_worse = l
+            # else:
+            #     filtered_logs = [l for l in logs if l.status in ["no_better"] and not l.reattempt and l.final_loss < best_parent_loss]
+            #     if len(filtered_logs) > 0:
+            #         best_among_worse = self.rnd.choice(filtered_logs)
 
-        if best_among_worst is None:
-            rnd_parent = self.rnd.choice(top_n_parents) if len(top_n_parents) > 0 else None
+        if best_among_worse is None:
+            rnd_parent = self.rnd.choice(backtrack_parents) if len(backtrack_parents) > 0 else None
             return rnd_parent
-        return best_among_worst
+        best_among_worse.reattempt = True
+        return best_among_worse
 
     def __call__(self, population):   
 
