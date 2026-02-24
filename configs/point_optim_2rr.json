@@ -1,0 +1,187 @@
+{
+    "service_definitions": {
+        "fitness": { 
+            "type": "Fitness", 
+            "params": {
+                "fitness_atol": 1e-07
+            }
+        },        
+        "semantics": {
+            "type": "Semantics", 
+            "params": { 
+                "storage": {"!ref": "term_vector_storage"}
+            }
+        },        
+        "vector_storage": {"type": "VectorStorage", "params": {
+            "atol": 0.0001,
+            "rtol": 0.0001
+        }},
+        "syntax": { 
+            "type": "Syntax", 
+            "params": { 
+                "max_term_depth": 17,
+                "min_consts": 0,
+                "max_consts": 10,
+                "min_vars": 1,
+                "max_vars": 100,
+                "prohibit_ops_on_consts_only": true,
+                "ops_counts": {
+                    "pow": [0, 10],
+                    "neg": [0, 10],
+                    "inv": [0, 10],
+                    "div": [0, 10],
+                    "sub": [0, 10],
+                    "exp": [0, 10],
+                    "log": [0, 10],
+                    "sin": [0, 10],
+                    "cos": [0, 10]
+                },
+                "inner_ops_max_counts": {
+                    "exp": {"exp": 0, "sin": 0, "cos": 0},
+                    "log": {"log": 0, "cos": 0, "sin": 0},
+                    "pow": {"pow": 0},
+                    "sin": {"sin": 0, "cos": 0, "log": 0, "exp": 0},
+                    "cos": {"cos": 0, "sin": 0, "log": 0, "exp": 0}
+                },
+                "immediate_arg_limits": {
+                    "inv": {
+                        "inv": 0,
+                        "mul": 0
+                    },
+                    "neg": {
+                        "neg": 0
+                    },
+                    "log": {"exp": 0},
+                    "exp": {"log": 0}        
+                },
+                "commutative": ["add", "mul"]
+            }
+        },
+        "term_vector_storage": { 
+            "type": "TermVectorStorage", 
+            "params": { 
+                "index": {"!ref": "vector_storage"}
+            } 
+        },
+        "evaluator": {
+            "type": "Evaluator", 
+            "params": {
+                "with_inner_evals": true,
+                "max_root_evals": 500000,
+                "max_evals": 500000,
+                "measure_loss_each_n": 2000,
+                "measure_max_len": 200
+            }
+        },
+        "init": {
+            "type": "RHH", 
+            "module": "t_search.operators.classic",
+            "params": { 
+                "syntactic_duplicate_retries": 10,
+                "size": 1000,
+                "max_depth": 6
+            } 
+        },
+        "selection": { 
+            "type": "TS", 
+            "module": "t_search.operators.classic",
+            "params": { "selection_size": 100, "tournament_size": 3 } 
+        },
+        "survivor_selection": { 
+            "type": "MuLambdaSurvivorSelection", 
+            "module": "t_search.operators.classic",
+            "params": { 
+                "mu": 100, 
+                "strict": false, 
+                "combine": false,
+                "elitism": 0
+            } 
+        },
+        "normalizer": {
+            "type": "ZScoreNormalizer",
+            "params": {
+                "epsilon": 1e-07
+            }
+        },
+        "lib_init": { 
+            "type": "Up2D", 
+            "module": "t_search.operators.classic",
+            "params": { "depth": 2, "const_1": true, "max_size": 1000 } 
+        },
+        "point_optim": {
+            "type": "PointOptim",
+            "module": "t_search.operators.optim.point_optim",
+            "params": {
+                "init_op": {"!ref": "lib_init"},
+                "normalizer": {"!ref": "normalizer"},
+                "position_strategy": "rand_position_order",
+                "optim_type": "par",
+                "num_starts": 5,
+                "range_delta": 0.1,
+                "max_evals": 20,
+                "lr": 1,
+                "tolerance_change": 1e-07,
+                "tolerance_grad": 1e-07,
+                "with_tabu": true,
+                "num_minimas": 5,
+                "num_lib_terms": 3,
+                "num_conts": 0,
+                "pick_best_dists": false,
+                "loss_threshold": 1e-02,
+                "loss_koef": 1.0,
+                "best_by_metric": "loss",
+                "allow_no_better": false,
+                "backtrack": "rand",
+                "backtrack_rand_grow_depth": 6,
+                "with_pop_terms": true,
+                "with_subterms": false,
+                "max_query_size": 2048,
+                "max_query_depth": 4,
+                "identity_atol": 0.001,
+                "identity_rtol": 0.001,
+                "with_reduction": true,
+                "max_pos_tries": 3,
+                "rate": 1.0
+            }
+        },
+        "const_optimizer": {
+            "type": "ConstOptimizer",
+            "module": "t_search.evaluators.const_optimizer",
+            "params": {
+                "num_starts": 5,
+                "max_evals": 20,
+                "lr": 0.05,
+                "tolerance_change": 1e-09,
+                "tolerance_grad": 1e-10,
+                "loss_threshold": 1e-08
+            }
+        },
+        "const_optim_mutation": {
+            "type": "ConstOptimMutation",
+            "module": "t_search.operators.optim",
+            "params": {
+                "const_optimizer": {"!ref": "const_optimizer"},
+                "n_best_terms": 10,
+                "max_pos_tries": 1,
+                "rate": 1.0
+            }
+        }
+    },
+    "init_service_name": "init",
+    "operator_service_names": [
+        "selection",
+        "point_optim",
+        "const_optim_mutation",
+        "evaluator",
+        "survivor_selection"
+    ],
+    "ops": ["add", "sub", "mul", "div", "exp", "log", "sin", "cos"],
+    "evaluator_service_name": "evaluator",
+    "syntax_service_name": "syntax",
+    "fitness_service_name": "fitness",
+    "semantics_service_name": "semantics",
+    "max_gen": 1000,
+    "max_dim_size": 100,
+    "const_min": -1e02,
+    "const_max": 1e02
+}
