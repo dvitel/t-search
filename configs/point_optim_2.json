@@ -116,7 +116,7 @@
                 "normalizer": {"!ref": "normalizer"},
                 "position_strategy": "best_grad_position_order",
                 "optim_type": "par",
-                "num_starts": 5,
+                "num_starts": 10,
                 "range_delta": 0.1,
                 "max_evals": 20,
                 "lr": 1,
