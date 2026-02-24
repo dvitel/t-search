@@ -30,6 +30,19 @@ class ConstOptimMutation(TermMutation, ServiceBase):
         new_term = self.const_optimizer.optimize(term)        
         return new_term
     
+    def add_to_lineage(self, parent, child):
+        ''' Here child is optimized version of parent --> we actually pick parent of parent and treated it as parent for child'''        
+        grandparents = self.term_lineage.get(parent, [])
+        if len(grandparents) == 0:
+            # if self.has_lineage_loop(child, parent):
+            #     return # noop            
+            super().add_to_lineage(parent, child)
+        else:
+            for gp in grandparents:
+                # if self.has_lineage_loop(child, gp):
+                #     return # noop                
+                super().add_to_lineage(gp, child)
+    
     def __call__(self, population):
         if self.n_best_terms is not None:
             self.evaluator.eval(population)

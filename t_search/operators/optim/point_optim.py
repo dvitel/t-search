@@ -908,7 +908,7 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         return res
 
     def add_to_lineage(self, parent: Term, child: Term | TermMutationContext):
-        if isinstance(child, TermMutationContext) and child.final_term is not None:
+        if isinstance(child, TermMutationContext) and child.final_term is not None:            
             super().add_to_lineage(child.term, child.final_term)
 
     def get_backtrack_term(self, term: Term) -> Term | TermMutationContext | None:
@@ -935,17 +935,17 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
             self.evaluator.eval(rand_term)
             return rand_term  
 
-        cur_lineage = self.get_term_history(term)
-        filtered_lineage = [fp for cur_terms in cur_lineage 
-                                for fp in [[t for t in cur_terms 
-                                                if t in self.term_contexts and len(self.term_contexts[t]) > 0]]
-                                if len(fp) > 0]
-        backtrack_parents = []
+        cur_lineage = self.get_term_history(term, without_self=True)
+        # filtered_lineage = [fp for cur_terms in cur_lineage 
+        #                         for fp in [[t for t in cur_terms 
+        #                                         if t in self.term_contexts and len(self.term_contexts[t]) > 0]]
+        #                         if len(fp) > 0]
+        # backtrack_parents = cur_lineage[0] if len(cur_lineage) > 0 else []
+        backtrack_parents = [p for ps in cur_lineage for p in ps]
         best_parent_loss = float('inf')
-        if len(filtered_lineage) > 0:           
+        if len(backtrack_parents) > 0:           
             # backtrack_terms = filtered_lineage[0] # parent, or random
             # pick best parent to continue 
-            backtrack_parents = [p for ps in filtered_lineage for p in ps]
             # if len(backtrack_parents) == 1:
             #     return backtrack_parents[0]
             bp_fitness = self.fitness.get_fitness(backtrack_parents, return_type="tensor")

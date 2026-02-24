@@ -34,7 +34,7 @@
             "module": "t_search",
             "args": [
                 "--dataset", "r_1",
-                "--config", "configs/point_optim_sub.json",
+                "--config", "configs/point_optim_2.json",
                 "--output", "data/dbg.jsonlist",
                 "--device", "cuda",
                 "--dtype", "float32",
@@ -143,12 +143,12 @@
             "request": "launch",
             "module": "t_search",
             "args": [
-                "--dataset", "koza_3",
+                "--dataset", "r_1",
                 "--config", "configs/competent.json",
                 "--output", "data/dbg.jsonlist",
                 "--device", "cuda",
                 "--dtype", "float32",
-                "--seed", "42",
+                "--seed", "11",
                 "--debug"
             ],
             "console": "integratedTerminal",

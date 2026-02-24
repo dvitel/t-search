@@ -35,8 +35,8 @@ class TermMutation(Operator):
         self.do_not_add_none = False
 
     def add_to_lineage(self, parent: Term, child: Term):
-        # if self.has_lineage_loop(child, parent):
-        #     return # noop
+        if self.has_lineage_loop(child, parent):
+            return # noop
         self.term_lineage.setdefault(child, set()).add(parent)
         self.term_frontier.add(child)
         self.term_frontier.discard(parent)
@@ -60,9 +60,9 @@ class TermMutation(Operator):
             cur_parents = filtered_cur_parents
         return False    
     
-    def get_term_history(self, term: Term):
+    def get_term_history(self, term: Term, without_self: bool = False):
         cur_terms = [term]
-        cur_lineage = [cur_terms]
+        cur_lineage = [] if without_self else [cur_terms]
         visited_terms = set(cur_terms)
         while len(cur_terms) > 0:
             cur_terms = [p for t in cur_terms for p in self.term_lineage.get(t, []) if p not in visited_terms]

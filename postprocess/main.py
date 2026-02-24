@@ -450,29 +450,42 @@ if __name__ == "__main__":
     # data["metric"] = data["metric"] / 60.0 / 1000.0  # convert to minutes
     # print(data)
 
-    base_folder = "data/results-02-22"
+    base_folder = "data/results-02-23"
     results_file = "results.jsonlist"
     datasets = ['r_1', 'r_2', 'keijzer_3', 'keijzer_4', 'keijzer_11', 'nguyen_12', 'pagie_1', 'vladislavleva_1', 'koza_3', 'keijzer_6', 'vladislavleva_8', 'korns_13'] #, 'korns_14', 'korns_15']
-    config_names = ['koza', 'semantic', 'geometric', 'competent', 'point_optim_grad']
-    # config_names = ['point_optim', 'point_optim_rand', 'point_optim_grad']
+    config_names = ['koza', 'semantic', 'geometric', 'competent', 'point_optim_opt']
+    # config_names = ['point_optim', 'point_optim_rand', 'point_optim_grad', 'point_optim_nwf', 'point_optim_sub', 'point_optim_koef',
+    #                     'point_optim_pop']
     max_seed = 30
     seeds = list(range(max_seed))
-    config_labels={'koza': 'Kz', 'semantic': 'Sem', 'geometric': "Geom", 'competent': 'CO', 'point_optim': 'PO', 'point_optim_rand': 'PO$_r$', 'point_optim_grad': 'PO$_g$'}
+    config_labels={'koza': 'Kz', 'semantic': 'Sem', 'geometric': "Geom", 'competent': 'CO', 'point_optim': 'PO', 'point_optim_rand': 'PO$_r$', 'point_optim_grad': 'PO$_g$',
+                    'point_optim_nwf': 'PO$_{w}$',
+                    'point_optim_koef': 'PO$_{k}$',
+                    'point_optim_sub': 'PO$_{s}$',
+                    'point_optim_pop': 'PO$_{p}$',
+                    'point_optim_opt': 'PO$_{o}$',
+                    }
     dataset_names = {
         'r_1': 'R1', 'r_2': 'R2', 'keijzer_3': 'Kj3', 'keijzer_4': 'Kj4', 'keijzer_11': 'Kj11',
         'nguyen_12': 'Ng12', 'pagie_1': 'Pg1', 'vladislavleva_1': 'Vl1', 'koza_3': 'Kz3',
         'keijzer_6': 'Kj6', 'vladislavleva_8': 'Vl8', 'korns_13': 'Kn13', 'korns_14': 'Kn14', 'korns_15': 'Kn15'
     }
-    colors = {"koza": "blue", "semantic": "orange", "point_optim": "#238423", "point_optim_rand": "#607491", "point_optim_grad": "#0C460C", "geometric": "red", "competent": "purple"}
+    colors = {"koza": "blue", "semantic": "orange", "point_optim": "#238423", "point_optim_rand": "#607491", "point_optim_grad": "#0C460C",               
+              'point_optim_nwf': "#18BA5E", 'point_optim_koef': "#063B1D",
+              'point_optim_sub': "#1C5033",
+              'point_optim_pop': "#040B06",
+              'point_optim_opt': "#6F9D7D",
+              "geometric": "red", "competent": "purple",
+              }
 
     draw_trace(base_path = base_folder, results_file = results_file,
                     metric="evaluator.loss_trace", datasets=datasets, 
                     config_names=config_names, seeds=seeds,
-                    xs = np.arange(1, 51), 
+                    xs = np.arange(1, 101), 
                     config_labels=config_labels,
                     dataset_names=dataset_names,
                     colors=colors,
-                    output_prefix="c-grd-", figsize=(6, 4))
+                    output_prefix="c-opt-", figsize=(6, 4))
     draw_bars(
         base_path=base_folder, 
         results_file=results_file,
@@ -483,7 +496,7 @@ if __name__ == "__main__":
         config_labels=config_labels,
         dataset_names=dataset_names,
         colors=colors,
-        output_prefix="v-grd-", 
+        output_prefix="v-opt-", 
         figsize=(6, 4)
     )    
     pass
