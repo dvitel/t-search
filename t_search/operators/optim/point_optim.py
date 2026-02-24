@@ -118,6 +118,10 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                  with_reduction: bool = True,
                  with_subterms: bool = False,
                  optim_type: Literal["seq", "par"] = "par",
+                 min_candidate_batch: int = 64,
+                 max_candidate_batch: int = 256,
+                 target_batch: int = 16,
+                 ransac_iters: int = 128,
                 #  debug: bool = False,
                 #  rnd: np.random.Generator = GLOBAL_RNG,
                  **kwargs):
@@ -162,6 +166,10 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
         self.with_reduction = with_reduction
         self.max_query_depth = max_query_depth
         self.with_subterms = with_subterms
+        self.min_candidate_batch = min_candidate_batch
+        self.max_candidate_batch = max_candidate_batch
+        self.target_batch = target_batch
+        self.ransac_iters = ransac_iters
         # self.selected_backtrack_term: Term | None = None
 
         # next is for computing correlation
@@ -643,9 +651,9 @@ class PointOptim(PositionMutation, ServiceBase, LincombMixin):
                     else:
                         del subterm_outputs
 
-            ordered_kb = self.optimize_lincomb_batched(query_terms, optim_vectors_plain, iters=128,
-                                                        candidates_batch=64 if self.semantics.dims > 100 else 256,
-                                                        targets_batch=16)
+            ordered_kb = self.optimize_lincomb_batched(query_terms, optim_vectors_plain, iters=self.ransac_iters,
+                                                        candidates_batch=self.min_candidate_batch if (self.semantics.dims > 100) else self.max_candidate_batch,
+                                                        targets_batch=self.target_batch)
 
             del optim_vectors
             if slowest_traces is not None:
