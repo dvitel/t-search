@@ -18,6 +18,7 @@ config='point_optim_2'
 seeds=(7 18 12)
 datasets=('korns_13' 'korns_13' 'korns_15')
 seed=${seeds[$SLURM_ARRAY_TASK_ID]}
+dataset=${datasets[$SLURM_ARRAY_TASK_ID]}
 
 echo "====================================================================="
 echo "Running t-search with dataset=$dataset, config=$config, seed=$seed"
