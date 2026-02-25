@@ -140,6 +140,7 @@
                 "identity_atol": 0.001,
                 "identity_rtol": 0.001,
                 "with_reduction": true,
+                "max_candidate_batch": 128,
                 "max_pos_tries": 3,
                 "rate": 1.0
             }
