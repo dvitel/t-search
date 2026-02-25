@@ -13,10 +13,10 @@
 
 module purge
 
-config='point_optim_2'
+config='point_optim_2r'
 
-seeds=(7 18 12)
-datasets=('korns_13' 'korns_13' 'korns_15')
+seeds=(11 11 6 9)
+datasets=('korns_14' 'korns_15' 'korns_13' 'korns_15')
 seed=${seeds[$SLURM_ARRAY_TASK_ID]}
 dataset=${datasets[$SLURM_ARRAY_TASK_ID]}
 
