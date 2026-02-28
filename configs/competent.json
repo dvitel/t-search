@@ -85,18 +85,6 @@
                 "init_op": {"!ref": "lib_init"}
             }
         },
-        "init_old": {
-            "type": "SemanticallyDrivenInitialization", 
-            "module": "t_search.operators.semantic",
-            "params": { 
-                "atol": 1e-4,
-                "rtol": 1e-4,
-                "semantic_duplicate_retries": 10,
-                "max_depth": 6,                
-                "max_l2": 1e8,
-                "size": 1000 
-            } 
-        },
         "init": {
             "type": "RHH", 
             "module": "t_search.operators.classic",
@@ -135,10 +123,10 @@
             "type": "MuLambdaSurvivorSelection", 
             "module": "t_search.operators.classic",
             "params": { 
-                "mu": 1000, 
+                "mu": 100, 
                 "strict": false, 
                 "combine": false,
-                "elitism": 10
+                "elitism": 0
             }
         },
         "const_optimizer": {
