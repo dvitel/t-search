@@ -1,5 +1,6 @@
 import math
 import os
+from typing import Callable
 from matplotlib.ticker import MaxNLocator
 import numpy as np
 import pandas as pd
@@ -38,7 +39,7 @@ def draw_table(input: str,
     df = load(source=input, metric=metric)
     summary = df.groupby(["cfg", "dataset"])["metric"].agg(["mean","std"]).reset_index()
     # Format as "mean ± std"
-    summary["metric_summary"] = summary.apply(lambda row: f"{row['mean']:.3f} ± {row['std']:.2f}", axis=1)
+    summary["metric_summary"] = summary.apply(lambda row: f"{row['mean']:.2f} ± {row['std']:.1f}", axis=1)
 
     # Select only the columns for the table
     # table_data = summary[["cfg","dataset","metric_summary"]]
@@ -82,6 +83,168 @@ def get_confidence_interval(data_np_t: np.ndarray, confidence_level=0.95):
     max_v = confidence_interval[1]
     res_df = {"min_v": min_v, "mean": data_mean, "max_v": max_v}
     return res_df
+
+def neg_log_mapping(x):
+    x = -math.log(x, 10)
+    x = max(min(x, 20), -20)    
+    return x
+
+# outputs tables: mean std, stats test friedman/nemenyi and wilcoxon
+# dataset is row, config is column 
+def compute_tables(base_path: str, 
+                    results_file: str, 
+                    metric: str, 
+                    datasets: list, 
+                    config_names: list, 
+                    config_labels: dict,
+                    seeds: list,
+                    stats_config_name: str | None = None, 
+                    value_mapper: Callable = lambda x: x) -> None:
+    
+    import scikit_posthocs as sci_posthocs
+
+    file_to_read = f"{base_path}/{results_file}"
+    metric_path = metric.split('.')
+    with open(file_to_read, 'r') as f:
+        lines = f.readlines()
+    records = [json.loads(line) for line in lines]
+    traces_map = {}
+    for r in records:
+        dataset = r["dataset"]
+        if dataset not in datasets:
+            continue
+        config_name = r["config_name"]
+        if config_name not in config_names:
+            continue
+        seed = r["seed"]
+        if seed not in seeds:
+            continue
+        trace = r
+        for mp in metric_path:
+            trace = trace[mp]
+        # if isinstance(trace, dict) or trace is None:
+        #     print(f"Warning: Metric {metric} not found in {config_name} for dataset {dataset}, config {config_name}, seed {seed}. Skipping.")
+        #     continue
+        # num_missing = len(xs) - len(trace)
+        # if num_missing > 0:
+        #     trace = trace + [0] * num_missing
+        # if len(trace) > len(xs):
+        #     trace = trace[:len(xs)]
+        trace = value_mapper(trace)
+            # if trace < 0: 
+            #     # print(f"{dataset}:{config_name}:{seed}, {trace} high loss value, assume 0")
+            #     trace = 0
+        traces_map.setdefault(dataset, {}).setdefault(config_name, {})[seed] = trace # scalar value here
+
+    all_means_stds = []
+    all_friedman_p_values = []
+    # all_nemenyi_p_values = [] # w.r.t. PO 
+    all_wilcoxon_p_values = []
+    for dataset in datasets: 
+        assert dataset in traces_map, f"Dataset {dataset} not found in traces_map"
+        traces = []
+        means_stds = []
+        means_stds.append(f"\\texttt{{{dataset}}}")
+        all_means_stds.append(means_stds)
+        friedman_p_values= []
+        friedman_p_values.append(f"\\texttt{{{dataset}}}")
+        all_friedman_p_values.append(friedman_p_values)
+        wilcoxon_p_values = []
+        wilcoxon_p_values.append(f"\\texttt{{{dataset}}}")
+        all_wilcoxon_p_values.append(wilcoxon_p_values)
+        for config in config_names:
+            assert config in traces_map[dataset], f"Config {config} not found in traces_map for dataset {dataset}"
+            raw_data = []
+            for seed in seeds:
+                assert seed in traces_map[dataset][config], f"Seed {seed} not found in traces_map for dataset {dataset}, config {config}"
+                raw_data.append(traces_map[dataset][config][seed])
+            # data_np = np.array(raw_data)
+            traces.append(raw_data)
+        np_traces = np.array(traces)
+        means = np.mean(np_traces, axis=1)
+        stds = np.std(np_traces, axis=1)
+        max_v = np.nanmax(means)
+        for i, config_name in enumerate(config_names):
+            mean = means[i]
+            std = stds[i]
+            is_best = mean == max_v
+            if np.isfinite(mean) and np.isfinite(std):
+                if is_best:
+                    mean_std = f"\\textbf{{{mean:.2f}}} {{\\footnotesize $\pm$ {std:.1f}}}"
+                else:
+                    mean_std = f"{mean:.2f} {{\\footnotesize $\pm$ {std:.1f}}}"
+            else:
+                mean_std = ""
+            means_stds.append(mean_std)
+
+        if stats_config_name is not None:
+
+            friedman_res = stats.friedmanchisquare(*np_traces)
+            friedman_p_value = friedman_res.pvalue
+            def format_p_value(p):
+                is_good = p < 0.05
+                if p < 0.01:
+                    if is_good:
+                        return f"\\textbf{{{p:.0e}}}"
+                    else:
+                        return f"{p:.0e}"
+                else:
+                    if is_good:
+                        return f"\\textbf{{{p:.2f}}}"
+                    else:
+                        return f"{p:.2f}"
+            # friedman_p_values.append(format_p_value(friedman_p_value))
+            means_stds.append(format_p_value(friedman_p_value))
+
+            nemenyi_res = sci_posthocs.posthoc_nemenyi_friedman(np_traces.T)
+
+            nemenyi_idx = config_names.index(stats_config_name)
+
+            # wilcoxon_data = np_traces[nemenyi_idx]
+
+            for i, config_name in enumerate(config_names):
+                if config_name == stats_config_name:
+                    continue
+
+                npvalue = nemenyi_res[nemenyi_idx][i]
+                # friedman_p_values.append(format_p_value(npvalue))
+                means_stds.append(format_p_value(npvalue))
+
+
+                # wilcoxon_res = stats.wilcoxon(wilcoxon_data, np_traces[i])
+                # # wilcoxon_p_values.append(f"{wilcoxon_res.pvalue:.0E}")
+                # friedman_p_values.append(format_p_value(wilcoxon_res.pvalue))
+
+    mean_std_headers = ["Dataset", 
+                            *[config_labels[x] for x in config_names],
+                        ]
+    if stats_config_name is not None:
+        mean_std_headers.extend([
+                            "$p_F$",
+                            *[f"$p^{{{config_labels[config]}}}_N$" for config in config_names if config != stats_config_name],
+        ])
+    s = tabulate(all_means_stds, headers=mean_std_headers, showindex=False, tablefmt="latex_raw", numalign="left", stralign="left")
+    print("------------- Mean ± Std Table -------------")
+    print(s)
+
+    # friedman_headers = ["Dataset", "$p_F$", 
+    #                         *[f"$p^{{{config_labels[config]}}}_N$" for config in config_names if config != nemenyi_config_name],
+    #                         *[f"$p^{{{config_labels[config]}}}_W$" for config in config_names if config != nemenyi_config_name]
+    #                     ]
+    # s = tabulate(all_friedman_p_values, headers=friedman_headers, showindex=False, tablefmt="latex_raw", numalign="left", stralign="left")
+    # print("------------- Friedman and Nemenyi p-values Table -------------")
+    # print(s)
+
+    # friedman_headers = ["Dataset", "$p_F$", *[f"$p^{{{config_labels[config]}}}_N" for config in config_names if config != nemenyi_config_name]]
+    # s = tabulate(all_friedman_p_values, headers=friedman_headers, showindex=False, tablefmt="latex_raw", numalign="left", stralign="left")
+    # print("------------- Friedman and Nemenyi p-values Table -------------")
+    # print(s)
+
+    # wilcoxon_headers = ["Dataset", *[f"$p^{{{config_labels[config]}}}_W$" for config in config_names if config != nemenyi_config_name]]
+    # s = tabulate(all_wilcoxon_p_values, headers=wilcoxon_headers, showindex=False, tablefmt="latex_raw", numalign="left", stralign="left")
+    # print(s)
+    pass 
+
 
 def draw_trace(base_path: str, 
                     results_file: str, 
@@ -450,53 +613,91 @@ if __name__ == "__main__":
     # data["metric"] = data["metric"] / 60.0 / 1000.0  # convert to minutes
     # print(data)
 
-    base_folder = "data/results-02-23"
+    base_folder = "data/results-02-28"
     results_file = "results.jsonlist"
     datasets = ['r_1', 'r_2', 'keijzer_3', 'keijzer_4', 'keijzer_11', 'nguyen_12', 'pagie_1', 'vladislavleva_1', 'koza_3', 'keijzer_6', 'vladislavleva_8', 'korns_13'] #, 'korns_14', 'korns_15']
-    config_names = ['koza', 'semantic', 'geometric', 'competent', 'point_optim_opt']
+    config_names = ['koza', 'semantic', 'geometric', 'competent', 'point_optim_2']
+    # config_names = ['point_optim_2', 'point_optim_2r', 'point_optim_2rr', 'point_optim_2k', 'point_optim_2s']
+    suffix="gw"
     # config_names = ['point_optim', 'point_optim_rand', 'point_optim_grad', 'point_optim_nwf', 'point_optim_sub', 'point_optim_koef',
     #                     'point_optim_pop']
     max_seed = 30
     seeds = list(range(max_seed))
-    config_labels={'koza': 'Kz', 'semantic': 'Sem', 'geometric': "Geom", 'competent': 'CO', 'point_optim': 'PO', 'point_optim_rand': 'PO$_r$', 'point_optim_grad': 'PO$_g$',
-                    'point_optim_nwf': 'PO$_{w}$',
-                    'point_optim_koef': 'PO$_{k}$',
-                    'point_optim_sub': 'PO$_{s}$',
-                    'point_optim_pop': 'PO$_{p}$',
-                    'point_optim_opt': 'PO$_{o}$',
+    config_labels={'koza': 'Kz', 'semantic': 'Sem', 'geometric': "Geom", 'competent': 'Comp', 
+                   'point_optim_2': 'PO$_{g,w}$', 
+                   'point_optim_2r': 'PO$_{r,w}$', 
+                   'point_optim_2rr': 'PO$_{r,r}$', 
+                   'point_optim_2k': 'PO$^{u}_{g,w}$', 
+                   'point_optim_2s': 'PO$^{s}_{g,w}$', 
+                   'point_optim_2gr': 'PO$_{g,r}$', 
+                #    'point_optim': 'PO', 
+                #    'point_optim_rand': 'PO$_r$', 
+                #    'point_optim_grad': 'PO$_g$',
+                #     'point_optim_nwf': 'PO$_{w}$',
+                #     'point_optim_koef': 'PO$_{k}$',
+                #     'point_optim_sub': 'PO$_{s}$',
+                #     'point_optim_pop': 'PO$_{p}$',
+                #     'point_optim_opt': 'PO$_{o}$',
                     }
     dataset_names = {
         'r_1': 'R1', 'r_2': 'R2', 'keijzer_3': 'Kj3', 'keijzer_4': 'Kj4', 'keijzer_11': 'Kj11',
         'nguyen_12': 'Ng12', 'pagie_1': 'Pg1', 'vladislavleva_1': 'Vl1', 'koza_3': 'Kz3',
         'keijzer_6': 'Kj6', 'vladislavleva_8': 'Vl8', 'korns_13': 'Kn13', 'korns_14': 'Kn14', 'korns_15': 'Kn15'
     }
-    colors = {"koza": "blue", "semantic": "orange", "point_optim": "#238423", "point_optim_rand": "#607491", "point_optim_grad": "#0C460C",               
-              'point_optim_nwf': "#18BA5E", 'point_optim_koef': "#063B1D",
-              'point_optim_sub': "#1C5033",
-              'point_optim_pop': "#040B06",
-              'point_optim_opt': "#6F9D7D",
+    colors = {"koza": "blue", "semantic": "orange", 
+              "point_optim_2": "#024B02",               
+              'point_optim_2r': "#3DB461",
+              "point_optim_2rr": "#7D8B80", 
+              'point_optim_2k': "#47B3BB", 
+              'point_optim_2s': "#94E2D1", 
+              'point_optim_2gr': "#4C804C",               
+            #   "point_optim": "#238423", 
+            #   "point_optim_rand": "#607491", 
+            #   "point_optim_grad": "#0C460C",  
+            #   'point_optim_nwf': "#18BA5E", 
+            #   'point_optim_koef': "#063B1D",
+            #   'point_optim_sub': "#1C5033",
+            #   'point_optim_pop': "#040B06",
+            #   'point_optim_opt': "#6F9D7D",
               "geometric": "red", "competent": "purple",
               }
+    
+    compute_tables(base_path=base_folder, 
+        results_file=results_file,
+        metric="test_nmse", 
+        # metric="best_fitness",
+        # metric="final_time",
+        # metric="best_term_size",
+        datasets=datasets, 
+        config_names=config_names, 
+        config_labels=config_labels,
+        seeds=seeds,
+        stats_config_name="point_optim_2",
+        value_mapper=neg_log_mapping,
+        # value_mapper=lambda x: x / 60.0 / 1000.0
+        )
+    pass
 
     draw_trace(base_path = base_folder, results_file = results_file,
                     metric="evaluator.loss_trace", datasets=datasets, 
                     config_names=config_names, seeds=seeds,
-                    xs = np.arange(1, 101), 
+                    xs = np.arange(1, 201), 
                     config_labels=config_labels,
                     dataset_names=dataset_names,
                     colors=colors,
-                    output_prefix="c-opt-", figsize=(6, 4))
+                    output_prefix=f"c-{suffix}-", figsize=(6, 4))
     draw_bars(
         base_path=base_folder, 
         results_file=results_file,
         metric="test_nmse", 
+        # metric="best_fitness",
         datasets=datasets, 
         config_names=config_names, 
         seeds=seeds,
         config_labels=config_labels,
         dataset_names=dataset_names,
         colors=colors,
-        output_prefix="v-opt-", 
+        output_prefix=f"v-{suffix}-", 
         figsize=(6, 4)
     )    
     pass
